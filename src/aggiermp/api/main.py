@@ -5,7 +5,7 @@ Provides endpoints for departments, courses, and course details with aggregated 
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from scalar_fastapi import get_scalar_api_reference
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from typing import List, Dict, Any, Optional
@@ -144,7 +144,9 @@ app = FastAPI(
             "url": "https://api.aggiermp.com", 
             "description": "Production server"
         }
-    ]
+    ],
+    docs_url=None,  # Disable default Swagger UI
+    redoc_url="/redoc"  # Keep ReDoc available
 )
 
 # CORS middleware
@@ -211,27 +213,45 @@ async def scalar_html():
     - Interactive schema exploration
     - Dark/light theme toggle
     """
-    return get_scalar_api_reference(
-        openapi_url=app.openapi_url,
-        title=app.title,
-        scalar_config={
-            "theme": "default",
-            "layout": "modern", 
-            "showSidebar": True,
-            "hideDownloadButton": False,
-            "searchHotKey": "k",
-            "darkMode": True,
-            "subdomain": "localhost",
-            "defaultHttpClient": {
-                "targetKey": "javascript",
-                "clientKey": "fetch"
-            },
-            "authentication": {
-                "preferredSecurityScheme": "none"
-            },
-            "proxy": "https://api.scalar.com/request-proxy"
-        }
-    )
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>AggieRMP API Documentation</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>
+            body {
+                margin: 0;
+                padding: 0;
+            }
+        </style>
+    </head>
+    <body>
+        <script
+            id="api-reference"
+            data-url="/openapi.json"
+            data-configuration='{
+                "theme": "default",
+                "layout": "modern",
+                "showSidebar": true,
+                "hideDownloadButton": false,
+                "searchHotKey": "k",
+                "darkMode": true,
+                "defaultHttpClient": {
+                    "targetKey": "javascript",
+                    "clientKey": "fetch"
+                },
+                "authentication": {
+                    "preferredSecurityScheme": "none"
+                }
+            }'
+        ></script>
+        <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@latest"></script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 @app.get("/departments_info")
 async def get_departments_info(db: Session = Depends(get_db_session)):
