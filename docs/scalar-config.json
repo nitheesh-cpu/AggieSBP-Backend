@@ -5,6 +5,7 @@
     "hideDownloadButton": false,
     "searchHotKey": "k",
     "darkMode": true,
+    "subdomain": "localhost",
     "favicon": "/favicon.ico",
     "customCss": "",
     "hiddenClients": [],

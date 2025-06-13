@@ -215,12 +215,13 @@ async def scalar_html():
         openapi_url=app.openapi_url,
         title=app.title,
         scalar_config={
-            "theme": "purple",
+            "theme": "default",
             "layout": "modern", 
             "showSidebar": True,
             "hideDownloadButton": False,
             "searchHotKey": "k",
             "darkMode": True,
+            "subdomain": "localhost",
             "defaultHttpClient": {
                 "targetKey": "javascript",
                 "clientKey": "fetch"
