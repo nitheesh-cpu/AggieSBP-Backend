@@ -1,5 +1,6 @@
 from collectors.rmp_review_collector import RMPReviewCollector
 from database.base import ProfessorDB, upsert_professors, upsert_reviews
+from database.summary import ReviewSummarizer
 
 
 async def get_new_reviews_for_professor(session, professor_id):
@@ -17,6 +18,8 @@ async def update_professors(session, university_id):
     collector = RMPReviewCollector()
     professors = collector.get_all_professors(university_id, 1000) 
     updated_professors = upsert_professors(session, professors)
+    summarizer = ReviewSummarizer()
     for professor in updated_professors:
         await get_new_reviews_for_professor(session, professor.id)
+        summarizer.process_professor(professor.id, include_course_numbers=True)
     return len(updated_professors)

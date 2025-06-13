@@ -16,6 +16,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from database.base import ProfessorDB, ReviewDB
+from models import Professor
 
 load_dotenv()
 # Database Models
@@ -223,7 +224,7 @@ class ReviewSummarizer:
             selected_indices.append(best_idx)
             remaining_indices.remove(best_idx)
             
-            print(f"Selected first sentence (score: {sentence_scores[best_idx]:.3f})")
+            # print(f"Selected first sentence (score: {sentence_scores[best_idx]:.3f})")
             
             # Select remaining sentences balancing importance and diversity
             while len(selected_indices) < num_sentences and remaining_indices:
@@ -251,7 +252,7 @@ class ReviewSummarizer:
                 if best_idx != -1:
                     selected_indices.append(best_idx)
                     remaining_indices.remove(best_idx)
-                    print(f"Selected sentence {len(selected_indices)} (score: {sentence_scores[best_idx]:.3f}, similarity penalty: {max_similarity:.3f})")
+                    # print(f"Selected sentence {len(selected_indices)} (score: {sentence_scores[best_idx]:.3f}, similarity penalty: {max_similarity:.3f})")
                 else:
                     break
             
@@ -347,7 +348,7 @@ class ReviewSummarizer:
             return summary.strip()
             
         except Exception as e:
-            print(f"Error generating abstractive summary: {e}")
+            # print(f"Error generating abstractive summary: {e}")
             return f"Error generating summary: {str(e)}"
     
     def generate_hybrid_summary(self, reviews: List[ReviewData], max_length: int = 8000, 
@@ -374,11 +375,11 @@ class ReviewSummarizer:
             }
         
         summary_type = "course-specific" if is_course_specific else "overall"
-        print(f"Starting hybrid summarization for {len(reviews)} reviews ({summary_type})...")
+        # print(f"Starting hybrid summarization for {len(reviews)} reviews ({summary_type})...")
         
         try:
             # Step 1: Extractive phase - get key sentences
-            print("Phase 1: Extractive summarization...")
+            # print("Phase 1: Extractive summarization...")
             key_sentences = self.extract_key_sentences(reviews, num_key_sentences, is_course_specific)
             
             if not key_sentences:
@@ -394,17 +395,17 @@ class ReviewSummarizer:
             extractive_summary = " ".join(key_sentences)
             extractive_length = len(extractive_summary)
             
-            print(f"Extractive summary: {extractive_length} characters from {len(key_sentences)} sentences")
+            # print(f"Extractive summary: {extractive_length} characters from {len(key_sentences)} sentences")
             
             # Step 2: Check if extractive summary needs further processing
             if extractive_length <= 10000:  # Give some buffer for BART processing
                 # Step 3: Abstractive phase - generate final summary
-                print("Phase 2: Abstractive summarization...")
+                # print("Phase 2: Abstractive summarization...")
                 final_summary = self.generate_abstractive_summary(extractive_summary, max_length)
                 method_used = 'hybrid'
             else:
                 # If extractive summary is still too long, use hierarchical approach
-                print("Extractive summary still too long, applying hierarchical chunking...")
+                # print("Extractive summary still too long, applying hierarchical chunking...")
                 final_summary = self.generate_hierarchical_summary(extractive_summary, max_length)
                 method_used = 'hybrid_hierarchical'
             
@@ -420,7 +421,7 @@ class ReviewSummarizer:
             }
             
         except Exception as e:
-            print(f"Error in hybrid summarization: {e}")
+            # print(f"Error in hybrid summarization: {e}")
             return {
                 'summary': f"Error generating summary: {str(e)}",
                 'method': 'error',
@@ -444,7 +445,7 @@ class ReviewSummarizer:
         
         # Clean the input
         original = course_code.strip().upper()
-        print(f"🔧 Normalizing course code: '{course_code}' -> '{original}'")
+        # print(f"🔧 Normalizing course code: '{course_code}' -> '{original}'")
         
         # Remove common noise
         cleaned = re.sub(r'[^\w\s]', '', original)  # Remove punctuation
@@ -455,7 +456,7 @@ class ReviewSummarizer:
         match = re.match(r'([A-Z]+)\s*(\d+[A-Z]*)', cleaned)
         
         if not match:
-            print(f"⚠️  Could not parse course code: '{original}' -> using as-is")
+            # print(f"⚠️  Could not parse course code: '{original}' -> using as-is")
             return original
         
         dept, number = match.groups()
@@ -467,23 +468,23 @@ class ReviewSummarizer:
         cross_listing_key = (normalized_dept, number)
         if cross_listing_key in self.cross_listings:
             normalized = self.cross_listings[cross_listing_key]
-            print(f"✅ Cross-listing found: '{original}' -> '{normalized}'")
+            # print(f"✅ Cross-listing found: '{original}' -> '{normalized}'")
             return normalized
         
         # Also check original department for cross-listings
         original_cross_listing = (dept, number)
         if original_cross_listing in self.cross_listings:
             normalized = self.cross_listings[original_cross_listing]
-            print(f"✅ Cross-listing found: '{original}' -> '{normalized}'")
+            # print(f"✅ Cross-listing found: '{original}' -> '{normalized}'")
             return normalized
         
         # Standard normalization
         normalized = f"{normalized_dept}{number}"
         
-        if normalized != original:
-            print(f"✅ Normalized: '{original}' -> '{normalized}'")
-        else:
-            print(f"✅ No changes needed: '{original}'")
+        # if normalized != original:
+            # print(f"✅ Normalized: '{original}' -> '{normalized}'")
+        # else:
+            # print(f"✅ No changes needed: '{original}'")
         
         return normalized
     
@@ -497,7 +498,7 @@ class ReviewSummarizer:
         Returns:
             Primary department code (e.g., 'MATH', 'CSCE', etc.)
         """
-        print(f"🔍 Determining primary department from {len(reviews)} reviews...")
+        # print(f"🔍 Determining primary department from {len(reviews)} reviews...")
         
         # Count normalized departments from all courses
         dept_counts = {}
@@ -521,8 +522,8 @@ class ReviewSummarizer:
         total_reviews = sum(dept_counts.values())
         primary_percentage = (dept_counts[primary_dept] / total_reviews) * 100
         
-        print(f"📊 Department distribution: {dict(dept_counts)}")
-        print(f"🎯 Primary department: {primary_dept} ({dept_counts[primary_dept]}/{total_reviews} reviews, {primary_percentage:.1f}%)")
+        # print(f"📊 Department distribution: {dict(dept_counts)}")
+        # print(f"🎯 Primary department: {primary_dept} ({dept_counts[primary_dept]}/{total_reviews} reviews, {primary_percentage:.1f}%)")
         
         return primary_dept
     
@@ -541,7 +542,7 @@ class ReviewSummarizer:
             return "Unknown"
         
         original = course_code.strip().upper()
-        print(f"🔧 Context-aware normalizing: '{course_code}' with dept context '{professor_dept}'")
+        # print(f"🔧 Context-aware normalizing: '{course_code}' with dept context '{professor_dept}'")
         
         # Remove common noise
         cleaned = re.sub(r'[^\w\s]', '', original)
@@ -560,12 +561,12 @@ class ReviewSummarizer:
             cross_listing_key = (normalized_dept, number)
             if cross_listing_key in self.cross_listings:
                 result = self.cross_listings[cross_listing_key]
-                print(f"✅ Cross-listing found: '{original}' -> '{result}'")
+                # print(f"✅ Cross-listing found: '{original}' -> '{result}'")
                 return result
             
             # Standard normalization
             result = f"{normalized_dept}{number}"
-            print(f"✅ Standard normalization: '{original}' -> '{result}'")
+            # print(f"✅ Standard normalization: '{original}' -> '{result}'")
             return result
         
         # Try to extract just a number (for cases like "152", "M152", etc.)
@@ -581,7 +582,7 @@ class ReviewSummarizer:
                 # Try to expand partial department based on professor context
                 if professor_dept.startswith(partial_dept):
                     result = f"{professor_dept}{number}"
-                    print(f"✅ Partial dept expansion: '{original}' -> '{result}' (using context {professor_dept})")
+                    # print(f"✅ Partial dept expansion: '{original}' -> '{result}' (using context {professor_dept})")
                     return result
                 
                 # Try common expansions
@@ -597,16 +598,16 @@ class ReviewSummarizer:
                 if partial_dept in partial_expansions:
                     expanded_dept = partial_expansions[partial_dept]
                     result = f"{expanded_dept}{number}"
-                    print(f"✅ Partial dept expansion: '{original}' -> '{result}' (standard expansion)")
+                    # print(f"✅ Partial dept expansion: '{original}' -> '{result}' (standard expansion)")
                     return result
             
             # Just a number - use professor's department context
             result = f"{professor_dept}{number}"
-            print(f"✅ Context-based completion: '{original}' -> '{result}' (using professor dept {professor_dept})")
+            # print(f"✅ Context-based completion: '{original}' -> '{result}' (using professor dept {professor_dept})")
             return result
         
         # Couldn't parse - return as-is
-        print(f"⚠️  Could not parse: '{original}' -> using as-is")
+        # print(f"⚠️  Could not parse: '{original}' -> using as-is")
         return original
     
     def group_reviews_by_course_number(self, reviews: List[ReviewData], professor_dept: str) -> Dict[str, List[ReviewData]]:
@@ -620,7 +621,7 @@ class ReviewSummarizer:
         Returns:
             Dictionary mapping properly formatted course codes to review lists
         """
-        print("🔢 Grouping reviews by course NUMBER with department context...")
+        # print("🔢 Grouping reviews by course NUMBER with department context...")
         
         # Track course number mappings for transparency
         number_mappings = {}
@@ -650,12 +651,12 @@ class ReviewSummarizer:
             course_reviews[formatted_code].append(review)
         
         # Print mapping summary
-        print(f"📊 Course number grouping summary (with {professor_dept} context):")
-        for formatted_code, originals in number_mappings.items():
-            if len(originals) > 1:
-                print(f"   🔗 {formatted_code}: {', '.join(sorted(originals))} ({len(course_reviews[formatted_code])} reviews)")
-            else:
-                print(f"   📖 {formatted_code}: {len(course_reviews[formatted_code])} reviews")
+        # print(f"📊 Course number grouping summary (with {professor_dept} context):")
+        # for formatted_code, originals in number_mappings.items():
+            # if len(originals) > 1:
+                # print(f"   🔗 {formatted_code}: {', '.join(sorted(originals))} ({len(course_reviews[formatted_code])} reviews)")
+            # else:
+                # print(f"   📖 {formatted_code}: {len(course_reviews[formatted_code])} reviews")
         
         return course_reviews
     
@@ -701,10 +702,10 @@ class ReviewSummarizer:
             Dictionary mapping course codes to review lists
         """
         if group_by_number_only and professor_dept:
-            print("🔢 Grouping reviews by course NUMBER with department context...")
+            # print("🔢 Grouping reviews by course NUMBER with department context...")
             return self.group_reviews_by_course_number(reviews, professor_dept)
         else:
-            print("🔍 Grouping reviews by normalized course codes...")
+            # print("🔍 Grouping reviews by normalized course codes...")
             return self._group_by_full_course_code(reviews)
     
     def _group_by_full_course_code(self, reviews: List[ReviewData]) -> Dict[str, List[ReviewData]]:
@@ -729,22 +730,22 @@ class ReviewSummarizer:
             course_reviews[normalized_code].append(review)
         
         # Print mapping summary
-        print(f"📊 Course normalization summary:")
-        for normalized, originals in course_mappings.items():
-            if len(originals) > 1:
-                print(f"   🔗 {normalized}: {', '.join(sorted(originals))} ({len(course_reviews[normalized])} reviews)")
-            else:
-                print(f"   📖 {normalized}: {len(course_reviews[normalized])} reviews")
+        # print(f"📊 Course normalization summary:")
+        # for normalized, originals in course_mappings.items():
+            # if len(originals) > 1:
+                # print(f"   🔗 {normalized}: {', '.join(sorted(originals))} ({len(course_reviews[normalized])} reviews)")
+            # else:
+                # print(f"   📖 {normalized}: {len(course_reviews[normalized])} reviews")
         
         return course_reviews
     
     def fetch_reviews_for_professor(self, professor_id: str) -> List[ReviewData]:
         """Fetch all reviews for a specific professor"""
-        print(f"🔍 Fetching reviews for professor: {professor_id}")
+        # print(f"🔍 Fetching reviews for professor: {professor_id}")
         
         reviews_data = []
         reviews = self.session.query(ReviewDB).filter(ReviewDB.professor_id == professor_id).all()
-        print(f"📊 Found {len(reviews)} reviews in database for professor {professor_id}")
+        # print(f"📊 Found {len(reviews)} reviews in database for professor {professor_id}")
         
         for review in reviews:
             reviews_data.append(ReviewData(
@@ -759,12 +760,12 @@ class ReviewSummarizer:
                 grade=review.grade
             ))
         
-        print(f"✅ Successfully processed {len(reviews_data)} review records")
+        # print(f"✅ Successfully processed {len(reviews_data)} review records")
         return reviews_data
     
     def aggregate_tags(self, reviews: List[ReviewData]) -> Tuple[List[str], Dict[str, int]]:
         """Aggregate and count rating tags from reviews"""
-        print(f"🏷️  Aggregating tags from {len(reviews)} reviews...")
+        # print(f"🏷️  Aggregating tags from {len(reviews)} reviews...")
         
         all_tags = []
         reviews_with_tags = 0
@@ -774,18 +775,18 @@ class ReviewSummarizer:
                 all_tags.extend(review.rating_tags)
                 reviews_with_tags += 1
         
-        print(f"📈 Found {len(all_tags)} total tags from {reviews_with_tags} reviews with tags")
+        # print(f"📈 Found {len(all_tags)} total tags from {reviews_with_tags} reviews with tags")
         
         tag_counts = Counter(all_tags)
         # Get top 10 most common tags
         common_tags = [tag for tag, count in tag_counts.most_common(10)]
         
-        print(f"🔟 Top 10 most common tags: {common_tags}")
+        # print(f"🔟 Top 10 most common tags: {common_tags}")
         return common_tags, dict(tag_counts)
     
     def prepare_text_for_summarization(self, reviews: List[ReviewData], overall: bool = False) -> str:
         """Combine review texts into a single document for summarization"""
-        print(f"📝 Preparing text for summarization from {len(reviews)} reviews...")
+        # print(f"📝 Preparing text for summarization from {len(reviews)} reviews...")
         
         texts = []
         valid_reviews = 0
@@ -803,7 +804,7 @@ class ReviewSummarizer:
                 texts.append(text)
                 valid_reviews += 1
         
-        print(f"✅ Found {valid_reviews} reviews with valid text content")
+        # print(f"✅ Found {valid_reviews} reviews with valid text content")
         
         # Combine all texts
         combined_text = " ".join(texts)
@@ -812,23 +813,23 @@ class ReviewSummarizer:
         # Truncate if too long (BART has token limits)
         if len(combined_text) > 8000:  # Conservative limit
             return reviews
-            print(f"⚠️  Text truncated from {original_length} to {len(combined_text)} characters")
-        else:
-            print(f"📏 Combined text length: {len(combined_text)} characters")
+            # print(f"⚠️  Text truncated from {original_length} to {len(combined_text)} characters")
+        # else:
+            # print(f"📏 Combined text length: {len(combined_text)} characters")
         
         return combined_text
     
     def generate_summary(self, text: str, max_length: int = 600) -> str:
         """Generate summary using BART model"""
-        print(f"🤖 Generating summary with BART model (max_length: {max_length})...")
+        # print(f"🤖 Generating summary with BART model (max_length: {max_length})...")
         token_max_length = min(max_length // 4, 1024)
         
         if not text.strip():
-            print("⚠️  No text available for summarization")
+            # print("⚠️  No text available for summarization")
             return "No review text available for summarization."
         
         try:
-            print(f"🔄 Tokenizing input text ({len(text)} characters)...")
+            # print(f"🔄 Tokenizing input text ({len(text)} characters)...")
             text = re.sub(r'^(\W)*', '', text)
             text = re.sub(r'Course: \w+', '', text)
             text = re.sub(r'Grade: Rather not say.', '', text)
@@ -843,8 +844,8 @@ class ReviewSummarizer:
                 truncation=True
             ).to(self.device)
             
-            print(f"📊 Input tokens: {inputs.shape[1]}")
-            print("⚡ Generating summary...")
+            # print(f"📊 Input tokens: {inputs.shape[1]}")
+            # print("⚡ Generating summary...")
             
             # Generate summary
             with torch.no_grad():
@@ -859,30 +860,30 @@ class ReviewSummarizer:
                     repetition_penalty=1.1  # Avoid repetition
                 )
             
-            print("🔤 Decoding summary...")
+            # print("🔤 Decoding summary...")
             # Decode summary
             summary = self.tokenizer.decode(
                 summary_ids[0], 
                 skip_special_tokens=True
             )
             
-            print(f"✅ Summary generated successfully ({len(summary)} characters)")
-            print(f"📄 Summary preview: {summary[:100]}...")
+            # print(f"✅ Summary generated successfully ({len(summary)} characters)")
+            # print(f"📄 Summary preview: {summary[:100]}...")
             return summary
             
         except Exception as e:
-            print(f"❌ Error generating summary: {e}")
+            # print(f"❌ Error generating summary: {e}")
             return f"Error generating summary: {str(e)}"
     
     def calculate_averages(self, reviews: List[ReviewData]) -> Dict[str, float]:
         """Calculate average ratings from reviews"""
-        print(f"📊 Calculating average ratings from {len(reviews)} reviews...")
+        # print(f"📊 Calculating average ratings from {len(reviews)} reviews...")
         
         clarity_ratings = [r.clarity_rating for r in reviews if r.clarity_rating is not None]
         difficulty_ratings = [r.difficulty_rating for r in reviews if r.difficulty_rating is not None]
         helpful_ratings = [r.helpful_rating for r in reviews if r.helpful_rating is not None]
         
-        print(f"📈 Rating counts - Clarity: {len(clarity_ratings)}, Difficulty: {len(difficulty_ratings)}, Helpful: {len(helpful_ratings)}")
+        # print(f"📈 Rating counts - Clarity: {len(clarity_ratings)}, Difficulty: {len(difficulty_ratings)}, Helpful: {len(helpful_ratings)}")
         
         averages = {
             'avg_clarity': sum(clarity_ratings) / len(clarity_ratings) if clarity_ratings else None,
@@ -890,21 +891,21 @@ class ReviewSummarizer:
             'avg_helpful': sum(helpful_ratings) / len(helpful_ratings) if helpful_ratings else None,
         }
         
-        print(f"🎯 Calculated averages: {averages}")
+        # print(f"🎯 Calculated averages: {averages}")
         return averages
     
     def create_overall_summary(self, professor_id: str) -> Optional[str]:
         """Create an overall summary for a professor across all courses"""
-        print(f"\n🎓 Creating overall summary for professor {professor_id}")
-        print("=" * 60)
+        # print(f"\n🎓 Creating overall summary for professor {professor_id}")
+        # print("=" * 60)
         
         reviews = self.fetch_reviews_for_professor(professor_id)
         
         if not reviews:
-            print(f"❌ No reviews found for professor {professor_id}")
+            # print(f"❌ No reviews found for professor {professor_id}")
             return None
         
-        print(f"📚 Processing {len(reviews)} reviews for overall summary")
+        # print(f"📚 Processing {len(reviews)} reviews for overall summary")
         
         # Prepare text and generate summary
         combined_text = self.prepare_text_for_summarization(reviews, overall=True)
@@ -922,7 +923,7 @@ class ReviewSummarizer:
         
         # Save to database
         summary_id = f"{professor_id}_overall"
-        print(f"💾 Saving overall summary to database with ID: {summary_id}")
+        # print(f"💾 Saving overall summary to database with ID: {summary_id}")
         
         summary_record = SummaryDB(
             id=summary_id,
@@ -941,7 +942,7 @@ class ReviewSummarizer:
         # Upsert logic
         existing = self.session.query(SummaryDB).filter_by(id=summary_id).first()
         if existing:
-            print(f"🔄 Updating existing summary record")
+            # print(f"🔄 Updating existing summary record")
             existing.summary_text = summary_text
             existing.total_reviews = len(reviews)
             existing.avg_rating = averages['avg_clarity']
@@ -950,40 +951,40 @@ class ReviewSummarizer:
             existing.tag_frequencies = str(tag_frequencies)
             existing.updated_at = datetime.now()
         else:
-            print(f"➕ Creating new summary record")
+            # print(f"➕ Creating new summary record")
             self.session.add(summary_record)
         
         self.session.commit()
-        print(f"✅ Successfully saved overall summary for professor {professor_id}")
+        # print(f"✅ Successfully saved overall summary for professor {professor_id}")
         return summary_id
     
     def create_course_specific_summaries(self, professor_id: str) -> List[str]:
         """Create course-specific summaries for a professor"""
-        print(f"\n📚 Creating course-specific summaries for professor {professor_id}")
-        print("=" * 60)
+        # print(f"\n📚 Creating course-specific summaries for professor {professor_id}")
+        # print("=" * 60)
         
         reviews = self.fetch_reviews_for_professor(professor_id)
         
         if not reviews:
-            print("❌ No reviews found for course-specific summaries")
+            # print("❌ No reviews found for course-specific summaries")
             return []
         
         # Group reviews by normalized course
-        print("🔍 Grouping reviews by normalized course codes...")
+        # print("🔍 Grouping reviews by normalized course codes...")
         course_reviews = self.group_reviews_by_normalized_course(reviews)
         
-        print(f"📊 Found {len(course_reviews)} unique courses:")
-        for course_code, course_review_list in course_reviews.items():
-            print(f"   📖 {course_code}: {len(course_review_list)} reviews")
+        # print(f"📊 Found {len(course_reviews)} unique courses:")
+        # for course_code, course_review_list in course_reviews.items():
+            # print(f"   📖 {course_code}: {len(course_review_list)} reviews")
         
         summary_ids = []
         
         for course_code, course_review_list in course_reviews.items():
             if len(course_review_list) < 2:  # Skip if too few reviews
-                print(f"⚠️  Skipping {course_code} - only {len(course_review_list)} review(s)")
+                # print(f"⚠️  Skipping {course_code} - only {len(course_review_list)} review(s)")
                 continue
                 
-            print(f"\n📖 Processing normalized course: {course_code} ({len(course_review_list)} reviews)")
+            # print(f"\n📖 Processing normalized course: {course_code} ({len(course_review_list)} reviews)")
             
             # Generate summary for this course
             combined_text = self.prepare_text_for_summarization(course_review_list, overall=False)
@@ -999,7 +1000,7 @@ class ReviewSummarizer:
             
             # Save to database using normalized course code
             summary_id = f"{professor_id}_{course_code}"
-            print(f"💾 Saving course summary to database with ID: {summary_id}")
+            # print(f"💾 Saving course summary to database with ID: {summary_id}")
             
             summary_record = SummaryDB(
                 id=summary_id,
@@ -1018,7 +1019,7 @@ class ReviewSummarizer:
             # Upsert logic
             existing = self.session.query(SummaryDB).filter_by(id=summary_id).first()
             if existing:
-                print(f"🔄 Updating existing course summary")
+                # print(f"🔄 Updating existing course summary")
                 existing.summary_text = summary_text
                 existing.total_reviews = len(course_review_list)
                 existing.avg_rating = averages['avg_clarity']
@@ -1027,25 +1028,25 @@ class ReviewSummarizer:
                 existing.tag_frequencies = str(tag_frequencies)
                 existing.updated_at = datetime.now()
             else:
-                print(f"➕ Creating new course summary")
+                # print(f"➕ Creating new course summary")
                 self.session.add(summary_record)
             
             summary_ids.append(summary_id)
-            print(f"✅ Completed summary for {course_code}")
+            # print(f"✅ Completed summary for {course_code}")
         
         self.session.commit()
-        print(f"\n🎉 Created {len(summary_ids)} course-specific summaries for professor {professor_id}")
+        # print(f"\n🎉 Created {len(summary_ids)} course-specific summaries for professor {professor_id}")
         return summary_ids
     
     def create_course_number_summaries(self, professor_id: str) -> List[str]:
         """Create course number summaries using professor's department context for proper formatting"""
-        print(f"\n🔢 Creating course NUMBER summaries for professor {professor_id}")
-        print("=" * 60)
+        # print(f"\n🔢 Creating course NUMBER summaries for professor {professor_id}")
+        # print("=" * 60)
         
         reviews = self.fetch_reviews_for_professor(professor_id)
         
         if not reviews:
-            print("❌ No reviews found for course number summaries")
+            # print("❌ No reviews found for course number summaries")
             return []
         
         # Determine professor's primary department
@@ -1054,23 +1055,23 @@ class ReviewSummarizer:
         # Group reviews by course number with department context
         course_reviews = self.group_reviews_by_course_number(reviews, professor_dept)
         
-        print(f"📊 Found {len(course_reviews)} unique course numbers (formatted with {professor_dept}):")
-        for course_code, course_review_list in course_reviews.items():
-            print(f"   🔢 {course_code}: {len(course_review_list)} reviews")
+        # print(f"📊 Found {len(course_reviews)} unique course numbers (formatted with {professor_dept}):")
+        # for course_code, course_review_list in course_reviews.items():
+            # print(f"   🔢 {course_code}: {len(course_review_list)} reviews")
         
         summary_ids = []
         
         for formatted_course_code, course_review_list in course_reviews.items():
             if len(course_review_list) < 2:  # Skip if too few reviews
-                print(f"⚠️  Skipping {formatted_course_code} - only {len(course_review_list)} review(s)")
+                # print(f"⚠️  Skipping {formatted_course_code} - only {len(course_review_list)} review(s)")
                 continue
                 
-            print(f"\n🔢 Processing course number: {formatted_course_code} ({len(course_review_list)} reviews)")
+            # print(f"\n🔢 Processing course number: {formatted_course_code} ({len(course_review_list)} reviews)")
             
             # Show which original course codes were combined
             original_codes = list(set([r.course_code for r in course_review_list if r.course_code]))
-            if len(original_codes) > 1:
-                print(f"   📝 Combined from: {', '.join(original_codes)}")
+            # if len(original_codes) > 1:
+                # print(f"   📝 Combined from: {', '.join(original_codes)}")
             
             # Generate summary for this course number
             combined_text = self.prepare_text_for_summarization(course_review_list, overall=False)
@@ -1086,7 +1087,7 @@ class ReviewSummarizer:
             
             # Save to database using formatted course code with NUM prefix to distinguish from course-specific
             summary_id = f"{professor_id}_NUM{formatted_course_code}"
-            print(f"💾 Saving course number summary to database with ID: {summary_id}")
+            # print(f"💾 Saving course number summary to database with ID: {summary_id}")
             
             summary_record = SummaryDB(
                 id=summary_id,
@@ -1105,7 +1106,7 @@ class ReviewSummarizer:
             # Upsert logic
             existing = self.session.query(SummaryDB).filter_by(id=summary_id).first()
             if existing:
-                print(f"🔄 Updating existing course number summary")
+                # print(f"🔄 Updating existing course number summary")
                 existing.summary_text = summary_text
                 existing.total_reviews = len(course_review_list)
                 existing.avg_rating = averages['avg_clarity']
@@ -1114,20 +1115,20 @@ class ReviewSummarizer:
                 existing.tag_frequencies = str(tag_frequencies)
                 existing.updated_at = datetime.now()
             else:
-                print(f"➕ Creating new course number summary")
+                # print(f"➕ Creating new course number summary")
                 self.session.add(summary_record)
             
             summary_ids.append(summary_id)
-            print(f"✅ Completed number summary for {formatted_course_code}")
+            # print(f"✅ Completed number summary for {formatted_course_code}")
         
         self.session.commit()
-        print(f"\n🎉 Created {len(summary_ids)} course number summaries for professor {professor_id}")
+        # print(f"\n🎉 Created {len(summary_ids)} course number summaries for professor {professor_id}")
         return summary_ids
 
     def process_professor(self, professor_id: str, include_course_numbers: bool = True) -> Dict[str, any]:
         """Process both overall and course-specific summaries for a professor"""
-        print(f"\n🚀 PROCESSING PROFESSOR: {professor_id}")
-        print("=" * 80)
+        # print(f"\n🚀 PROCESSING PROFESSOR: {professor_id}")
+        # print("=" * 80)
         
         results = {
             'professor_id': professor_id,
@@ -1139,10 +1140,10 @@ class ReviewSummarizer:
         
         try:
             # Create overall summary
-            print("🎯 Step 1: Creating overall summary...")
+            # print("🎯 Step 1: Creating overall summary...")
             overall_id = self.create_overall_summary(professor_id)
             results['overall_summary_id'] = overall_id
-            print(f"✅ Overall summary completed: {overall_id}")
+            # print(f"✅ Overall summary completed: {overall_id}")
             
             # # Create course-specific summaries
             # print("\n🎯 Step 2: Creating course-specific summaries...")
@@ -1152,10 +1153,10 @@ class ReviewSummarizer:
             
             # Create course number summaries (handles typos and incomplete codes)
             if include_course_numbers:
-                print("\n🎯 Step 3: Creating course NUMBER summaries...")
+                # print("\n🎯 Step 3: Creating course NUMBER summaries...")
                 number_ids = self.create_course_number_summaries(professor_id)
                 results['course_number_summary_ids'] = number_ids
-                print(f"✅ Course number summaries completed: {len(number_ids)} summaries")
+                # print(f"✅ Course number summaries completed: {len(number_ids)} summaries")
             
             print(f"\n🎉 PROFESSOR {professor_id} PROCESSING COMPLETE!")
             print(f"   📊 Overall summary: {'✅' if overall_id else '❌'}")
@@ -1178,14 +1179,20 @@ class ReviewSummarizer:
         
         # Get all professor IDs that have reviews        
         professors = self.session.query(ProfessorDB).all()
-        professor_ids = [professor.id for professor in professors][3:100]
+        summaries = self.session.query(SummaryDB.professor_id).all()
+        # remove duplicates
+        summaries = set([s[0] for s in summaries])
+        print(f"📊 Found {len(summaries)} professors with existing summaries")
+        professor_ids = [professor.id for professor in professors][:4000]
+
+        professor_ids = set(professor_ids) - summaries       
         
         print(f"📊 Found {len(professor_ids)} professors to process")
-        if include_course_numbers:
-            print(f"🔢 Will create course-specific AND course-number summaries")
-        else:
-            print(f"📚 Will create course-specific summaries only")
-        print(f"🎯 Starting batch processing...")
+        # if include_course_numbers:
+            # print(f"🔢 Will create course-specific AND course-number summaries")
+        # else:
+            # print(f"📚 Will create course-specific summaries only")
+        # print(f"🎯 Starting batch processing...")
         
         results = []
         successful = 0

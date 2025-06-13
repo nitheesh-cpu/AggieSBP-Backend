@@ -1,0 +1,15 @@
+[Unit]
+Description=AggieRMP FastAPI Application
+After=network.target
+
+[Service]
+Type=exec
+User=ubuntu
+WorkingDirectory=/home/ubuntu/aggiermp
+Environment=PATH=/home/ubuntu/aggiermp/.venv/bin
+ExecStart=/home/ubuntu/aggiermp/.venv/bin/uvicorn src.aggiermp.api.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
