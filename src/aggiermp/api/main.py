@@ -1218,6 +1218,20 @@ async def compare_courses(request: CourseCompareRequest, db: Session = Depends(g
                 else:
                     section_attributes.append(attr.attribute_id)
             
+            # Calculate rating based on difficulty (6 - average difficulty from reviews)
+            rating_query = text("""
+                SELECT 
+                    ROUND((6.0 - AVG(difficulty_rating))::numeric, 1) as course_rating,
+                    COUNT(*) as review_count
+                FROM reviews 
+                WHERE course_code = :course_code
+                  AND difficulty_rating IS NOT NULL
+            """)
+            
+            rating_result = db.execute(rating_query, {"course_code": course_id.upper()}).fetchone()
+            course_rating = float(rating_result.course_rating) if rating_result and rating_result.course_rating else 3.0
+            review_count = int(rating_result.review_count) if rating_result and rating_result.review_count else 0
+            
             course_detail = {
                 "id": course_id.upper(),
                 "code": course_result.code,
@@ -1226,6 +1240,8 @@ async def compare_courses(request: CourseCompareRequest, db: Session = Depends(g
                 "credits": course_result.credits,
                 "avgGPA": float(course_result.avggpa) if course_result.avggpa != -1 else -1,
                 "difficulty": course_result.difficulty,
+                "rating": course_rating,
+                "reviewCount": review_count,
                 "enrollment": int(course_result.enrollment),
                 "sections": int(course_result.sections),
                 "professors": professors,
