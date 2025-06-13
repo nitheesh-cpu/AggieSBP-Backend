@@ -1,0 +1,32 @@
+{
+    "theme": "default",
+    "layout": "modern",
+    "showSidebar": true,
+    "hideDownloadButton": false,
+    "searchHotKey": "k",
+    "darkMode": true,
+    "favicon": "/favicon.ico",
+    "customCss": "",
+    "hiddenClients": [],
+    "defaultHttpClient": {
+        "targetKey": "javascript",
+        "clientKey": "fetch"
+    },
+    "servers": [
+        {
+            "url": "http://localhost:8000",
+            "description": "Development server"
+        }
+    ],
+    "authentication": {
+        "preferredSecurityScheme": "none"
+    },
+    "metaData": {
+        "title": "AggieRMP API Documentation",
+        "description": "Comprehensive API for Texas A&M University course and professor data",
+        "ogDescription": "Access detailed information about Texas A&M courses, professors, and student reviews through our REST API.",
+        "ogImage": "",
+        "twitterCard": "summary_large_image"
+    },
+    "proxy": "https://api.scalar.com/request-proxy"
+}

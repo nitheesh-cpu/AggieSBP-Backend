@@ -5,6 +5,7 @@ Provides endpoints for departments, courses, and course details with aggregated 
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from scalar_fastapi import get_scalar_api_reference
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from typing import List, Dict, Any, Optional
@@ -19,14 +20,131 @@ from ..database.base import (
     ReviewDB, GpaDataDB, check_database_health, monitor_db_performance
 )
 
+# Pydantic models for request and response bodies
+class CourseCompareRequest(BaseModel):
+    """Request model for comparing multiple courses"""
+    course_ids: List[str]
+
+class DepartmentInfo(BaseModel):
+    """Department information response model"""
+    code: str
+    name: str
+    courses: int
+    professors: int
+    avgGpa: float
+    rating: float
+
+class DepartmentsInfoResponse(BaseModel):
+    """Response model for departments overview"""
+    total_departments: int
+    total_courses: int
+    total_professors: int
+    overall_avg_gpa: float
+    overall_avg_rating: float
+    stem_departments: int
+    liberal_arts_departments: int
+    top_departments: List[DepartmentInfo]
+
+class Department(BaseModel):
+    """Individual department model"""
+    id: str
+    code: str
+    name: str
+    courses: int
+    professors: int
+    avg_gpa: float
+    rating: float
+    enrollment: int
+
+class Course(BaseModel):
+    """Course information model"""
+    id: str
+    code: str
+    title: str
+    department: str
+    avg_gpa: float
+    total_enrollment: int
+    professors: int
+    rating: float
+
+class Professor(BaseModel):
+    """Professor information model"""
+    id: str
+    name: str
+    overall_rating: float
+    total_reviews: int
+    would_take_again_percent: float
+    departments: List[str]
+    courses_taught: List[str]
+    total_courses: int
+
+class Review(BaseModel):
+    """Review information model"""
+    id: str
+    course_code: str
+    course_name: str
+    department_name: str
+    review_text: str
+    overall_rating: float
+    clarity_rating: Optional[float]
+    difficulty_rating: Optional[float]
+    helpful_rating: Optional[float]
+    would_take_again: Optional[bool]
+    grade: Optional[str]
+    review_date: Optional[str]
+    tags: List[str]
+
+class HealthCheck(BaseModel):
+    """Health check response model"""
+    status: str
+    database: Dict[str, Any]
+    api_version: str
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AggieRMP API",
-    description="Texas A&M University course and professor rating API",
-    version="1.0.0"
+    description="""
+    ## Texas A&M University Course and Professor Rating API
+    
+    This API provides comprehensive data about Texas A&M University courses, professors, and student ratings.
+    
+    ### Features:
+    - **Departments**: Browse and search university departments
+    - **Courses**: Detailed course information with GPA data and ratings
+    - **Professors**: Professor profiles with reviews and ratings
+    - **Reviews**: Student reviews and ratings for courses and professors
+    - **Comparisons**: Compare multiple courses side by side
+    
+    ### Data Sources:
+    - Rate My Professor reviews and ratings
+    - Official university GPA data
+    - Course enrollment statistics
+    
+    All endpoints support filtering, pagination, and detailed search capabilities.
+    """,
+    version="1.0.0",
+    contact={
+        "name": "AggieRMP Team",
+        "url": "https://github.com/yourusername/aggiermp",
+        "email": "support@aggiermp.com"
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    servers=[
+        {
+            "url": "http://localhost:8000",
+            "description": "Development server"
+        },
+        {
+            "url": "https://api.aggiermp.com", 
+            "description": "Production server"
+        }
+    ]
 )
 
 # CORS middleware
@@ -80,6 +198,39 @@ async def database_status():
         return check_database_health()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database status check failed: {str(e)}")
+
+@app.get("/docs", include_in_schema=False)
+async def scalar_html():
+    """
+    Interactive API documentation powered by Scalar
+    
+    This endpoint provides a modern, interactive API documentation interface
+    powered by Scalar. It includes:
+    - Live API testing with request/response examples
+    - Automatic code generation in multiple languages
+    - Interactive schema exploration
+    - Dark/light theme toggle
+    """
+    return get_scalar_api_reference(
+        openapi_url=app.openapi_url,
+        title=app.title,
+        scalar_config={
+            "theme": "purple",
+            "layout": "modern", 
+            "showSidebar": True,
+            "hideDownloadButton": False,
+            "searchHotKey": "k",
+            "darkMode": True,
+            "defaultHttpClient": {
+                "targetKey": "javascript",
+                "clientKey": "fetch"
+            },
+            "authentication": {
+                "preferredSecurityScheme": "none"
+            },
+            "proxy": "https://api.scalar.com/request-proxy"
+        }
+    )
 
 @app.get("/departments_info")
 async def get_departments_info(db: Session = Depends(get_db_session)):
@@ -1530,10 +1681,6 @@ async def search_professors(
     except Exception as e:
         logger.error(f"Error in search_professors: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
-# Pydantic models for request bodies
-class CourseCompareRequest(BaseModel):
-    course_ids: List[str]
 
 if __name__ == "__main__":
     import uvicorn
