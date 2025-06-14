@@ -1754,6 +1754,6 @@ async def search_professors(
         logger.error(f"Error in search_professors: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(app, host="0.0.0.0", port=8000) 
