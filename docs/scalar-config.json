@@ -15,12 +15,12 @@
     },
     "servers": [
         {
-            "url": "http://localhost:8000",
-            "description": "Development server"
+            "url": "https://api-aggiesbp.servehttp.com",
+            "description": "Production server"
         },
         {
-            "url": "https://aggiermp.com",
-            "description": "Production server"
+            "url": "http://localhost:8000",
+            "description": "Development server"
         }
     ],
     "authentication": {
