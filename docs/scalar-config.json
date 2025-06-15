@@ -6,7 +6,7 @@
     "searchHotKey": "k",
     "darkMode": true,
     "subdomain": "localhost",
-    "favicon": "/favicon.ico",
+    "favicon": "/aggiermp/api/static/favicon.ico",
     "customCss": "",
     "hiddenClients": [],
     "defaultHttpClient": {
@@ -17,6 +17,10 @@
         {
             "url": "http://localhost:8000",
             "description": "Development server"
+        },
+        {
+            "url": "https://aggiermp.com",
+            "description": "Production server"
         }
     ],
     "authentication": {

@@ -1754,6 +1754,182 @@ async def search_professors(
         logger.error(f"Error in search_professors: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
+@app.get("/professors/compare")
+async def compare_professors(
+    ids: str,
+    db: Session = Depends(get_db_session)
+):
+    """
+    Compare multiple professors by their IDs
+    Takes comma-separated professor IDs and returns detailed professor profiles
+    Returns the same data structure as /professor/{id} endpoint but for multiple professors
+    """
+    try:
+        # Parse comma-separated professor IDs
+        professor_ids = [pid.strip() for pid in ids.split(",") if pid.strip()]
+        
+        if not professor_ids:
+            raise HTTPException(status_code=400, detail="No professor IDs provided")
+        
+        if len(professor_ids) > 10:  # Reasonable limit to prevent abuse
+            raise HTTPException(status_code=400, detail="Too many professor IDs. Maximum 10 allowed.")
+        
+        professor_profiles = []
+        
+        # Process each professor ID
+        for professor_id in professor_ids:
+            try:
+                # Get professor basic info
+                professor_query = text("""
+                    SELECT 
+                        p.id,
+                        p.first_name || ' ' || p.last_name as name,
+                        p.first_name,
+                        p.last_name
+                    FROM professors p
+                    WHERE p.id = :professor_id
+                """)
+                
+                professor_result = db.execute(professor_query, {"professor_id": professor_id}).fetchone()
+                
+                if not professor_result:
+                    # Skip professors that don't exist instead of failing the entire request
+                    continue
+                
+                # Get professor statistics and courses
+                stats_query = text("""
+                    WITH professor_stats AS (
+                        SELECT 
+                            ps.course_code,
+                            ps.total_reviews,
+                            ps.avg_difficulty,
+                            c.course_title
+                        FROM professor_summaries ps
+                        LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                        WHERE ps.professor_id = :professor_id
+                    )
+                    SELECT 
+                        COUNT(course_code) as total_courses,
+                        SUM(total_reviews) as total_reviews,
+                        ROUND(AVG((6.0 - avg_difficulty)::numeric), 1) as overall_rating,
+                        ARRAY_AGG(DISTINCT SUBSTRING(course_code FROM '^[A-Z]+')) as departments
+                    FROM professor_stats
+                """)
+                
+                stats_result = db.execute(stats_query, {"professor_id": professor_id}).fetchone()
+                
+                # Get would_take_again percentage from reviews
+                would_take_again_query = text("""
+                    SELECT 
+                        ROUND(
+                            AVG(CASE WHEN would_take_again = 1 THEN 100.0 ELSE 0.0 END)::numeric, 
+                            1
+                        ) as would_take_again_percent
+                    FROM reviews 
+                    WHERE professor_id = :professor_id 
+                      AND would_take_again IS NOT NULL
+                """)
+                
+                would_take_again_result = db.execute(would_take_again_query, {"professor_id": professor_id}).fetchone()
+                
+                # Get courses taught by professor
+                courses_query = text("""
+                    SELECT 
+                        ps.course_code as course_id,
+                        COALESCE(c.course_title, 'Course Title') as course_name,
+                        ps.total_reviews as reviews_count,
+                        ROUND((6.0 - ps.avg_difficulty)::numeric, 1) as avg_rating
+                    FROM professor_summaries ps
+                    LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                    WHERE ps.professor_id = :professor_id
+                    ORDER BY ps.total_reviews DESC
+                """)
+                
+                courses_result = db.execute(courses_query, {"professor_id": professor_id})
+                courses = []
+                
+                for course in courses_result:
+                    courses.append({
+                        "course_id": course.course_id,
+                        "course_name": course.course_name,
+                        "reviews_count": int(course.reviews_count) if course.reviews_count else 0,
+                        "avg_rating": float(course.avg_rating) if course.avg_rating else 3.0
+                    })
+                
+                # Get recent reviews (last 5)
+                recent_reviews_query = text("""
+                    SELECT 
+                        r.id,
+                        r.review_text,
+                        r.clarity_rating,
+                        r.difficulty_rating,
+                        r.helpful_rating,
+                        r.would_take_again,
+                        r.grade,
+                        r.review_date,
+                        r.course_code,
+                        COALESCE(c.course_title, 'Course') as course_name
+                    FROM reviews r
+                    LEFT JOIN courses c ON c.subject_short_name || c.course_number = r.course_code
+                    WHERE r.professor_id = :professor_id
+                      AND r.review_text IS NOT NULL
+                      AND r.review_text != ''
+                    ORDER BY r.review_date DESC
+                    LIMIT 5
+                """)
+                
+                recent_reviews_result = db.execute(recent_reviews_query, {"professor_id": professor_id})
+                recent_reviews = []
+                
+                for review in recent_reviews_result:
+                    # Calculate overall rating from individual ratings
+                    overall_rating = round((
+                        (review.clarity_rating or 0) + 
+                        (6 - (review.difficulty_rating or 3)) + 
+                        (review.helpful_rating or 0)
+                    ) / 3, 1) if any([review.clarity_rating, review.difficulty_rating, review.helpful_rating]) else 0
+                    
+                    recent_reviews.append({
+                        "id": review.id,
+                        "course_code": review.course_code,
+                        "course_name": review.course_name,
+                        "review_text": review.review_text,
+                        "overall_rating": overall_rating,
+                        "would_take_again": review.would_take_again == 1 if review.would_take_again is not None else None,
+                        "grade": review.grade,
+                        "review_date": review.review_date.isoformat() if review.review_date else None
+                    })
+                
+                # Build professor profile
+                professor_profile = {
+                    "id": professor_result.id,
+                    "name": professor_result.name,
+                    "overall_rating": float(stats_result.overall_rating) if stats_result and stats_result.overall_rating else 3.0,
+                    "total_reviews": int(stats_result.total_reviews) if stats_result and stats_result.total_reviews else 0,
+                    "would_take_again_percent": float(would_take_again_result.would_take_again_percent) if would_take_again_result and would_take_again_result.would_take_again_percent else 0.0,
+                    "courses": courses,
+                    "departments": list(stats_result.departments) if stats_result and stats_result.departments and stats_result.departments[0] else [],
+                    "recent_reviews": recent_reviews
+                }
+                
+                professor_profiles.append(professor_profile)
+                
+            except Exception as e:
+                logger.warning(f"Error processing professor {professor_id}: {str(e)}")
+                # Continue processing other professors instead of failing the entire request
+                continue
+        
+        if not professor_profiles:
+            raise HTTPException(status_code=404, detail="No valid professors found for the provided IDs")
+        
+        return professor_profiles
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in compare_professors: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
 # if __name__ == "__main__":
 #     import uvicorn
 #     uvicorn.run(app, host="0.0.0.0", port=8000) 
