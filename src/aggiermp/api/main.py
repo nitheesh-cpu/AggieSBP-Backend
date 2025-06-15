@@ -1,5 +1,5 @@
 """
-FastAPI application for AggieRMP API
+FastAPI application for AggieSBP API
 Provides endpoints for departments, courses, and course details with aggregated data
 """
 
@@ -157,31 +157,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="AggieRMP API",
-    description="""
-    ## Texas A&M University Course and Professor Rating API
-    
-    This API provides comprehensive data about Texas A&M University courses, professors, and student ratings.
-    
-    ### Features:
-    - **Departments**: Browse and search university departments
-    - **Courses**: Detailed course information with GPA data and ratings
-    - **Professors**: Professor profiles with reviews and ratings
-    - **Reviews**: Student reviews and ratings for courses and professors
-    - **Comparisons**: Compare multiple courses side by side
-    
-    ### Data Sources:
-    - Rate My Professor reviews and ratings
-    - Official university GPA data
-    - Course enrollment statistics
-    
-    All endpoints support filtering, pagination, and detailed search capabilities.
-    """,
+    title="AggieSBP API",
+    description="**Texas A&M University Course and Professor Rating API**<br>This API provides comprehensive data about Texas A&M University courses, professors, and student ratings.<br><br>**Features:**<br>- **Departments**: Browse and search university departments<br>- **Courses**: Detailed course information with GPA data and ratings<br>- **Professors**: Professor profiles with reviews and ratings<br>- **Reviews**: Student reviews and ratings for courses and professors- **Comparisons**: Compare multiple courses side by side<br><br>**Data Sources:**<br>- Rate My Professor reviews and ratings<br>- Official university GPA data<br>- Course enrollment statistics<br><br>All endpoints support filtering, pagination, and detailed search capabilities.<br>",
     version="1.0.0",
     contact={
-        "name": "AggieRMP Team",
-        "url": "https://github.com/yourusername/aggiermp",
-        "email": "support@aggiermp.com",
+        "name": "AggieSBP Team",
+        "url": "https://github.com/yourusername/AggieSBP",
+        "email": "support@AggieSBP.com",
     },
     license_info={
         "name": "MIT License",
@@ -228,7 +210,7 @@ def get_db_session():
             "description": "🎉 Welcome Message - API Root Endpoint",
             "content": {
                 "application/json": {
-                    "example": {"message": "Welcome to AggieRMP API"},
+                    "example": {"message": "Welcome to AggieSBP API"},
                     "schema": {
                         "type": "object",
                         "properties": {
@@ -244,17 +226,13 @@ def get_db_session():
     },
     summary="API Welcome Endpoint",
     description="""
-    🏠 **AggieRMP API Root Endpoint**
-    
-    This is the main entry point for the AggieRMP (Texas A&M Rate My Professor) API.
-    
-    **Purpose:**
-    - Confirm the API is running and accessible
-    - Provide a simple health check
-    - Welcome message for API consumers
-    
-    **Usage:**
-    Perfect for quick connectivity tests and API discovery.
+    🏠 **AggieSBP API Root Endpoint**<br>This is the main entry point for the AggieSBP (Texas A&M Schedule Builder Plus) API.<br><br>**Purpose:**<br>
+    - Confirm the API is running and accessible<br>
+    - Provide a simple health check<br>
+    - Welcome message for API consumers<br>
+    <br>
+    **Usage:**<br>
+    Perfect for quick connectivity tests and API discovery.<br>
     """,
     tags=["General"],
 )
@@ -264,7 +242,7 @@ async def root():
 
     Returns a simple welcome message to confirm the API is running.
     """
-    return {"message": "Welcome to AggieRMP API"}
+    return {"message": "Welcome to AggieSBP API"}
 
 
 @app.get(
@@ -360,29 +338,27 @@ async def root():
     },
     summary="Complete System Health Check",
     description="""
-    🏥 **Comprehensive System Health Monitoring**
-    
-    This endpoint provides a complete health assessment of the AggieRMP API system.
-    
-    **What it checks:**
-    - API server responsiveness
-    - Database connectivity and pool status
-    - System resource availability
-    
-    **Use Cases:**
-    - Load balancer health checks
-    - Monitoring dashboard integration
-    - Automated system alerts
-    - Service dependency verification
-    
-    **Response Indicators:**
-    - `healthy`: All systems operational
-    - `unhealthy`: One or more systems experiencing issues
-    
-    **Monitoring Recommendations:**
-    - Check this endpoint every 30-60 seconds
-    - Alert on consecutive unhealthy responses
-    - Monitor database pool metrics for performance insights
+    🏥 **Comprehensive System Health Monitoring**<br>
+    This endpoint provides a complete health assessment of the AggieSBP API system.<br><br>
+    **What it checks:**<br>
+    - API server responsiveness<br>
+    - Database connectivity and pool status<br>
+    - System resource availability<br>
+    <br>
+    **Use Cases:**<br>
+    - Load balancer health checks<br>
+    - Monitoring dashboard integration<br>
+    - Automated system alerts<br>
+    - Service dependency verification<br>
+    <br>
+    **Response Indicators:**<br>
+    - `healthy`: All systems operational<br>
+    - `unhealthy`: One or more systems experiencing issues<br>
+    <br>
+    **Monitoring Recommendations:**<br>
+    - Check this endpoint every 30-60 seconds<br>
+    - Alert on consecutive unhealthy responses<br>
+    - Monitor database pool metrics for performance insights<br>
     """,
     tags=["System Health"],
 )
@@ -475,29 +451,28 @@ async def health_check():
     },
     summary="Get Database Connection Pool Status",
     description="""
-    🔍 **Database Health Monitoring Endpoint**
-    
-    This endpoint provides real-time information about the database connection pool status and performance metrics.
-    
-    **Use Cases:**
-    - Monitor database connection health
-    - Check connection pool utilization
-    - Identify connection bottlenecks
-    - System health monitoring
-    
-    **Response Fields Explained:**
-    - `status`: Overall database connectivity status
-    - `pool_size`: Maximum connections allowed in the pool
-    - `active_connections`: Currently established connections
-    - `checked_out`: Connections currently being used by the application
-    - `checked_in`: Available connections ready for use
-    - `invalidated`: Connections marked as invalid due to errors
-    - `overflow`: Additional connections created beyond the pool limit
-    
-    **Performance Tips:**
-    - `checked_out` should be less than `pool_size` for optimal performance
-    - High `invalidated` count may indicate connection issues
-    - Non-zero `overflow` suggests the pool size might need adjustment
+    🔍 **Database Health Monitoring Endpoint**<br>
+    This endpoint provides real-time information about the database connection pool status and performance metrics.<br>
+    <br>
+    **Use Cases:**<br>
+    - Monitor database connection health<br>
+    - Check connection pool utilization<br>
+    - Identify connection bottlenecks<br>
+    - System health monitoring<br>
+    <br>
+    **Response Fields Explained:**<br>
+    - `status`: Overall database connectivity status<br>
+    - `pool_size`: Maximum connections allowed in the pool<br>
+    - `active_connections`: Currently established connections<br>
+    - `checked_out`: Connections currently being used by the application<br>
+    - `checked_in`: Available connections ready for use<br>
+    - `invalidated`: Connections marked as invalid due to errors<br>
+    - `overflow`: Additional connections created beyond the pool limit<br>
+    <br>
+    **Performance Tips:**<br>
+    - `checked_out` should be less than `pool_size` for optimal performance<br>
+    - High `invalidated` count may indicate connection issues<br>
+    - Non-zero `overflow` suggests the pool size might need adjustment<br>
     """,
     tags=["System Health"],
 )
@@ -519,20 +494,52 @@ async def database_status():
 @app.get("/docs", include_in_schema=False)
 async def scalar_html():
     """
-    Interactive API documentation powered by Scalar
+    📚 Interactive API Documentation Portal - Powered by Scalar
 
-    This endpoint provides a modern, interactive API documentation interface
-    powered by Scalar. It includes:
-    - Live API testing with request/response examples
-    - Automatic code generation in multiple languages
-    - Interactive schema exploration
-    - Dark/light theme toggle
+    Welcome to the AggieSBP API documentation! This modern, interactive interface provides
+    comprehensive documentation for the Texas A&M Rate My Professor API.
+
+    🌟 **Documentation Features:**
+    - **Live API Testing**: Test endpoints directly from the documentation
+    - **Code Generation**: Automatic code examples in multiple programming languages
+    - **Interactive Schema**: Explore request/response structures with detailed examples
+    - **Dark/Light Themes**: Toggle between visual themes for optimal reading
+    - **Search Functionality**: Quickly find endpoints with built-in search (Ctrl+K)
+    - **Request Examples**: Copy-paste ready code snippets for quick integration
+
+    🔧 **Developer Tools:**
+    - Real-time request/response testing
+    - Authentication helpers and examples
+    - Error code explanations with troubleshooting guides
+    - Performance tips and best practices
+    - Rate limiting information and guidance
+
+    🎓 **API Overview:**
+    The AggieSBP API provides comprehensive access to Texas A&M university data including:
+    - Professor ratings and reviews from students
+    - Course information with GPA statistics
+    - Department analytics and comparisons
+    - Historical academic data and trends
+    - Student feedback and recommendation systems
+
+    📖 **Getting Started:**
+    1. Browse endpoints in the sidebar navigation
+    2. Click any endpoint to see detailed documentation
+    3. Use the "Try It" feature to test API calls
+    4. Copy code examples for your preferred programming language
+    5. Check response schemas to understand data structures
+
+    💡 **Pro Tips:**
+    - Use Ctrl+K to search for specific endpoints
+    - Check the response examples for real data structures
+    - Look for query parameter descriptions to optimize your requests
+    - Review error responses to handle edge cases in your application
     """
     html_content = """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>AggieRMP API Documentation</title>
+        <title>AggieSBP API Documentation</title>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <style>
@@ -764,32 +771,31 @@ async def scalar_html():
     },
     summary="University Academic Overview Dashboard",
     description="""
-    🎓 **Texas A&M University Academic Intelligence Dashboard**
-    
-    This endpoint provides comprehensive university-wide statistics and insights for academic planning and analysis.
-    
-    **Data Includes:**
-    - Department statistics and comparisons
-    - Course offerings and enrollment trends
-    - Professor ratings and reviews summary
-    - Historical semester data
-    - STEM vs Liberal Arts breakdown
-    
-    **Perfect For:**
-    - Academic advisors planning course recommendations
-    - Students exploring different departments
-    - Administrators analyzing university trends
-    - Researchers studying academic patterns
-    - Dashboard applications requiring overview metrics
-    
-    **Key Insights:**
-    - Identify departments with highest course offerings
-    - Compare GPA trends across different academic areas
-    - Track enrollment patterns over time
-    - Understand the balance between STEM and Liberal Arts programs
-    
-    **Data Freshness:**
-    All data is refreshed regularly from official university sources and student review platforms.
+    🎓 **Texas A&M University Academic Intelligence Dashboard**<br>
+    This endpoint provides comprehensive university-wide statistics and insights for academic planning and analysis.<br>
+    <br>
+    **Data Includes:**<br>
+    - Department statistics and comparisons<br>
+    - Course offerings and enrollment trends<br>
+    - Professor ratings and reviews summary<br>
+    - Historical semester data<br>
+    - STEM vs Liberal Arts breakdown<br>
+    <br>
+    **Perfect For:**<br>
+    - Academic advisors planning course recommendations<br>
+    - Students exploring different departments<br>
+    - Administrators analyzing university trends<br>
+    - Researchers studying academic patterns<br>
+    - Dashboard applications requiring overview metrics<br>
+    <br>
+    **Key Insights:**<br>
+    - Identify departments with highest course offerings<br>
+    - Compare GPA trends across different academic areas<br>
+    - Track enrollment patterns over time<br>
+    - Understand the balance between STEM and Liberal Arts programs<br>
+    <br>
+    **Data Freshness:**<br>
+    All data is refreshed regularly from official university sources and student review platforms.<br>
     """,
 )
 async def get_departments_info(db: Session = Depends(get_db_session)):
@@ -1083,32 +1089,31 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
     },
     summary="Browse Academic Departments",
     description="""
-    🎓 **Academic Department Directory & Analytics**
-    
-    Explore Texas A&M's academic departments with comprehensive statistics and course information.
-    
-    **Features:**
-    - Search departments by name or code
-    - View course offerings and faculty counts
-    - Compare GPA averages across departments
-    - See top-rated courses for each department
-    - Filter by academic category (STEM, Liberal Arts, etc.)
-    
-    **Query Parameters:**
-    - `search`: Find departments by name/code (case-insensitive)
-    - `limit`: Control number of results (default: 30, max: 100)
-    - `skip`: Pagination offset for large result sets
-    
-    **Use Cases:**
-    - Students exploring major options
-    - Academic advisors comparing departments
-    - Researchers analyzing institutional data
-    - Dashboard applications displaying department metrics
-    
-    **Pro Tips:**
-    - Use partial searches (e.g., "comp" finds Computer Science)
-    - Sort results by GPA or rating for quality insights
-    - Check `topCourses` for department highlights
+    🎓 **Academic Department Directory & Analytics**<br>
+    Explore Texas A&M's academic departments with comprehensive statistics and course information.<br>
+    <br>
+    **Features:**<br>
+    - Search departments by name or code<br>
+    - View course offerings and faculty counts<br>
+    - Compare GPA averages across departments<br>
+    - See top-rated courses for each department<br>
+    - Filter by academic category (STEM, Liberal Arts, etc.)<br>
+    <br>
+    **Query Parameters:**<br>
+    - `search`: Find departments by name/code (case-insensitive)<br>
+    - `limit`: Control number of results (default: 30, max: 100)<br>
+    - `skip`: Pagination offset for large result sets<br>
+    <br>
+    **Use Cases:**<br>
+    - Students exploring major options<br>
+    - Academic advisors comparing departments<br>
+    - Researchers analyzing institutional data<br>
+    - Dashboard applications displaying department metrics<br>
+    <br>
+    **Pro Tips:**<br>
+    - Use partial searches (e.g., "comp" finds Computer Science)<br>
+    - Sort results by GPA or rating for quality insights<br>
+    - Check `topCourses` for department highlights<br>
     """,
 )
 async def get_departments(
@@ -1368,41 +1373,40 @@ async def get_departments(
     },
     summary="Browse University Course Catalog",
     description="""
-    📖 **Comprehensive Course Discovery & Analysis**
-    
-    Search and explore Texas A&M's complete course catalog with detailed analytics and student feedback.
-    
-    **Advanced Search Features:**
-    - Filter by department (e.g., CSCE, MATH, ENGL)
-    - Search course titles and descriptions
-    - Pagination support for large result sets
-    - Sort by GPA, rating, or enrollment
-    
-    **Rich Course Data:**
-    - Historical GPA averages and difficulty ratings
-    - Current enrollment and section availability
-    - Student ratings and reviews summary
-    - Prerequisites and special requirements
-    - Core curriculum designations
-    
-    **Perfect For:**
-    - Students planning their academic schedule
-    - Academic advisors guiding course selection
-    - Researchers studying curriculum patterns
-    - Mobile apps displaying course information
-    
-    **Query Parameters:**
-    - `department`: Filter by department code (e.g., "CSCE")
-    - `search`: Search in course names and descriptions
-    - `limit`: Results per page (default: 30, max: 100)
-    - `skip`: Pagination offset
-    
-    **Pro Tips:**
-    - Use `avgGPA` to gauge course difficulty
-    - Check `sectionAttributes` for core curriculum requirements
-    - Higher `rating` indicates student satisfaction
-    - `enrollment` numbers show course popularity
-    """,
+    📖 **Comprehensive Course Discovery & Analysis**<br>
+    Search and explore Texas A&M's complete course catalog with detailed analytics and student feedback.<br>
+    <br>
+    **Advanced Search Features:**<br>
+    - Filter by department (e.g., CSCE, MATH, ENGL)<br>
+    - Search course titles and descriptions<br>
+    - Pagination support for large result sets<br>
+    - Sort by GPA, rating, or enrollment<br>
+    <br>
+    **Rich Course Data:**<br>
+    - Historical GPA averages and difficulty ratings<br>
+    - Current enrollment and section availability<br>
+    - Student ratings and reviews summary<br>
+    - Prerequisites and special requirements<br>
+    - Core curriculum designations<br>
+    <br>
+    **Perfect For:**<br>
+    - Students planning their academic schedule<br>
+    - Academic advisors guiding course selection<br>
+    - Researchers studying curriculum patterns<br>
+    - Mobile apps displaying course information<br>
+    <br>
+    **Query Parameters:**<br>
+    - `department`: Filter by department code (e.g., "CSCE")<br>
+    - `search`: Search in course names and descriptions<br>
+    - `limit`: Results per page (default: 30, max: 100)<br>
+    - `skip`: Pagination offset<br>
+    <br>
+    **Pro Tips:**<br>
+    - Use `avgGPA` to gauge course difficulty<br>
+    - Check `sectionAttributes` for core curriculum requirements<br>
+    - Higher `rating` indicates student satisfaction<br>
+    - `enrollment` numbers show course popularity<br>
+    """ 
 )
 async def get_courses(
     department: Optional[str] = None,
@@ -1603,7 +1607,7 @@ async def get_courses(
     "/course/{course_id}",
     responses={
         200: {
-            "description": "Course details with comprehensive data",
+            "description": "📖 Detailed Course Profile - Complete Academic & Review Information",
             "content": {
                 "application/json": {
                     "example": {
@@ -1665,17 +1669,150 @@ async def get_courses(
                             "Core Curriculum - CTR",
                             "Writing Intensive - W",
                         ],
-                    }
-                },
-                404: {
-                    "description": "Invalid course ID format",
-                    "content": {
-                        "application/json": {"example": {"detail": "Course not found"}}
                     },
-                },
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "description": "Official course code",
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Full course title",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Detailed course description and objectives",
+                            },
+                            "credits": {
+                                "type": "integer",
+                                "description": "Credit hours",
+                            },
+                            "avgGPA": {
+                                "type": "number",
+                                "description": "Historical average GPA",
+                            },
+                            "difficulty": {
+                                "type": "string",
+                                "description": "Student-reported difficulty level",
+                            },
+                            "enrollment": {
+                                "type": "integer",
+                                "description": "Recent enrollment numbers",
+                            },
+                            "sections": {
+                                "type": "integer",
+                                "description": "Number of sections offered",
+                            },
+                            "professors": {
+                                "type": "array",
+                                "description": "Faculty teaching this course",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string",
+                                            "description": "Professor identifier",
+                                        },
+                                        "name": {
+                                            "type": "string",
+                                            "description": "Professor name",
+                                        },
+                                        "rating": {
+                                            "type": "number",
+                                            "description": "Average rating",
+                                        },
+                                        "reviews": {
+                                            "type": "integer",
+                                            "description": "Number of reviews",
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "Teaching style description",
+                                        },
+                                        "tag_frequencies": {
+                                            "type": "object",
+                                            "description": "Common student tags",
+                                        },
+                                        "gradeDistribution": {
+                                            "type": "object",
+                                            "description": "Grade distribution percentages",
+                                        },
+                                    },
+                                },
+                            },
+                            "prerequisites": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Required prerequisite courses",
+                            },
+                            "relatedCourses": {
+                                "type": "array",
+                                "description": "Similar or sequential courses",
+                            },
+                            "sectionAttributes": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Special course attributes",
+                            },
+                        },
+                    },
+                }
             },
-        }
+        },
+        404: {
+            "description": "❌ Course Not Found - Invalid Course ID",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Course not found"},
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detail": {
+                                "type": "string",
+                                "description": "Error message explaining why course wasn't found",
+                            }
+                        },
+                    },
+                }
+            },
+        },
     },
+    summary="Get Detailed Course Information",
+    description="""
+    🎯 **Complete Course Intelligence Profile**<br>
+    Get comprehensive information about a specific course including professor details, grade distributions, and student insights.<br>
+    <br>
+    **Rich Course Data:**<br>
+    - Complete course description and learning objectives<br>
+    - Historical GPA averages and difficulty assessments<br>
+    - Current enrollment and section information<br>
+    - All professors teaching the course with ratings<br>
+    - Grade distribution breakdowns by professor<br>
+    - Student review tags and common feedback themes<br>
+    <br>
+    **Professor Insights:**<br>
+    - Individual professor ratings and review counts<br>
+    - Teaching style descriptions and approaches<br>
+    - Grade distribution patterns for each instructor<br>
+    - Most common student tags (Clear, Helpful, Challenging, etc.)<br>
+    <br>
+    **Academic Planning Features:**<br>
+    - Prerequisite course requirements<br>
+    - Related/similar course suggestions<br>
+    - Core curriculum and special attribute information<br>
+    - Section availability and enrollment trends<br>
+    <br>
+    **Perfect For:**<br>
+    - Students deciding between professors for the same course<br>
+    - Academic planning and prerequisite mapping<br>
+    - Understanding course difficulty and expectations<br>
+    - Comparing teaching styles and grading patterns<br>
+    <br>
+    **Course ID Format:**<br>
+    Use the course code format like: CSCE121, MATH151, ENGL104 (department + number, no spaces)<br>
+    """,
 )
 async def get_course_details(course_id: str, db: Session = Depends(get_db_session)):
     """
@@ -1943,7 +2080,7 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
     "/course/{course_id}/professors",
     responses={
         200: {
-            "description": "List of professors teaching the course",
+            "description": "👥 Course Faculty Roster - All Professors Teaching This Course",
             "content": {
                 "application/json": {
                     "example": [
@@ -1977,17 +2114,107 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
                             ],
                             "tag_frequencies": {"Clear": 15, "Helpful": 12, "Fair": 8},
                         }
-                    ]
+                    ],
+                    "schema": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Professor identifier",
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "description": "Professor name",
+                                },
+                                "overall_rating": {
+                                    "type": "number",
+                                    "description": "Average rating across all courses",
+                                },
+                                "total_reviews": {
+                                    "type": "integer",
+                                    "description": "Total reviews received",
+                                },
+                                "would_take_again_percent": {
+                                    "type": "number",
+                                    "description": "Student recommendation rate",
+                                },
+                                "courses": {
+                                    "type": "array",
+                                    "description": "All courses taught by professor",
+                                },
+                                "departments": {
+                                    "type": "array",
+                                    "description": "Department affiliations",
+                                },
+                                "recent_reviews": {
+                                    "type": "array",
+                                    "description": "Latest student reviews",
+                                },
+                                "tag_frequencies": {
+                                    "type": "object",
+                                    "description": "Common student feedback tags",
+                                },
+                            },
+                        },
+                    },
                 }
             },
         },
         404: {
-            "description": "Course not found",
+            "description": "❌ Course Not Found - Invalid Course ID",
             "content": {
-                "application/json": {"example": {"detail": "Course not found"}}
+                "application/json": {
+                    "example": {"detail": "Course not found"},
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detail": {"type": "string", "description": "Error message"}
+                        },
+                    },
+                }
             },
         },
     },
+    summary="Get All Professors for a Course",
+    description="""
+    👨‍🏫 **Course Faculty Directory & Comparison Tool**<br>
+    Get comprehensive information about all professors teaching a specific course, perfect for choosing the best instructor.<br>
+    <br>
+    **Faculty Comparison Features:**<br>
+    - Individual professor ratings and review counts<br>
+    - Student recommendation percentages (would take again)<br>
+    - Recent student reviews and feedback<br>
+    - Teaching style indicators through student tags<br>
+    - Complete course portfolios for each professor<br>
+    <br>
+    **Decision-Making Data:**<br>
+    - Overall professor ratings across all their courses<br>
+    - Course-specific performance metrics<br>
+    - Student success indicators and grade outcomes<br>
+    - Most common student feedback themes<br>
+    - Historical teaching effectiveness<br>
+    <br>
+    **Perfect For:**<br>
+    - Students choosing between sections of the same course<br>
+    - Comparing teaching styles and approaches<br>
+    - Understanding professor expectations and grading<br>
+    - Reading recent student experiences<br>
+    - Making informed enrollment decisions<br>
+    <br>
+    **Key Insights:**<br>
+    - Higher `would_take_again_percent` indicates student satisfaction<br>
+    - `tag_frequencies` reveal teaching strengths (Clear, Helpful, Fair)<br>
+    - Recent reviews provide current student perspectives<br>
+    - Overall ratings show teaching consistency across courses<br>
+    <br>
+    **Course Selection Strategy:**<br>
+    1. Compare overall ratings and review counts<br>
+    2. Read recent reviews for current insights<br>
+    3. Check recommendation percentages<br>
+    4. Look for teaching style matches in tags<br>
+    """,
 )
 async def get_course_professors(course_id: str, db: Session = Depends(get_db_session)):
     """
@@ -2220,7 +2447,7 @@ async def get_course_professors(course_id: str, db: Session = Depends(get_db_ses
     "/course/{course_id}/reviews/{professor_id}",
     responses={
         200: {
-            "description": "Reviews for a specific course and professor combination",
+            "description": "📋 Course-Professor Review Analysis - Targeted Student Feedback",
             "content": {
                 "application/json": {
                     "example": {
@@ -2269,25 +2496,190 @@ async def get_course_professors(course_id: str, db: Session = Depends(get_db_ses
                             },
                         ],
                         "pagination": {"limit": 50, "skip": 0, "hasMore": False},
-                    }
+                    },
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "courseCode": {
+                                "type": "string",
+                                "description": "Course code being reviewed",
+                            },
+                            "professorId": {
+                                "type": "string",
+                                "description": "Professor identifier",
+                            },
+                            "professorName": {
+                                "type": "string",
+                                "description": "Professor's full name",
+                            },
+                            "totalReviews": {
+                                "type": "integer",
+                                "description": "Total reviews for this course-professor combination",
+                            },
+                            "reviews": {
+                                "type": "array",
+                                "description": "Collection of student reviews",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string",
+                                            "description": "Review identifier",
+                                        },
+                                        "overallRating": {
+                                            "type": "number",
+                                            "description": "Overall rating (1-5)",
+                                        },
+                                        "clarityRating": {
+                                            "type": "number",
+                                            "description": "Teaching clarity rating",
+                                        },
+                                        "difficultyRating": {
+                                            "type": "number",
+                                            "description": "Course difficulty rating",
+                                        },
+                                        "helpfulnessRating": {
+                                            "type": "number",
+                                            "description": "Professor helpfulness rating",
+                                        },
+                                        "wouldTakeAgain": {
+                                            "type": "boolean",
+                                            "description": "Would recommend",
+                                        },
+                                        "attendanceMandatory": {
+                                            "type": "boolean",
+                                            "description": "Attendance required",
+                                        },
+                                        "isOnlineClass": {
+                                            "type": "boolean",
+                                            "description": "Online format",
+                                        },
+                                        "isForCredit": {
+                                            "type": "boolean",
+                                            "description": "Taken for credit",
+                                        },
+                                        "reviewText": {
+                                            "type": "string",
+                                            "description": "Detailed review text",
+                                        },
+                                        "grade": {
+                                            "type": "string",
+                                            "description": "Grade received",
+                                        },
+                                        "reviewDate": {
+                                            "type": "string",
+                                            "description": "Review date",
+                                        },
+                                        "textbookUse": {
+                                            "type": "string",
+                                            "description": "Textbook requirement",
+                                        },
+                                        "helpfulness": {
+                                            "type": "integer",
+                                            "description": "Helpful votes",
+                                        },
+                                        "totalVotes": {
+                                            "type": "integer",
+                                            "description": "Total votes",
+                                        },
+                                        "tags": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "Review tags",
+                                        },
+                                        "teacherNote": {
+                                            "type": "string",
+                                            "description": "Professor response",
+                                        },
+                                    },
+                                },
+                            },
+                            "pagination": {
+                                "type": "object",
+                                "description": "Pagination information",
+                                "properties": {
+                                    "limit": {
+                                        "type": "integer",
+                                        "description": "Results per page",
+                                    },
+                                    "skip": {
+                                        "type": "integer",
+                                        "description": "Results skipped",
+                                    },
+                                    "hasMore": {
+                                        "type": "boolean",
+                                        "description": "More results available",
+                                    },
+                                },
+                            },
+                        },
+                    },
                 }
             },
         },
         404: {
-            "description": "Course or professor not found",
+            "description": "❌ Course or Professor Not Found - Invalid Combination",
             "content": {
                 "application/json": {
-                    "example": {"detail": "Professor not found"},
+                    "examples": {
+                        "professor_not_found": {
+                            "summary": "Professor Not Found",
+                            "description": "The specified professor does not exist or doesn't teach this course",
+                            "value": {"detail": "Professor not found"},
+                        },
+                        "course_not_found": {
+                            "summary": "Course Not Found",
+                            "description": "The specified course does not exist",
+                            "value": {"detail": "Course not found"},
+                        },
+                    },
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detail": {
+                                "type": "string",
+                                "description": "Error message explaining what wasn't found",
+                            }
+                        },
+                    },
                 }
-            },
-        },
-        404: {
-            "description": "Course not found",
-            "content": {
-                "application/json": {"example": {"detail": "Course not found"}},
             },
         },
     },
+    summary="Get Course-Specific Professor Reviews",
+    description="""
+    🎯 **Targeted Course-Professor Review Analysis**<br>
+    Get detailed student reviews for a specific professor teaching a specific course - the most targeted feedback available.<br>
+    <br>
+    **Hyper-Focused Insights:**<br>
+    - Reviews specific to one professor teaching one course<br>
+    - Direct comparison of teaching effectiveness for that subject<br>
+    - Grade outcomes and academic success for that specific combination<br>
+    - Course-specific teaching approaches and methodologies<br>
+    - Targeted feedback on professor's handling of specific content<br>
+    <br>
+    **Perfect For:**<br>
+    - Students enrolled in a specific course section<br>
+    - Comparing how the same professor performs across different courses
+    - Understanding professor's expertise in specific subjects<br>
+    - Making section-specific enrollment decisions<br>
+    - Analyzing teaching effectiveness for particular content areas<br>
+    <br>
+    **Decision-Making Data:**<br>
+    - Recent student experiences in this exact course-professor combination<br>
+    - Grade distribution patterns for academic success prediction<br>
+    - Course-specific teaching style and approach insights<br>
+    - Workload and difficulty assessments for this particular pairing<br>
+    - Real student outcomes and satisfaction levels<br>
+    <br>
+    **Query Parameters:**<br>
+    - `limit`: Number of reviews per page (default: 50, max: 100)<br>
+    - `skip`: Pagination offset for browsing large review collections<br>
+    <br>
+    **Course & Professor ID Format:**<br>
+    - Course ID: Use format like CSCE121, MATH151, ENGL104<br>
+    - Professor ID: Use professor identifier from faculty endpoints<br>
+    """,
 )
 async def get_course_professor_reviews(
     course_id: str,
@@ -2485,7 +2877,7 @@ async def get_course_professor_reviews(
     "/courses/compare",
     responses={
         200: {
-            "description": "Course details for comparison",
+            "description": "📊 Course Comparison Analysis - Side-by-Side Academic Metrics",
             "content": {
                 "application/json": {
                     "example": [
@@ -2539,21 +2931,131 @@ async def get_course_professor_reviews(
                                 "MPE Required",
                             ],
                         },
-                    ]
+                    ],
+                    "schema": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Course identifier",
+                                },
+                                "code": {
+                                    "type": "string",
+                                    "description": "Course code",
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "description": "Course title",
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": "Course description",
+                                },
+                                "credits": {
+                                    "type": "integer",
+                                    "description": "Credit hours",
+                                },
+                                "avgGPA": {
+                                    "type": "number",
+                                    "description": "Average GPA",
+                                },
+                                "difficulty": {
+                                    "type": "string",
+                                    "description": "Difficulty level",
+                                },
+                                "rating": {
+                                    "type": "number",
+                                    "description": "Student rating",
+                                },
+                                "reviewCount": {
+                                    "type": "integer",
+                                    "description": "Number of reviews",
+                                },
+                                "enrollment": {
+                                    "type": "integer",
+                                    "description": "Enrollment numbers",
+                                },
+                                "sections": {
+                                    "type": "integer",
+                                    "description": "Number of sections",
+                                },
+                                "professors": {
+                                    "type": "array",
+                                    "description": "Teaching faculty",
+                                },
+                                "sectionAttributes": {
+                                    "type": "array",
+                                    "description": "Course attributes",
+                                },
+                            },
+                        },
+                    },
                 }
             },
-            400: {
-                "description": "Invalid course ID format",
-                "content": {
-                    "application/json": {
-                        "example": {
-                            "detail": "Invalid course ID format. Use format like CSCE120"
-                        }
-                    }
-                },
+        },
+        400: {
+            "description": "❌ Invalid Request - Course ID Format Error",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Invalid course ID format. Use format like CSCE120"
+                    },
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detail": {
+                                "type": "string",
+                                "description": "Error message explaining the issue",
+                            }
+                        },
+                    },
+                }
             },
-        }
+        },
     },
+    summary="Compare Multiple Courses Side-by-Side",
+    description="""
+    ⚖️ **Multi-Course Comparison Tool**<br>
+    Compare multiple courses side-by-side with detailed academic metrics and student feedback data.<br>
+    <br>
+    **Comparison Features:**<br>
+    - GPA averages and difficulty rankings<br>
+    - Student ratings and review counts<br>
+    - Enrollment numbers and section availability<br>
+    - Professor ratings and teaching quality<br>
+    - Core curriculum requirements<br>
+    - Credit hours and workload expectations<br>
+    <br>
+    **Perfect For:**<br>
+    - Students choosing between similar courses<br>
+    - Academic advisors helping with course selection<br>
+    - Curriculum planning and degree requirements<br>
+    - Workload balancing across semesters<br>
+    - Comparing prerequisites and course sequences<br>
+    <br>
+    **Request Format:**<br>
+    Send a JSON array of course IDs in the request body:<br>
+    ```
+    {
+        "course_ids": ["CSCE121", "MATH151", "ENGL104"]
+    }
+    ```
+    <br>
+    **Analysis Metrics:**<br>
+    - **GPA Averages**: Higher = typically easier grading<br>
+    - **Difficulty Ratings**: Student-reported challenge level<br>
+    - **Enrollment Numbers**: Indicates course popularity<br>
+    - **Professor Ratings**: Teaching quality indicators<br>
+    - **Section Attributes**: Special requirements or designations<br>
+    <br>
+    **Comparison Tips:**<br>
+    - Compare similar-level courses (all 100-level, 200-level, etc.)<br>
+    - Consider prerequisites when comparing difficulty<br>
+    - Look at enrollment trends for scheduling flexibility<br>
+    - Check professor availability and ratings<br>
+    """,
 )
 async def compare_courses(
     request: CourseCompareRequest, db: Session = Depends(get_db_session)
@@ -2828,42 +3330,41 @@ async def compare_courses(
     },
     summary="Browse University Faculty Directory",
     description="""
-    🎓 **Faculty Discovery & Rating System**
-    
-    Search and explore Texas A&M faculty with comprehensive ratings, reviews, and teaching statistics.
-    
-    **Advanced Search & Filtering:**
-    - Search by professor name (partial matches supported)
-    - Filter by department affiliation
-    - Set minimum rating thresholds
-    - Pagination for browsing large faculty lists
-    
-    **Professor Insights:**
-    - Overall student ratings (1-5 scale)
-    - Total review counts for credibility assessment
-    - Department affiliations and cross-listings
-    - Complete list of courses taught
-    - Historical teaching data
-    
-    **Perfect For:**
-    - Students researching professors before enrollment
-    - Academic advisors recommending faculty
-    - Department chairs analyzing teaching effectiveness
-    - Course planning and section selection
-    
-    **Query Parameters:**
-    - `search`: Find professors by name (case-insensitive, partial matches)
-    - `department`: Filter by department code (e.g., "CSCE", "MATH")
-    - `min_rating`: Show only professors with rating >= threshold
-    - `limit`: Results per page (default: 30, max: 100)
-    - `skip`: Pagination offset
-    
-    **Rating Guide:**
-    - 4.5+: Exceptional professors, highly recommended
-    - 4.0-4.4: Very good professors with strong reviews
-    - 3.5-3.9: Good professors, generally positive feedback
-    - 3.0-3.4: Average professors, mixed reviews
-    - Below 3.0: Consider carefully, check recent reviews
+    🎓 **Faculty Discovery & Rating System**<br>
+    Search and explore Texas A&M faculty with comprehensive ratings, reviews, and teaching statistics.<br>
+    <br>
+    **Advanced Search & Filtering:**<br>
+    - Search by professor name (partial matches supported)<br>
+    - Filter by department affiliation<br>
+    - Set minimum rating thresholds<br>
+    - Pagination for browsing large faculty lists<br>
+    <br>
+    **Professor Insights:**<br>
+    - Overall student ratings (1-5 scale)<br>
+    - Total review counts for credibility assessment<br>
+    - Department affiliations and cross-listings<br>
+    - Complete list of courses taught<br>
+    - Historical teaching data<br>
+    <br>
+    **Perfect For:**<br>
+    - Students researching professors before enrollment<br>
+    - Academic advisors recommending faculty<br>
+    - Department chairs analyzing teaching effectiveness<br>
+    - Course planning and section selection<br>
+    <br>
+    **Query Parameters:**<br>
+    - `search`: Find professors by name (case-insensitive, partial matches)<br>
+    - `department`: Filter by department code (e.g., "CSCE", "MATH")<br>
+    - `min_rating`: Show only professors with rating >= threshold<br>
+    - `limit`: Results per page (default: 30, max: 100)<br>
+    - `skip`: Pagination offset<br>
+    <br>
+    **Rating Guide:**<br>
+    - 4.5+: Exceptional professors, highly recommended<br>
+    - 4.0-4.4: Very good professors with strong reviews<br>
+    - 3.5-3.9: Good professors, generally positive feedback<br>
+    - 3.0-3.4: Average professors, mixed reviews<br>
+    - Below 3.0: Consider carefully, check recent reviews<br>
     """,
 )
 async def get_professors(
@@ -2977,7 +3478,7 @@ async def get_professors(
     "/professor/{professor_id}",
     responses={
         200: {
-            "description": "Professor profile with comprehensive details",
+            "description": "👨‍🏫 Complete Professor Profile - Ratings, Reviews & Teaching Analytics",
             "content": {
                 "application/json": {
                     "example": {
@@ -3035,17 +3536,163 @@ async def get_professors(
                             "Fair": 8,
                             "Engaging": 6,
                         },
-                    }
+                    },
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "Unique professor identifier",
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Professor's full name with title",
+                            },
+                            "overall_rating": {
+                                "type": "number",
+                                "description": "Average rating across all courses (1-5 scale)",
+                            },
+                            "total_reviews": {
+                                "type": "integer",
+                                "description": "Total number of student reviews",
+                            },
+                            "would_take_again_percent": {
+                                "type": "number",
+                                "description": "Percentage of students who would take again",
+                            },
+                            "courses": {
+                                "type": "array",
+                                "description": "Courses taught by the professor",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "course_id": {
+                                            "type": "string",
+                                            "description": "Course identifier",
+                                        },
+                                        "course_name": {
+                                            "type": "string",
+                                            "description": "Full course name",
+                                        },
+                                        "reviews_count": {
+                                            "type": "integer",
+                                            "description": "Reviews for this course",
+                                        },
+                                        "avg_rating": {
+                                            "type": "number",
+                                            "description": "Average rating for this course",
+                                        },
+                                    },
+                                },
+                            },
+                            "departments": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Department affiliations",
+                            },
+                            "recent_reviews": {
+                                "type": "array",
+                                "description": "Most recent student reviews",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string",
+                                            "description": "Review identifier",
+                                        },
+                                        "course_code": {
+                                            "type": "string",
+                                            "description": "Course code",
+                                        },
+                                        "course_name": {
+                                            "type": "string",
+                                            "description": "Course name",
+                                        },
+                                        "review_text": {
+                                            "type": "string",
+                                            "description": "Student review text",
+                                        },
+                                        "overall_rating": {
+                                            "type": "number",
+                                            "description": "Review rating",
+                                        },
+                                        "would_take_again": {
+                                            "type": "boolean",
+                                            "description": "Would take again",
+                                        },
+                                        "grade": {
+                                            "type": "string",
+                                            "description": "Grade received",
+                                        },
+                                        "review_date": {
+                                            "type": "string",
+                                            "description": "Review date",
+                                        },
+                                    },
+                                },
+                            },
+                            "tag_frequencies": {
+                                "type": "object",
+                                "description": "Most common student tags with frequencies",
+                            },
+                        },
+                    },
                 }
             },
         },
         404: {
-            "description": "Professor not found",
+            "description": "❌ Professor Not Found - Invalid Professor ID",
             "content": {
-                "application/json": {"example": {"detail": "Professor not found"}},
+                "application/json": {
+                    "example": {"detail": "Professor not found"},
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detail": {"type": "string", "description": "Error message"}
+                        },
+                    },
+                }
             },
         },
     },
+    summary="Get Complete Professor Profile",
+    description="""
+    🎓 **Comprehensive Faculty Profile & Teaching Analytics**<br>
+    Get detailed information about a specific professor including ratings, reviews, courses taught, and student feedback patterns.<br>
+    <br>
+    **Professor Statistics:**<br>
+    - Overall rating across all courses taught<br>
+    - Total review count for credibility assessment<br>
+    - Would-take-again percentage for recommendation strength<br>
+    - Department affiliations and teaching areas<br>
+    <br>
+    **Course Teaching Portfolio:**<br>
+    - Complete list of courses taught<br>
+    - Individual course ratings and review counts<br>
+    - Performance comparison across different courses<br>
+    - Teaching effectiveness by subject area<br>
+    <br>
+    **Student Feedback Analysis:**<br>
+    - Recent student reviews with full text<br>
+    - Grade distributions and academic outcomes<br>
+    - Most common student tags (Clear, Helpful, Fair, etc.)<br>
+    - Sentiment analysis of teaching effectiveness<br>
+    <br>
+    **Perfect For:**<br>
+    - Students researching professors before enrollment<br>
+    - Comparing teaching effectiveness across courses<br>
+    - Understanding professor's teaching style and approach<br>
+    - Academic planning and course selection decisions<br>
+    <br>
+    **Key Insights:**<br>
+    - High `would_take_again_percent` indicates strong student satisfaction<br>
+    - `tag_frequencies` reveal teaching strengths and areas of focus<br>
+    - Recent reviews provide current student perspectives<br>
+    - Course-specific ratings help identify professor's best subjects<br>
+    <br>
+    **Professor ID Format:**<br>
+    Use the professor identifier from the professors list endpoint.<br>
+    """,
 )
 async def get_professor_profile(
     professor_id: str, db: Session = Depends(get_db_session)
@@ -3287,7 +3934,7 @@ async def get_professor_profile(
     "/professor/{professor_id}/reviews",
     responses={
         200: {
-            "description": "List of reviews for a professor",
+            "description": "📝 Professor Reviews Collection - Detailed Student Feedback & Ratings",
             "content": {
                 "application/json": {
                     "example": [
@@ -3335,17 +3982,160 @@ async def get_professor_profile(
                             "tags": ["Engaging", "Challenging"],
                             "teacher_note": None,
                         },
-                    ]
+                    ],
+                    "schema": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Review identifier",
+                                },
+                                "course_code": {
+                                    "type": "string",
+                                    "description": "Course code reviewed",
+                                },
+                                "course_name": {
+                                    "type": "string",
+                                    "description": "Full course name",
+                                },
+                                "department_name": {
+                                    "type": "string",
+                                    "description": "Department name",
+                                },
+                                "review_text": {
+                                    "type": "string",
+                                    "description": "Student's written review",
+                                },
+                                "overall_rating": {
+                                    "type": "number",
+                                    "description": "Overall professor rating (1-5)",
+                                },
+                                "clarity_rating": {
+                                    "type": "number",
+                                    "description": "Teaching clarity rating",
+                                },
+                                "difficulty_rating": {
+                                    "type": "number",
+                                    "description": "Course difficulty rating",
+                                },
+                                "helpful_rating": {
+                                    "type": "number",
+                                    "description": "Helpfulness rating",
+                                },
+                                "would_take_again": {
+                                    "type": "boolean",
+                                    "description": "Would take again",
+                                },
+                                "attendance_mandatory": {
+                                    "type": "boolean",
+                                    "description": "Attendance required",
+                                },
+                                "is_online_class": {
+                                    "type": "boolean",
+                                    "description": "Online class format",
+                                },
+                                "is_for_credit": {
+                                    "type": "boolean",
+                                    "description": "Taken for credit",
+                                },
+                                "grade": {
+                                    "type": "string",
+                                    "description": "Grade received",
+                                },
+                                "review_date": {
+                                    "type": "string",
+                                    "description": "Review submission date",
+                                },
+                                "textbook_use": {
+                                    "type": "string",
+                                    "description": "Textbook requirement level",
+                                },
+                                "thumbs_up": {
+                                    "type": "integer",
+                                    "description": "Helpful votes",
+                                },
+                                "thumbs_down": {
+                                    "type": "integer",
+                                    "description": "Not helpful votes",
+                                },
+                                "tags": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Review tags",
+                                },
+                                "teacher_note": {
+                                    "type": "string",
+                                    "description": "Professor response",
+                                },
+                            },
+                        },
+                    },
                 }
             },
         },
         404: {
-            "description": "Professor not found",
+            "description": "❌ Professor Not Found - Invalid Professor ID",
             "content": {
-                "application/json": {"example": {"detail": "Professor not found"}},
+                "application/json": {
+                    "example": {"detail": "Professor not found"},
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detail": {"type": "string", "description": "Error message"}
+                        },
+                    },
+                }
             },
         },
     },
+    summary="Browse All Professor Reviews",
+    description="""
+    💬 **Comprehensive Student Review Analysis System**<br>
+    Access detailed student reviews and ratings for a professor with advanced filtering and sorting capabilities.<br>
+    <br>
+    **Review Analysis Features:**<br>
+    - Complete student review text and ratings<br>
+    - Multi-dimensional rating system (clarity, difficulty, helpfulness)<br>
+    - Grade outcomes and academic success indicators<br>
+    - Course-specific feedback and experiences<br>
+    - Community validation through thumbs up/down votes<br>
+    <br>
+    **Advanced Filtering Options:**<br>
+    - **Course Filter**: See reviews for specific courses only<br>
+    - **Rating Range**: Filter by minimum/maximum ratings<br>
+    - **Sort Options**: Order by date, rating, or helpfulness<br>
+    - **Pagination**: Browse through large review collections<br>
+    <br>
+    **Rich Review Data:**<br>
+    - Detailed written feedback from students<br>
+    - Multi-aspect ratings (overall, clarity, difficulty, helpfulness)<br>
+    - Academic context (grade received, credit status)<br>
+    - Class format indicators (online, attendance requirements)<br>
+    - Textbook and resource requirements<br>
+    - Student recommendation indicators<br>
+    <br>
+    **Query Parameters:**<br>
+    - `course_filter`: Show reviews for specific course (e.g., "CSCE121")<br>
+    - `sort_by`: Sort reviews by "date", "rating", or "helpful"<br>
+    - `min_rating`/`max_rating`: Filter by rating range (1.0-5.0)<br>
+    - `limit`: Reviews per page (default: 50, max: 100)<br>
+    - `skip`: Pagination offset<br>
+    <br>
+    **Perfect For:**<br>
+    - Understanding professor's teaching effectiveness<br>
+    - Reading student experiences and outcomes<br>
+    - Comparing performance across different courses<br>
+    - Identifying teaching strengths and areas for improvement<br>
+    - Making informed enrollment decisions<br>
+    <br>
+    **Review Credibility Indicators:**<br>
+    - Recent reviews reflect current teaching style<br>
+    - Higher thumbs_up counts indicate helpful reviews<br>
+    - Grade outcomes provide academic success context<br>
+    - Multiple reviews per course show consistency<br>
+    """,
 )
 async def get_professor_reviews(
     professor_id: str,
@@ -3533,7 +4323,7 @@ async def get_professor_reviews(
     "/professors/search",
     responses={
         200: {
-            "description": "List of professors matching search criteria",
+            "description": "🔍 Advanced Professor Search - Multi-Criteria Faculty Discovery",
             "content": {
                 "application/json": {
                     "example": {
@@ -3568,11 +4358,110 @@ async def get_professor_reviews(
                             "min_rating": 3.5,
                             "courses_taught": None,
                         },
-                    }
+                    },
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "professors": {
+                                "type": "array",
+                                "description": "List of professors matching search criteria",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string",
+                                            "description": "Professor identifier",
+                                        },
+                                        "name": {
+                                            "type": "string",
+                                            "description": "Professor name",
+                                        },
+                                        "overall_rating": {
+                                            "type": "number",
+                                            "description": "Average rating",
+                                        },
+                                        "total_reviews": {
+                                            "type": "integer",
+                                            "description": "Total reviews",
+                                        },
+                                        "would_take_again_percent": {
+                                            "type": "number",
+                                            "description": "Recommendation percentage",
+                                        },
+                                        "departments": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "Department affiliations",
+                                        },
+                                        "courses_taught": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "Course codes taught",
+                                        },
+                                        "total_courses": {
+                                            "type": "integer",
+                                            "description": "Number of courses taught",
+                                        },
+                                        "course_titles": {
+                                            "type": "string",
+                                            "description": "Comma-separated course titles",
+                                        },
+                                    },
+                                },
+                            },
+                            "total_found": {
+                                "type": "integer",
+                                "description": "Total professors matching criteria",
+                            },
+                            "search_criteria": {
+                                "type": "object",
+                                "description": "Applied search filters",
+                            },
+                        },
+                    },
                 }
             },
         }
     },
+    summary="Advanced Professor Search Engine",
+    description="""
+    🎯 **Intelligent Faculty Discovery System**<br>
+    Powerful search engine for finding professors based on multiple criteria including name, department, ratings, and courses taught.<br>
+    <br>
+    **Advanced Search Capabilities:**<br>
+    - **Name Search**: Find professors by partial name matches<br>
+    - **Department Filtering**: Filter by specific academic departments<br>
+    - **Rating Thresholds**: Set minimum rating requirements<br>
+    - **Course Filtering**: Find professors teaching specific courses<br>
+    - **Pagination**: Browse through large result sets efficiently<br>
+    <br>
+    **Rich Result Data:**<br>
+    - Complete professor profiles with ratings and reviews<br>
+    - Department affiliations and teaching areas<br>
+    - Course portfolios with titles and codes<br>
+    - Recommendation percentages from students<br>
+    - Total course load and teaching experience<br>
+    <br>
+    **Query Parameters:**<br>
+    - `name`: Search professor names (partial matches, case-insensitive)<br>
+    - `department`: Filter by department code (e.g., "CSCE", "MATH")<br>
+    - `min_rating`: Minimum overall rating threshold (1.0-5.0)<br>
+    - `courses_taught`: Find professors teaching specific courses<br>
+    - `limit`: Results per page (default: 30, max: 100)<br>
+    - `skip`: Pagination offset<br>
+    <br>
+    **Search Examples:**<br>
+    - Find highly-rated CS professors: `?department=CSCE&min_rating=4.0`<br>
+    - Search by name: `?name=johnson`<br>
+    - Find MATH 151 instructors: `?courses_taught=MATH151`<br>
+    - Combine criteria: `?department=ENGR&min_rating=3.5&name=smith`<br>
+    <br>
+    **Perfect For:**<br>
+    - Students researching professors before registration<br>
+    - Finding highly-rated faculty in specific departments<br>
+    - Discovering professors teaching required courses<br>
+    - Academic advisor recommendations<br>
+    """,
 )
 async def search_professors(
     name: Optional[str] = None,
@@ -3727,7 +4616,7 @@ async def search_professors(
     "/professors/compare",
     responses={
         200: {
-            "description": "List of detailed professor profiles",
+            "description": "👥 Professor Comparison Dashboard - Side-by-Side Faculty Analysis",
             "content": {
                 "application/json": {
                     "example": [
@@ -3806,40 +4695,217 @@ async def search_professors(
                                 "Clear": 6,
                             },
                         },
-                    ]
+                    ],
+                    "schema": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Professor identifier",
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "description": "Professor full name",
+                                },
+                                "overall_rating": {
+                                    "type": "number",
+                                    "description": "Average rating across all courses",
+                                },
+                                "total_reviews": {
+                                    "type": "integer",
+                                    "description": "Total student reviews",
+                                },
+                                "would_take_again_percent": {
+                                    "type": "number",
+                                    "description": "Student recommendation rate",
+                                },
+                                "courses": {
+                                    "type": "array",
+                                    "description": "Teaching portfolio with performance metrics",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "course_id": {
+                                                "type": "string",
+                                                "description": "Course identifier",
+                                            },
+                                            "course_name": {
+                                                "type": "string",
+                                                "description": "Course title",
+                                            },
+                                            "reviews_count": {
+                                                "type": "integer",
+                                                "description": "Reviews for this course",
+                                            },
+                                            "avg_rating": {
+                                                "type": "number",
+                                                "description": "Average rating for this course",
+                                            },
+                                        },
+                                    },
+                                },
+                                "departments": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Department affiliations",
+                                },
+                                "recent_reviews": {
+                                    "type": "array",
+                                    "description": "Latest student feedback",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string",
+                                                "description": "Review ID",
+                                            },
+                                            "course_code": {
+                                                "type": "string",
+                                                "description": "Course code",
+                                            },
+                                            "course_name": {
+                                                "type": "string",
+                                                "description": "Course name",
+                                            },
+                                            "review_text": {
+                                                "type": "string",
+                                                "description": "Review content",
+                                            },
+                                            "overall_rating": {
+                                                "type": "number",
+                                                "description": "Review rating",
+                                            },
+                                            "would_take_again": {
+                                                "type": "boolean",
+                                                "description": "Recommendation",
+                                            },
+                                            "grade": {
+                                                "type": "string",
+                                                "description": "Grade received",
+                                            },
+                                            "review_date": {
+                                                "type": "string",
+                                                "description": "Review date",
+                                            },
+                                        },
+                                    },
+                                },
+                                "tag_frequencies": {
+                                    "type": "object",
+                                    "description": "Common student feedback themes",
+                                },
+                            },
+                        },
+                    },
                 }
             },
         },
         400: {
-            "description": "Bad Request - Invalid input",
+            "description": "❌ Bad Request - Invalid Professor Comparison Input",
             "content": {
                 "application/json": {
                     "examples": {
                         "no_ids": {
-                            "summary": "No professor IDs provided",
+                            "summary": "❌ No Professors Specified",
+                            "description": "Request must include at least one professor ID",
                             "value": {"detail": "No professor IDs provided"},
                         },
                         "too_many_ids": {
-                            "summary": "Too many professor IDs",
+                            "summary": "❌ Too Many Professors",
+                            "description": "Maximum of 10 professors can be compared at once",
                             "value": {
                                 "detail": "Too many professor IDs. Maximum 10 allowed."
                             },
                         },
-                    }
+                    },
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detail": {
+                                "type": "string",
+                                "description": "Error description and resolution guidance",
+                            }
+                        },
+                    },
                 }
             },
         },
         404: {
-            "description": "Not Found - No valid professors found",
+            "description": "❌ Professors Not Found - Invalid Professor IDs",
             "content": {
                 "application/json": {
                     "example": {
                         "detail": "No valid professors found for the provided IDs"
-                    }
+                    },
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "detail": {
+                                "type": "string",
+                                "description": "Error message explaining missing professors",
+                            }
+                        },
+                    },
                 }
             },
         },
     },
+    summary="Compare Multiple Professors Side-by-Side",
+    description="""
+    ⚖️ **Multi-Professor Comparison Analytics Dashboard**<br>
+    Compare up to 10 professors side-by-side with comprehensive teaching metrics, student feedback, and performance analysis.<br>
+    <br>
+    **Comparative Analysis Features:**<br>
+    - **Overall Rating Comparison**: Direct rating comparisons across all professors<br>
+    - **Review Volume Analysis**: Total review counts for credibility assessment<br>
+    - **Recommendation Rates**: Student "would take again" percentages<br>
+    - **Course Portfolio Analysis**: Teaching effectiveness across different courses<br>
+    - **Department Cross-Analysis**: Compare professors from different departments<br>
+    - **Teaching Style Indicators**: Student tag frequency comparisons<br>
+    <br>
+    **Rich Comparison Data:**<br>
+    - Complete professor profiles with all key metrics<br>
+    - Individual course performance breakdowns<br>
+    - Recent student review highlights<br>
+    - Teaching strength indicators through tag analysis<br>
+    - Department and course diversity metrics<br>
+    <br>
+    **Perfect For:**<br>
+    - Students choosing between multiple professor options<br>
+    - Academic advisors making faculty recommendations<br>
+    - Department chairs analyzing teaching effectiveness<br>
+    - Course coordinators selecting optimal instructors<br>
+    - Students comparing professors across departments<br>
+    <br>
+    **Query Format:**<br>
+    ```
+    GET /professors/compare?ids=prof123,prof456,prof789
+    ```
+    <br>
+    **Comparison Strategies:**<br>
+    - **Rating Analysis**: Higher overall ratings indicate consistent student satisfaction<br>
+    - **Review Volume**: More reviews provide higher confidence in ratings<br>
+    - **Recommendation Rates**: "Would take again" percentages show satisfaction<br>
+    - **Course Diversity**: More courses taught shows versatility<br>
+    - **Tag Patterns**: Consistent positive tags indicate teaching strengths<br>
+    <br>
+    **Query Parameters:**<br>
+    - `ids`: Comma-separated professor IDs (required, 1-10 professors)<br>
+    - Example: `prof123,prof456,prof789`<br>
+    <br>
+    **Limitations:**<br>
+    - Maximum 10 professors per comparison<br>
+    - All professor IDs must be valid<br>
+    - Results ordered by the sequence provided in the query<br>
+    <br>
+    **Pro Tips:**<br>
+    - Compare professors teaching similar courses for best insights<br>
+    - Look for consistent patterns in student feedback tags<br>
+    - Consider both rating and review volume for balanced assessment
+    - Recent reviews are most relevant for current teaching style
+    """,
 )
 async def compare_professors(
     ids: str = Query(
