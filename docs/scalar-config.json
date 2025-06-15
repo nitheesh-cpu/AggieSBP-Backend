@@ -6,7 +6,7 @@
     "searchHotKey": "k",
     "darkMode": true,
     "subdomain": "localhost",
-    "favicon": "/aggiermp/api/static/favicon.ico",
+    "favicon": "/src/aggiermp/api/static/favicon.ico",
     "customCss": "",
     "hiddenClients": [],
     "defaultHttpClient": {

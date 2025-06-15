@@ -3,7 +3,7 @@ FastAPI application for AggieRMP API
 Provides endpoints for departments, courses, and course details with aggregated data
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
@@ -13,12 +13,45 @@ from pydantic import BaseModel
 import json
 import time
 import logging
+import ast
 from pathlib import Path
 
 from ..database.base import (
     get_session, DepartmentDB, CourseDB, ProfessorDB, 
     ReviewDB, GpaDataDB, check_database_health, monitor_db_performance
 )
+
+def parse_tag_frequencies(tag_frequencies_str, professor_id=None):
+    """
+    Helper function to parse tag_frequencies from various formats
+    """
+    if not tag_frequencies_str:
+        return {}
+    
+    try:
+        if isinstance(tag_frequencies_str, str):
+            # Try to parse as JSON first
+            try:
+                return json.loads(tag_frequencies_str)
+            except json.JSONDecodeError:
+                # If JSON parsing fails, try to fix common issues (single quotes to double quotes)
+                fixed_json = tag_frequencies_str.replace("'", '"')
+                try:
+                    return json.loads(fixed_json)
+                except json.JSONDecodeError:
+                    # If still fails, try using ast.literal_eval for Python dict format
+                    try:
+                        return ast.literal_eval(tag_frequencies_str)
+                    except (ValueError, SyntaxError):
+                        if professor_id:
+                            logger.warning(f"Failed to parse tag_frequencies for professor {professor_id}: {tag_frequencies_str[:100]}")
+                        return {}
+        else:
+            return tag_frequencies_str
+    except Exception as e:
+        if professor_id:
+            logger.warning(f"Failed to parse tag_frequencies for professor {professor_id}: {str(e)}")
+        return {}
 
 # Pydantic models for request and response bodies
 class CourseCompareRequest(BaseModel):
@@ -170,14 +203,73 @@ def get_db_session():
     finally:
         session.close()
 
-@app.get("/")
+@app.get(
+    "/",
+    responses={
+        200: {
+            "description": "API welcome message",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "Welcome to AggieRMP API"
+                    }
+                }
+            }
+        }
+    }
+)
 async def root():
-    """Root endpoint"""
+    """
+    Root endpoint - API welcome message
+    
+    Returns a simple welcome message to confirm the API is running.
+    """
     return {"message": "Welcome to AggieRMP API"}
 
-@app.get("/health")
+@app.get(
+    "/health",
+    responses={
+        200: {
+            "description": "Health check successful",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "healthy": {
+                            "summary": "Healthy system",
+                            "value": {
+                                "status": "healthy",
+                                "database": {
+                                    "status": "connected",
+                                    "pool_size": 20,
+                                    "active_connections": 3,
+                                    "checked_out": 1,
+                                    "checked_in": 19,
+                                    "invalidated": 0,
+                                    "overflow": 0
+                                },
+                                "api_version": "1.0.0"
+                            }
+                        },
+                        "unhealthy": {
+                            "summary": "Unhealthy system",
+                            "value": {
+                                "status": "unhealthy",
+                                "error": "Database connection failed",
+                                "api_version": "1.0.0"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+)
 async def health_check():
-    """Health check endpoint with database status"""
+    """
+    Health check endpoint with database status
+    
+    Returns the current health status of the API and database connection.
+    """
     try:
         db_health = check_database_health()
         return {
@@ -195,7 +287,32 @@ async def health_check():
 
 @app.get("/db-status")
 async def database_status():
-    """Detailed database connection pool status"""
+    """
+    Detailed database connection pool status
+    
+    Returns comprehensive information about the database connection pool
+    and current database performance metrics.
+    
+    **Example Response:**
+    ```json
+    {
+        "status": "connected",
+        "pool_size": 20,
+        "active_connections": 5,
+        "checked_out": 2,
+        "checked_in": 18,
+        "invalidated": 0,
+        "overflow": 0
+    }
+    ```
+    
+    **Error Response:**
+    ```json
+    {
+        "detail": "Database status check failed: Connection timeout"
+    }
+    ```
+    """
     try:
         return check_database_health()
     except Exception as e:
@@ -257,7 +374,66 @@ async def scalar_html():
 async def get_departments_info(db: Session = Depends(get_db_session)):
     """
     Get aggregate statistics about all departments
-    Returns total counts of departments, courses, professors, and average ratings
+    
+    Returns comprehensive overview statistics including total counts of departments,
+    courses, professors, and average ratings across the university.
+    
+    **Example Response:**
+    ```json
+    {
+        "summary": {
+            "total_departments": 156,
+            "total_courses": 8742,
+            "total_professors": 2341,
+            "overall_avg_gpa": 3.12,
+            "overall_avg_rating": 3.8,
+            "stem_departments": 24,
+            "liberal_arts_departments": 132
+        },
+        "top_departments_by_courses": [
+            {
+                "code": "ENGR",
+                "name": "Engineering",
+                "courses": 420,
+                "professors": 89,
+                "avgGpa": 2.95,
+                "rating": 3.6
+            },
+            {
+                "code": "CSCE",
+                "name": "Computer Science",
+                "courses": 312,
+                "professors": 67,
+                "avgGpa": 3.21,
+                "rating": 4.1
+            }
+        ],
+        "recent_semesters": [
+            {
+                "year": "2024",
+                "semester": "FALL",
+                "departments": 145,
+                "courses": 4521,
+                "professors": 1876,
+                "enrollment": 67890
+            },
+            {
+                "year": "2024",
+                "semester": "SPRING",
+                "departments": 142,
+                "courses": 4398,
+                "professors": 1823,
+                "enrollment": 65432
+            }
+        ],
+        "data_sources": {
+            "gpa_data": "anex.us",
+            "reviews": "Rate My Professor",
+            "course_catalog": "Texas A&M University",
+            "last_updated": "Fall 2024"
+        }
+    }
+    ```
     """
     try:
         # Get aggregate statistics across all departments
@@ -413,7 +589,56 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
         logger.error(f"Error in departments_info: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/departments")
+@app.get(
+    "/departments",
+    responses={
+        200: {
+            "description": "List of departments with statistics",
+            "content": {
+                "application/json": {
+                    "example": [
+                        {
+                            "id": "csce",
+                            "code": "CSCE",
+                            "name": "Computer Science & Engineering",
+                            "category": "stem",
+                            "courses": 89,
+                            "professors": 42,
+                            "avgGpa": 3.21,
+                            "rating": 4.1,
+                            "topCourses": ["CSCE 121", "CSCE 221", "CSCE 314"],
+                            "description": "Department of Computer Science and Engineering"
+                        },
+                        {
+                            "id": "math",
+                            "code": "MATH",
+                            "name": "Mathematics",
+                            "category": "stem",
+                            "courses": 156,
+                            "professors": 78,
+                            "avgGpa": 2.95,
+                            "rating": 3.7,
+                            "topCourses": ["MATH 151", "MATH 152", "MATH 251"],
+                            "description": "Department of Mathematics"
+                        },
+                        {
+                            "id": "engl",
+                            "code": "ENGL",
+                            "name": "English",
+                            "category": "liberal-arts",
+                            "courses": 94,
+                            "professors": 56,
+                            "avgGpa": 3.45,
+                            "rating": 3.9,
+                            "topCourses": ["ENGL 104", "ENGL 210", "ENGL 301"],
+                            "description": "Department of English"
+                        }
+                    ]
+                }
+            }
+        }
+    }
+)
 async def get_departments(
     search: Optional[str] = None,
     limit: int = 30,
@@ -422,8 +647,20 @@ async def get_departments(
 ):
     """
     Get all departments with aggregated statistics from anex data
-    Returns department info with course counts, professor counts, avg GPA from last semester
-    Supports search by department code or name, pagination with limit/skip
+    
+    Returns department information with course counts, professor counts, and average GPA
+    from the most recent semester. Supports search and pagination.
+    
+    **Query Parameters:**
+    - `search`: Filter by department code or name (optional)
+    - `limit`: Number of results to return (default: 30)
+    - `skip`: Number of results to skip for pagination (default: 0)
+    
+    **Search Example:**
+    `/departments?search=computer` returns departments matching "computer" in name or code.
+    
+    **Pagination Example:**
+    `/departments?limit=10&skip=20` returns 10 departments starting from the 21st result.
     """
     try:
         # Build WHERE clause for search functionality
@@ -531,8 +768,63 @@ async def get_courses(
     db: Session = Depends(get_db_session)
 ):
     """
-    Get courses with anex data from last 4 semesters and last semester
-    Supports search by course code or name, pagination with limit/skip
+    Get courses with comprehensive data from recent semesters
+    
+    Returns course information including GPA data from the last 4 semesters,
+    enrollment data from the most recent semester, and professor ratings.
+    
+    **Query Parameters:**
+    - `department`: Filter by department code (e.g., "CSCE", "MATH")
+    - `search`: Search by course code or title
+    - `limit`: Number of results to return (default: 30)
+    - `skip`: Number of results to skip for pagination (default: 0)
+    
+    **Example Response:**
+    ```json
+    [
+        {
+            "id": "CSCE121",
+            "code": "CSCE 121",
+            "name": "Introduction to Program Design and Concepts",
+            "department": {
+                "id": "CSCE",
+                "name": "Computer Science & Engineering"
+            },
+            "credits": 4,
+            "avgGPA": 3.21,
+            "difficulty": "Moderate",
+            "enrollment": 890,
+            "sections": 12,
+            "rating": 4.1,
+            "description": "Fundamental concepts of computer programming with an object-oriented approach.",
+            "tags": ["Undergraduate"],
+            "sectionAttributes": ["Core Curriculum - CTR", "Writing Intensive - W"]
+        },
+        {
+            "id": "MATH151",
+            "code": "MATH 151",
+            "name": "Engineering Mathematics I",
+            "department": {
+                "id": "MATH",
+                "name": "Mathematics"
+            },
+            "credits": 4,
+            "avgGPA": 2.95,
+            "difficulty": "Challenging",
+            "enrollment": 1245,
+            "sections": 18,
+            "rating": 3.7,
+            "description": "Differential and integral calculus, applications to engineering problems.",
+            "tags": ["Undergraduate"],
+            "sectionAttributes": ["Core Curriculum - MATH", "MPE Required"]
+        }
+    ]
+    ```
+    
+    **Filter Examples:**
+    - `/courses?department=CSCE` - All Computer Science courses
+    - `/courses?search=calculus` - Courses with "calculus" in title
+    - `/courses?department=MATH&limit=10` - First 10 Math courses
     """
     try:
         # Base query with aggregated data from last 4 semesters and last semester
@@ -702,8 +994,81 @@ async def get_courses(
 @app.get("/course/{course_id}")
 async def get_course_details(course_id: str, db: Session = Depends(get_db_session)):
     """
-    Get detailed course information with anex data
-    Course ID format: CSCE120, MATH151, etc.
+    Get detailed course information with comprehensive data
+    
+    Returns complete course details including professors, grade distributions,
+    prerequisites, related courses, and section attributes.
+    
+    **Path Parameters:**
+    - `course_id`: Course identifier (format: CSCE121, MATH151, etc.)
+    
+    **Example Response:**
+    ```json
+    {
+        "code": "CSCE 121",
+        "name": "Introduction to Program Design and Concepts",
+        "description": "Fundamental concepts of computer programming with an object-oriented approach using C++. Problem solving methods, software development principles.",
+        "credits": 4,
+        "avgGPA": 3.21,
+        "difficulty": "Moderate",
+        "enrollment": 890,
+        "sections": 12,
+        "professors": [
+            {
+                "id": "prof123",
+                "name": "Dr. Sarah Johnson",
+                "rating": 4.2,
+                "reviews": 45,
+                "description": "Emphasizes hands-on programming and real-world applications",
+                "tag_frequencies": {
+                    "Clear": 15,
+                    "Helpful": 12,
+                    "Fair": 8
+                },
+                "gradeDistribution": {
+                    "A": 35,
+                    "B": 28,
+                    "C": 22,
+                    "D": 10,
+                    "F": 5
+                }
+            },
+            {
+                "id": "prof456",
+                "name": "Dr. Michael Chen",
+                "rating": 3.8,
+                "reviews": 32,
+                "description": "Focuses on theoretical understanding and problem-solving",
+                "tag_frequencies": {
+                    "Challenging": 10,
+                    "Fair": 8,
+                    "Clear": 6
+                }
+            }
+        ],
+        "prerequisites": ["MATH 151", "CSCE 110"],
+        "relatedCourses": [
+            {
+                "code": "CSCE 221",
+                "name": "Data Structures and Algorithms",
+                "similarity": 95
+            },
+            {
+                "code": "CSCE 314",
+                "name": "Programming Languages",
+                "similarity": 78
+            }
+        ],
+        "sectionAttributes": ["Core Curriculum - CTR", "Writing Intensive - W"]
+    }
+    ```
+    
+    **Error Response (404):**
+    ```json
+    {
+        "detail": "Course not found"
+    }
+    ```
     """
     try:
         # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
@@ -840,13 +1205,16 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
         
         professors = []
         for prof in professors_result:
+            # Parse tag frequencies
+            tag_frequencies = parse_tag_frequencies(prof.tag_frequencies, prof.professor_id)
+            
             professor_data = {
                 "id": prof.professor_id,
                 "name": prof.name,
                 "rating": float(prof.rating) if prof.rating else 3.0,
                 "reviews": int(prof.reviews) if prof.reviews else 0,
-                "teachingStyle": prof.tag_frequencies or "Interactive lectures, practical examples",
-                "description": prof.description or "Course instruction"
+                "description": prof.description or "Course instruction",
+                "tag_frequencies": tag_frequencies
             }
             
             # Only include gradeDistribution if we have actual data
@@ -949,6 +1317,233 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
+@app.get(
+    "/course/{course_id}/professors",
+    responses={
+        200: {
+            "description": "List of professors teaching the course",
+            "content": {
+                "application/json": {
+                    "example": [
+                        {
+                            "id": "prof123",
+                            "name": "Dr. Sarah Johnson",
+                            "overall_rating": 4.2,
+                            "total_reviews": 45,
+                            "would_take_again_percent": 78.5,
+                            "courses": [
+                                {
+                                    "course_id": "CSCE121",
+                                    "course_name": "Introduction to Programming",
+                                    "reviews_count": 15,
+                                    "avg_rating": 4.1
+                                }
+                            ],
+                            "departments": ["CSCE"],
+                            "recent_reviews": [
+                                {
+                                    "id": "review456",
+                                    "course_code": "CSCE121",
+                                    "course_name": "Introduction to Programming",
+                                    "review_text": "Great professor! Explains concepts clearly and is very helpful during office hours.",
+                                    "overall_rating": 4.5,
+                                    "would_take_again": True,
+                                    "grade": "A",
+                                    "review_date": "2024-05-15T00:00:00",
+                                    "tags": ["Helpful", "Clear", "Fair Grader"]
+                                }
+                            ],
+                            "tag_frequencies": {
+                                "Clear": 15,
+                                "Helpful": 12,
+                                "Fair": 8
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        404: {
+            "description": "Course not found",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Course not found"}
+                }
+            }
+        }
+    }
+)
+async def get_course_professors(course_id: str, db: Session = Depends(get_db_session)):
+    """
+    Get all professors who teach a specific course
+    
+    Returns detailed professor information for all instructors who teach
+    the specified course, including their ratings, reviews, and tag frequencies.
+    
+    **Path Parameters:**
+    - `course_id`: Course identifier (format: CSCE121, MATH151, etc.)
+    """
+    try:
+        # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
+        import re
+        match = re.match(r'^([A-Z]+)(\d+)$', course_id.upper())
+        if not match:
+            raise HTTPException(status_code=400, detail="Invalid course ID format. Use format like CSCE120")
+        
+        dept, course_num = match.groups()
+        
+        # Get professors who teach this course
+        professors_query = text("""
+            SELECT DISTINCT
+                ps.professor_id,
+                p.first_name || ' ' || p.last_name as name,
+                ps.total_reviews,
+                ps.avg_difficulty,
+                ps.tag_frequencies
+            FROM professor_summaries ps
+            JOIN professors p ON ps.professor_id = p.id
+            WHERE ps.course_code = :course_code
+            ORDER BY ps.total_reviews DESC
+        """)
+        
+        professors_result = db.execute(professors_query, {"course_code": course_id.upper()})
+        professor_profiles = []
+        
+        for prof_row in professors_result:
+            professor_id = prof_row.professor_id
+            
+            # Get would_take_again percentage
+            would_take_again_query = text("""
+                SELECT 
+                    ROUND(
+                        AVG(CASE WHEN would_take_again = 1 THEN 100.0 ELSE 0.0 END)::numeric, 
+                        1
+                    ) as would_take_again_percent
+                FROM reviews 
+                WHERE professor_id = :professor_id 
+                  AND would_take_again IS NOT NULL
+            """)
+            
+            would_take_again_result = db.execute(would_take_again_query, {"professor_id": professor_id}).fetchone()
+            
+            # Get all courses for this professor
+            all_courses_query = text("""
+                SELECT 
+                    ps.course_code as course_id,
+                    COALESCE(c.course_title, 'Course Title') as course_name,
+                    ps.total_reviews as reviews_count,
+                    ROUND((6.0 - ps.avg_difficulty)::numeric, 1) as avg_rating
+                FROM professor_summaries ps
+                LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                WHERE ps.professor_id = :professor_id
+                ORDER BY ps.total_reviews DESC
+            """)
+            
+            all_courses_result = db.execute(all_courses_query, {"professor_id": professor_id})
+            courses = []
+            for course in all_courses_result:
+                courses.append({
+                    "course_id": course.course_id,
+                    "course_name": course.course_name,
+                    "reviews_count": int(course.reviews_count) if course.reviews_count else 0,
+                    "avg_rating": float(course.avg_rating) if course.avg_rating else 3.0
+                })
+            
+            # Get departments
+            departments_query = text("""
+                SELECT DISTINCT SUBSTRING(ps.course_code FROM '^[A-Z]+') as dept
+                FROM professor_summaries ps
+                WHERE ps.professor_id = :professor_id
+            """)
+            
+            departments_result = db.execute(departments_query, {"professor_id": professor_id})
+            departments = [row.dept for row in departments_result]
+            
+            # Get recent reviews for this course-professor combination
+            recent_reviews_query = text("""
+                SELECT 
+                    r.id,
+                    r.review_text,
+                    r.clarity_rating,
+                    r.difficulty_rating,
+                    r.helpful_rating,
+                    r.would_take_again,
+                    r.grade,
+                    r.review_date,
+                    r.course_code,
+                    r.rating_tags,
+                    COALESCE(c.course_title, 'Course') as course_name
+                FROM reviews r
+                LEFT JOIN courses c ON c.subject_short_name || c.course_number = r.course_code
+                WHERE r.professor_id = :professor_id
+                  AND r.course_code = :course_code
+                  AND r.review_text IS NOT NULL
+                  AND r.review_text != ''
+                ORDER BY r.review_date DESC
+                LIMIT 3
+            """)
+            
+            recent_reviews_result = db.execute(recent_reviews_query, {
+                "professor_id": professor_id,
+                "course_code": course_id.upper()
+            })
+            
+            recent_reviews = []
+            for review in recent_reviews_result:
+                overall_rating = round((
+                    (review.clarity_rating or 0) + 
+                    (6 - (review.difficulty_rating or 3)) + 
+                    (review.helpful_rating or 0)
+                ) / 3, 1) if any([review.clarity_rating, review.difficulty_rating, review.helpful_rating]) else 0
+                
+                # Parse rating tags
+                tags = []
+                if review.rating_tags:
+                    try:
+                        tags = json.loads(review.rating_tags) if isinstance(review.rating_tags, str) else review.rating_tags
+                    except:
+                        tags = []
+                
+                recent_reviews.append({
+                    "id": review.id,
+                    "course_code": review.course_code,
+                    "course_name": review.course_name,
+                    "review_text": review.review_text,
+                    "overall_rating": overall_rating,
+                    "would_take_again": review.would_take_again == 1 if review.would_take_again is not None else None,
+                    "grade": review.grade,
+                    "review_date": review.review_date.isoformat() if review.review_date else None,
+                    "tags": tags
+                })
+            
+            # Parse tag frequencies
+            tag_frequencies = parse_tag_frequencies(prof_row.tag_frequencies, professor_id)
+            
+            professor_profile = {
+                "id": professor_id,
+                "name": prof_row.name,
+                "overall_rating": round(6.0 - prof_row.avg_difficulty, 1) if prof_row.avg_difficulty else 3.0,
+                "total_reviews": int(prof_row.total_reviews) if prof_row.total_reviews else 0,
+                "would_take_again_percent": float(would_take_again_result.would_take_again_percent) if would_take_again_result and would_take_again_result.would_take_again_percent else 0.0,
+                "courses": courses,
+                "departments": departments,
+                "recent_reviews": recent_reviews,
+                "tag_frequencies": tag_frequencies
+            }
+            
+            professor_profiles.append(professor_profile)
+        
+        if not professor_profiles:
+            raise HTTPException(status_code=404, detail="No professors found for this course")
+        
+        return professor_profiles
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_course_professors: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
 @app.get("/course/{course_id}/reviews/{professor_id}")
 async def get_course_professor_reviews(
     course_id: str, 
@@ -958,7 +1553,85 @@ async def get_course_professor_reviews(
     db: Session = Depends(get_db_session)
 ):
     """
-    Get all reviews for a specific course and professor
+    Get all reviews for a specific course and professor combination
+    
+    Returns detailed student reviews for a specific professor teaching a specific course,
+    including ratings, review text, grades, and helpfulness scores.
+    
+    **Path Parameters:**
+    - `course_id`: Course identifier (e.g., CSCE121)
+    - `professor_id`: Professor identifier
+    
+    **Query Parameters:**
+    - `limit`: Number of reviews to return (default: 50)
+    - `skip`: Number of reviews to skip for pagination (default: 0)
+    
+    **Example Response:**
+    ```json
+    {
+        "courseCode": "CSCE121",
+        "professorId": "prof123",
+        "professorName": "Dr. Sarah Johnson",
+        "totalReviews": 45,
+        "reviews": [
+            {
+                "id": "review456",
+                "overallRating": 4.3,
+                "clarityRating": 4.5,
+                "difficultyRating": 3.0,
+                "helpfulnessRating": 4.2,
+                "wouldTakeAgain": true,
+                "attendanceMandatory": false,
+                "isOnlineClass": false,
+                "isForCredit": true,
+                "reviewText": "Great professor! Explains concepts clearly and is very helpful during office hours. Assignments are challenging but fair.",
+                "grade": "A",
+                "reviewDate": "May 2024",
+                "textbookUse": "Required",
+                "helpfulness": 12,
+                "totalVotes": 15,
+                "tags": ["Helpful", "Clear", "Fair Grader"],
+                "teacherNote": null
+            },
+            {
+                "id": "review789",
+                "overallRating": 3.7,
+                "clarityRating": 4.0,
+                "difficultyRating": 4.0,
+                "helpfulnessRating": 3.5,
+                "wouldTakeAgain": false,
+                "attendanceMandatory": true,
+                "isOnlineClass": false,
+                "isForCredit": true,
+                "reviewText": "Course content is good but the pace is quite fast. Make sure to keep up with assignments.",
+                "grade": "B",
+                "reviewDate": "April 2024",
+                "textbookUse": "Recommended",
+                "helpfulness": 8,
+                "totalVotes": 10,
+                "tags": ["Fast Paced", "Attendance Required"],
+                "teacherNote": null
+            }
+        ],
+        "pagination": {
+            "limit": 50,
+            "skip": 0,
+            "hasMore": false
+        }
+    }
+    ```
+    
+    **Error Responses:**
+    ```json
+    {
+        "detail": "Course not found"
+    }
+    ```
+    ```json
+    {
+        "detail": "Professor not found"
+    }
+    ```
     """
     try:
         # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
@@ -1100,7 +1773,78 @@ async def get_course_professor_reviews(
 async def compare_courses(request: CourseCompareRequest, db: Session = Depends(get_db_session)):
     """
     Bulk fetch course details for comparison
-    Returns detailed course objects for multiple courses
+    
+    Returns detailed course information for multiple courses at once,
+    enabling efficient comparison of courses across various metrics.
+    
+    **Request Body:**
+    ```json
+    {
+        "course_ids": ["CSCE121", "MATH151", "ENGL104"]
+    }
+    ```
+    
+    **Example Response:**
+    ```json
+    [
+        {
+            "id": "CSCE121",
+            "code": "CSCE 121",
+            "name": "Introduction to Program Design and Concepts",
+            "description": "Fundamental concepts of computer programming with an object-oriented approach using C++.",
+            "credits": 4,
+            "avgGPA": 3.21,
+            "difficulty": "Moderate",
+            "rating": 4.1,
+            "reviewCount": 45,
+            "enrollment": 890,
+            "sections": 12,
+            "professors": [
+                {
+                    "id": "prof123",
+                    "name": "Dr. Sarah Johnson",
+                    "rating": 4.2,
+                    "reviews": 45
+                }
+            ],
+            "sectionAttributes": ["Core Curriculum - CTR", "Writing Intensive - W"]
+        },
+        {
+            "id": "MATH151",
+            "code": "MATH 151",
+            "name": "Engineering Mathematics I",
+            "description": "Differential and integral calculus, applications to engineering problems.",
+            "credits": 4,
+            "avgGPA": 2.95,
+            "difficulty": "Challenging",
+            "rating": 3.7,
+            "reviewCount": 32,
+            "enrollment": 1245,
+            "sections": 18,
+            "professors": [
+                {
+                    "id": "prof456",
+                    "name": "Dr. Michael Chen",
+                    "rating": 3.8,
+                    "reviews": 32
+                }
+            ],
+            "sectionAttributes": ["Core Curriculum - MATH", "MPE Required"]
+        }
+    ]
+    ```
+    
+    **Error Response (400):**
+    ```json
+    {
+        "detail": "Invalid course ID format. Use format like CSCE120"
+    }
+    ```
+    
+    **Use Cases:**
+    - Compare difficulty and GPA across multiple courses
+    - Analyze professor ratings for different courses
+    - Build course comparison interfaces for registration
     """
     try:
         course_details = []
@@ -1267,7 +2011,52 @@ async def get_professors(
 ):
     """
     List all professors with basic statistics
-    Supports search by name, filtering by department and minimum rating, pagination
+    
+    Returns a list of professors with their ratings, review counts, departments,
+    and courses taught. Supports filtering and search functionality.
+    
+    **Query Parameters:**
+    - `search`: Search by professor name (optional)
+    - `department`: Filter by department code (e.g., "CSCE", "MATH")
+    - `min_rating`: Minimum rating filter (1.0-5.0)
+    - `limit`: Number of results to return (default: 30)
+    - `skip`: Number of results to skip for pagination (default: 0)
+    
+    **Example Response:**
+    ```json
+    [
+        {
+            "id": "prof123",
+            "name": "Dr. Sarah Johnson",
+            "overall_rating": 4.2,
+            "total_reviews": 45,
+            "departments": ["CSCE"],
+            "courses_taught": ["CSCE121", "CSCE221", "CSCE314"]
+        },
+        {
+            "id": "prof456",
+            "name": "Dr. Michael Chen",
+            "overall_rating": 3.8,
+            "total_reviews": 32,
+            "departments": ["MATH"],
+            "courses_taught": ["MATH151", "MATH152", "MATH251"]
+        },
+        {
+            "id": "prof789",
+            "name": "Dr. Emily Rodriguez",
+            "overall_rating": 4.5,
+            "total_reviews": 67,
+            "departments": ["ENGL"],
+            "courses_taught": ["ENGL104", "ENGL210", "ENGL301"]
+        }
+    ]
+    ```
+    
+    **Filter Examples:**
+    - `/professors?search=johnson` - Search for professors named Johnson
+    - `/professors?department=CSCE` - All Computer Science professors
+    - `/professors?min_rating=4.0` - Professors with rating 4.0 or higher
+    - `/professors?department=MATH&min_rating=3.5&limit=10` - Top 10 Math professors with rating ≥ 3.5
     """
     try:
         # Build WHERE conditions
@@ -1279,11 +2068,11 @@ async def get_professors(
             params["search"] = f"%{search}%"
         
         if department:
-            where_conditions.append("d.dept_code = :department")
+            where_conditions.append("EXISTS (SELECT 1 FROM professor_summaries ps WHERE ps.professor_id = p.id AND SUBSTRING(ps.course_code FROM '^[A-Z]+') = :department)")
             params["department"] = department.upper()
         
         if min_rating:
-            where_conditions.append("p.overall_rating >= :min_rating")
+            where_conditions.append("COALESCE(pst.overall_rating, 3.0) >= :min_rating")
             params["min_rating"] = min_rating
         
         where_clause = ""
@@ -1302,15 +2091,8 @@ async def get_professors(
                     ARRAY_AGG(DISTINCT ps.course_code) as courses_taught
                 FROM professor_summaries ps
                 GROUP BY ps.professor_id
-            ),
-            professor_departments AS (
-                SELECT 
-                    ps.professor_id,
-                    SUBSTRING(ps.course_code FROM '^[A-Z]+') as dept_code
-                FROM professor_summaries ps
-                GROUP BY ps.professor_id, SUBSTRING(ps.course_code FROM '^[A-Z]+')
             )
-            SELECT 
+            SELECT DISTINCT
                 p.id,
                 p.first_name || ' ' || p.last_name as name,
                 p.first_name,
@@ -1321,7 +2103,6 @@ async def get_professors(
                 COALESCE(pst.courses_taught, ARRAY[]::text[]) as courses_taught
             FROM professors p
             LEFT JOIN professor_stats pst ON p.id = pst.professor_id
-            LEFT JOIN professor_departments d ON p.id = d.professor_id
             {where_clause}
             ORDER BY COALESCE(pst.total_reviews, 0) DESC, p.last_name, p.first_name
             LIMIT :limit OFFSET :skip
@@ -1349,8 +2130,80 @@ async def get_professors(
 @app.get("/professor/{professor_id}")
 async def get_professor_profile(professor_id: str, db: Session = Depends(get_db_session)):
     """
-    Professor profile with courses and summary stats
-    Returns detailed professor information including courses taught and recent reviews
+    Professor profile with comprehensive details
+    
+    Returns complete professor information including overall statistics,
+    courses taught with individual ratings, and recent student reviews.
+    
+    **Path Parameters:**
+    - `professor_id`: Professor identifier
+    
+    **Example Response:**
+    ```json
+    {
+        "id": "prof123",
+        "name": "Dr. Sarah Johnson",
+        "overall_rating": 4.2,
+        "total_reviews": 45,
+        "would_take_again_percent": 78.5,
+        "courses": [
+            {
+                "course_id": "CSCE121",
+                "course_name": "Introduction to Program Design and Concepts",
+                "reviews_count": 15,
+                "avg_rating": 4.1
+            },
+            {
+                "course_id": "CSCE221",
+                "course_name": "Data Structures and Algorithms",
+                "reviews_count": 20,
+                "avg_rating": 4.3
+            },
+            {
+                "course_id": "CSCE314",
+                "course_name": "Programming Languages",
+                "reviews_count": 10,
+                "avg_rating": 4.0
+            }
+        ],
+        "departments": ["CSCE"],
+        "recent_reviews": [
+            {
+                "id": "review456",
+                "course_code": "CSCE121",
+                "course_name": "Introduction to Program Design and Concepts",
+                "review_text": "Great professor! Explains concepts clearly and is very helpful during office hours.",
+                "overall_rating": 4.5,
+                "would_take_again": true,
+                "grade": "A",
+                "review_date": "2024-05-15T00:00:00"
+            },
+            {
+                "id": "review789",
+                "course_code": "CSCE221",
+                "course_name": "Data Structures and Algorithms",
+                "review_text": "Challenging course but Dr. Johnson makes it engaging. Good use of examples.",
+                "overall_rating": 4.0,
+                "would_take_again": true,
+                "grade": "B+",
+                "review_date": "2024-04-22T00:00:00"
+            }
+        ],
+        "tag_frequencies": {
+            "Clear": 15,
+            "Helpful": 12,
+            "Fair": 8,
+            "Engaging": 6
+        }
+    }
+    ```
+    
+    **Error Response (404):**
+    ```json
+    {
+        "detail": "Professor not found"
+    }
+    ```
     """
     try:
         # Get professor basic info
@@ -1405,7 +2258,7 @@ async def get_professor_profile(professor_id: str, db: Session = Depends(get_db_
         
         would_take_again_result = db.execute(would_take_again_query, {"professor_id": professor_id}).fetchone()
         
-        # Get courses taught by professor
+        # Get courses taught by professor and overall tag frequencies
         courses_query = text("""
             SELECT 
                 ps.course_code as course_id,
@@ -1429,6 +2282,23 @@ async def get_professor_profile(professor_id: str, db: Session = Depends(get_db_
                 "avg_rating": float(course.avg_rating) if course.avg_rating else 3.0
             })
         
+        # Get tag frequencies for this professor (should be the same across all courses for a professor)
+        tag_frequencies_query = text("""
+            SELECT ps.tag_frequencies
+            FROM professor_summaries ps
+            WHERE ps.professor_id = :professor_id
+              AND ps.tag_frequencies IS NOT NULL
+              AND ps.tag_frequencies != ''
+              AND ps.tag_frequencies != 'null'
+            LIMIT 1
+        """)
+        
+        tag_freq_result = db.execute(tag_frequencies_query, {"professor_id": professor_id}).fetchone()
+        overall_tag_frequencies = {}
+        
+        if tag_freq_result and tag_freq_result.tag_frequencies:
+            overall_tag_frequencies = parse_tag_frequencies(tag_freq_result.tag_frequencies, professor_id)
+        
         # Get recent reviews (last 5)
         recent_reviews_query = text("""
             SELECT 
@@ -1441,6 +2311,7 @@ async def get_professor_profile(professor_id: str, db: Session = Depends(get_db_
                 r.grade,
                 r.review_date,
                 r.course_code,
+                r.rating_tags,
                 COALESCE(c.course_title, 'Course') as course_name
             FROM reviews r
             LEFT JOIN courses c ON c.subject_short_name || c.course_number = r.course_code
@@ -1462,6 +2333,14 @@ async def get_professor_profile(professor_id: str, db: Session = Depends(get_db_
                 (review.helpful_rating or 0)
             ) / 3, 1) if any([review.clarity_rating, review.difficulty_rating, review.helpful_rating]) else 0
             
+            # Parse rating tags
+            tags = []
+            if review.rating_tags:
+                try:
+                    tags = json.loads(review.rating_tags) if isinstance(review.rating_tags, str) else review.rating_tags
+                except:
+                    tags = []
+            
             recent_reviews.append({
                 "id": review.id,
                 "course_code": review.course_code,
@@ -1470,7 +2349,8 @@ async def get_professor_profile(professor_id: str, db: Session = Depends(get_db_
                 "overall_rating": overall_rating,
                 "would_take_again": review.would_take_again == 1 if review.would_take_again is not None else None,
                 "grade": review.grade,
-                "review_date": review.review_date.isoformat() if review.review_date else None
+                "review_date": review.review_date.isoformat() if review.review_date else None,
+                "tags": tags
             })
         
         # Build professor profile
@@ -1482,7 +2362,8 @@ async def get_professor_profile(professor_id: str, db: Session = Depends(get_db_
             "would_take_again_percent": float(would_take_again_result.would_take_again_percent) if would_take_again_result and would_take_again_result.would_take_again_percent else 0.0,
             "courses": courses,
             "departments": list(stats_result.departments) if stats_result and stats_result.departments and stats_result.departments[0] else [],
-            "recent_reviews": recent_reviews
+            "recent_reviews": recent_reviews,
+            "tag_frequencies": overall_tag_frequencies
         }
         
         return professor_profile
@@ -1506,7 +2387,82 @@ async def get_professor_reviews(
 ):
     """
     All reviews for professor across all courses
-    Supports filtering by course, rating range, sorting, and pagination
+    
+    Returns comprehensive list of student reviews for a professor,
+    with advanced filtering and sorting options.
+    
+    **Path Parameters:**
+    - `professor_id`: Professor identifier
+    
+    **Query Parameters:**
+    - `course_filter`: Filter by specific course code (optional)
+    - `limit`: Number of reviews to return (default: 50)
+    - `skip`: Number of reviews to skip for pagination (default: 0)
+    - `sort_by`: Sort order - "date", "rating", or "course" (default: "date")
+    - `min_rating`: Minimum rating filter (1.0-5.0)
+    - `max_rating`: Maximum rating filter (1.0-5.0)
+    
+    **Example Response:**
+    ```json
+    [
+        {
+            "id": "review456",
+            "course_code": "CSCE121",
+            "course_name": "Introduction to Program Design and Concepts",
+            "department_name": "Computer Science & Engineering",
+            "review_text": "Great professor! Explains concepts clearly and is very helpful during office hours.",
+            "overall_rating": 4.3,
+            "clarity_rating": 4.5,
+            "difficulty_rating": 3.0,
+            "helpful_rating": 4.2,
+            "would_take_again": true,
+            "attendance_mandatory": false,
+            "is_online_class": false,
+            "is_for_credit": true,
+            "grade": "A",
+            "review_date": "2024-05-15T00:00:00",
+            "textbook_use": "Required",
+            "thumbs_up": 12,
+            "thumbs_down": 3,
+            "tags": ["Helpful", "Clear", "Fair Grader"],
+            "teacher_note": null
+        },
+        {
+            "id": "review789",
+            "course_code": "CSCE221",
+            "course_name": "Data Structures and Algorithms",
+            "department_name": "Computer Science & Engineering",
+            "review_text": "Challenging course but Dr. Johnson makes it engaging. Good use of examples.",
+            "overall_rating": 4.0,
+            "clarity_rating": 4.0,
+            "difficulty_rating": 4.0,
+            "helpful_rating": 3.8,
+            "would_take_again": true,
+            "attendance_mandatory": true,
+            "is_online_class": false,
+            "is_for_credit": true,
+            "grade": "B+",
+            "review_date": "2024-04-22T00:00:00",
+            "textbook_use": "Recommended",
+            "thumbs_up": 8,
+            "thumbs_down": 1,
+            "tags": ["Engaging", "Challenging"],
+            "teacher_note": null
+        }
+    ]
+    ```
+    
+    **Filter Examples:**
+    - `/professor/prof123/reviews?course_filter=CSCE121` - Reviews for specific course
+    - `/professor/prof123/reviews?min_rating=4.0` - Reviews with rating ≥ 4.0
+    - `/professor/prof123/reviews?sort_by=rating&limit=10` - Top 10 highest-rated reviews
+    
+    **Error Response (404):**
+    ```json
+    {
+        "detail": "Professor not found"
+    }
+    ```
     """
     try:
         # Verify professor exists
@@ -1645,7 +2601,74 @@ async def search_professors(
 ):
     """
     Advanced professor search with multiple criteria
-    Supports search by name, department, minimum rating, and specific courses taught
+    
+    Enables sophisticated search across professors using multiple filters
+    including name, department, rating, and specific courses taught.
+    
+    **Query Parameters:**
+    - `name`: Search by professor name (partial match)
+    - `department`: Filter by department code (e.g., "CSCE", "MATH")
+    - `min_rating`: Minimum rating filter (1.0-5.0)
+    - `courses_taught`: Filter by specific course code
+    - `limit`: Number of results to return (default: 30)
+    - `skip`: Number of results to skip for pagination (default: 0)
+    
+    **Example Response:**
+    ```json
+    {
+        "professors": [
+            {
+                "id": "prof123",
+                "name": "Dr. Sarah Johnson",
+                "overall_rating": 4.2,
+                "total_reviews": 45,
+                "would_take_again_percent": 78.5,
+                "departments": ["CSCE"],
+                "courses_taught": ["CSCE121", "CSCE221", "CSCE314"],
+                "total_courses": 3,
+                "course_titles": "Introduction to Program Design and Concepts, Data Structures and Algorithms, Programming Languages"
+            },
+            {
+                "id": "prof456",
+                "name": "Dr. Michael Chen",
+                "overall_rating": 3.8,
+                "total_reviews": 32,
+                "would_take_again_percent": 65.0,
+                "departments": ["MATH"],
+                "courses_taught": ["MATH151", "MATH152"],
+                "total_courses": 2,
+                "course_titles": "Engineering Mathematics I, Engineering Mathematics II"
+            }
+        ],
+        "total_found": 2,
+        "search_criteria": {
+            "name": "johnson",
+            "department": null,
+            "min_rating": 3.5,
+            "courses_taught": null
+        }
+    }
+    ```
+    
+    **Search Examples:**
+    - `/professors/search?name=johnson` - Search for professors named Johnson
+    - `/professors/search?department=CSCE&min_rating=4.0` - Top-rated CS professors
+    - `/professors/search?courses_taught=MATH151` - Professors who teach Calculus I
+    - `/professors/search?name=smith&department=ENGR&min_rating=3.8` - Combined criteria search
+    
+    **Empty Result Response:**
+    ```json
+    {
+        "professors": [],
+        "total_found": 0,
+        "search_criteria": {
+            "name": "nonexistent",
+            "department": null,
+            "min_rating": null,
+            "courses_taught": null
+        }
+    }
+    ```
     """
     try:
         # Build WHERE conditions
@@ -1754,15 +2777,152 @@ async def search_professors(
         logger.error(f"Error in search_professors: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/professors/compare")
+@app.get(
+    "/professors/compare",
+    responses={
+        200: {
+            "description": "List of detailed professor profiles",
+            "content": {
+                "application/json": {
+                    "example": [
+                        {
+                            "id": "prof123",
+                            "name": "Dr. Sarah Johnson",
+                            "overall_rating": 4.2,
+                            "total_reviews": 45,
+                            "would_take_again_percent": 78.5,
+                            "courses": [
+                                {
+                                    "course_id": "CSCE121",
+                                    "course_name": "Introduction to Programming",
+                                    "reviews_count": 15,
+                                    "avg_rating": 4.1
+                                },
+                                {
+                                    "course_id": "CSCE221",
+                                    "course_name": "Data Structures",
+                                    "reviews_count": 20,
+                                    "avg_rating": 4.3
+                                }
+                            ],
+                            "departments": ["CSCE"],
+                            "recent_reviews": [
+                                {
+                                    "id": "review456",
+                                    "course_code": "CSCE121",
+                                    "course_name": "Introduction to Programming",
+                                    "review_text": "Great professor! Explains concepts clearly and is very helpful during office hours.",
+                                    "overall_rating": 4.5,
+                                    "would_take_again": True,
+                                    "grade": "A",
+                                    "review_date": "2024-05-15T00:00:00"
+                                }
+                            ],
+                            "tag_frequencies": {
+                                "Clear": 15,
+                                "Helpful": 12,
+                                "Fair": 8
+                            }
+                        },
+                        {
+                            "id": "prof456",
+                            "name": "Dr. Michael Chen",
+                            "overall_rating": 3.8,
+                            "total_reviews": 32,
+                            "would_take_again_percent": 65.0,
+                            "courses": [
+                                {
+                                    "course_id": "MATH151",
+                                    "course_name": "Engineering Mathematics I",
+                                    "reviews_count": 18,
+                                    "avg_rating": 3.7
+                                },
+                                {
+                                    "course_id": "MATH152",
+                                    "course_name": "Engineering Mathematics II",
+                                    "reviews_count": 14,
+                                    "avg_rating": 3.9
+                                }
+                            ],
+                            "departments": ["MATH"],
+                            "recent_reviews": [
+                                {
+                                    "id": "review789",
+                                    "course_code": "MATH151",
+                                    "course_name": "Engineering Mathematics I", 
+                                    "review_text": "Challenging but fair. Homework helps prepare for exams.",
+                                    "overall_rating": 4.0,
+                                    "would_take_again": True,
+                                    "grade": "B+",
+                                    "review_date": "2024-04-22T00:00:00",
+                                    "tags": ["Challenging", "Fair", "Helpful"]
+                                }
+                            ],
+                            "tag_frequencies": {
+                                "Challenging": 10,
+                                "Fair": 8,
+                                "Clear": 6
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        400: {
+            "description": "Bad Request - Invalid input",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "no_ids": {
+                            "summary": "No professor IDs provided",
+                            "value": {"detail": "No professor IDs provided"}
+                        },
+                        "too_many_ids": {
+                            "summary": "Too many professor IDs",
+                            "value": {"detail": "Too many professor IDs. Maximum 10 allowed."}
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Not Found - No valid professors found",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "No valid professors found for the provided IDs"}
+                }
+            }
+        }
+    }
+)
 async def compare_professors(
-    ids: str,
+    ids: str = Query(
+        ...,
+        description="Comma-separated list of professor IDs (max 10)",
+        example="prof123,prof456,prof789"
+    ),
     db: Session = Depends(get_db_session)
 ):
     """
     Compare multiple professors by their IDs
-    Takes comma-separated professor IDs and returns detailed professor profiles
-    Returns the same data structure as /professor/{id} endpoint but for multiple professors
+    
+    This endpoint allows you to fetch detailed information for multiple professors
+    at once, enabling efficient comparison of professors across various metrics.
+    
+    **Features:**
+    - Returns the same detailed structure as the individual professor endpoint
+    - Supports up to 10 professors per request
+    - Gracefully handles invalid professor IDs by skipping them
+    - Includes professor ratings, courses taught, recent reviews, and statistics
+    
+    **Use Cases:**
+    - Compare professors before course registration
+    - Analyze teaching effectiveness across multiple instructors
+    - Build professor comparison interfaces
+    
+    **Example Usage:**
+    - `/professors/compare?ids=prof123,prof456`
+    - `/professors/compare?ids=smith_j1,johnson_m2,davis_l3`
     """
     try:
         # Parse comma-separated professor IDs
@@ -1856,6 +3016,21 @@ async def compare_professors(
                         "avg_rating": float(course.avg_rating) if course.avg_rating else 3.0
                     })
                 
+                # Get tag frequencies for this professor
+                tag_frequencies_query = text("""
+                    SELECT ps.tag_frequencies
+                    FROM professor_summaries ps
+                    WHERE ps.professor_id = :professor_id
+                      AND ps.tag_frequencies IS NOT NULL
+                    LIMIT 1
+                """)
+                
+                tag_freq_result = db.execute(tag_frequencies_query, {"professor_id": professor_id}).fetchone()
+                overall_tag_frequencies = {}
+                
+                if tag_freq_result and tag_freq_result.tag_frequencies:
+                    overall_tag_frequencies = parse_tag_frequencies(tag_freq_result.tag_frequencies, professor_id)
+                
                 # Get recent reviews (last 5)
                 recent_reviews_query = text("""
                     SELECT 
@@ -1868,6 +3043,7 @@ async def compare_professors(
                         r.grade,
                         r.review_date,
                         r.course_code,
+                        r.rating_tags,
                         COALESCE(c.course_title, 'Course') as course_name
                     FROM reviews r
                     LEFT JOIN courses c ON c.subject_short_name || c.course_number = r.course_code
@@ -1889,6 +3065,14 @@ async def compare_professors(
                         (review.helpful_rating or 0)
                     ) / 3, 1) if any([review.clarity_rating, review.difficulty_rating, review.helpful_rating]) else 0
                     
+                    # Parse rating tags
+                    tags = []
+                    if review.rating_tags:
+                        try:
+                            tags = json.loads(review.rating_tags) if isinstance(review.rating_tags, str) else review.rating_tags
+                        except:
+                            tags = []
+                    
                     recent_reviews.append({
                         "id": review.id,
                         "course_code": review.course_code,
@@ -1897,7 +3081,8 @@ async def compare_professors(
                         "overall_rating": overall_rating,
                         "would_take_again": review.would_take_again == 1 if review.would_take_again is not None else None,
                         "grade": review.grade,
-                        "review_date": review.review_date.isoformat() if review.review_date else None
+                        "review_date": review.review_date.isoformat() if review.review_date else None,
+                        "tags": tags
                     })
                 
                 # Build professor profile
@@ -1909,7 +3094,8 @@ async def compare_professors(
                     "would_take_again_percent": float(would_take_again_result.would_take_again_percent) if would_take_again_result and would_take_again_result.would_take_again_percent else 0.0,
                     "courses": courses,
                     "departments": list(stats_result.departments) if stats_result and stats_result.departments and stats_result.departments[0] else [],
-                    "recent_reviews": recent_reviews
+                    "recent_reviews": recent_reviews,
+                    "tag_frequencies": overall_tag_frequencies
                 }
                 
                 professor_profiles.append(professor_profile)
