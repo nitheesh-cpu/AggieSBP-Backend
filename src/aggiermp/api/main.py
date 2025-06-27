@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -243,6 +243,53 @@ async def root():
     Returns a simple welcome message to confirm the API is running.
     """
     return {"message": "Welcome to AggieSBP API"}
+
+
+@app.get(
+    "/favicon.ico",
+    responses={
+        200: {
+            "description": "🔗 Favicon File - AggieSBP Icon",
+            "content": {"image/x-icon": {"example": "Binary favicon data"}},
+        },
+        404: {
+            "description": "❌ Favicon Not Found",
+            "content": {
+                "application/json": {"example": {"detail": "Favicon file not found"}}
+            },
+        },
+    },
+    summary="Favicon Endpoint",
+    description="""
+    🎨 **Favicon Handler**<br>
+    This endpoint serves the AggieSBP favicon to browsers.<br>
+    <br>
+    **Purpose:**<br>
+    - Serves the official AggieSBP favicon.ico file<br>
+    - Prevents 404 errors when browsers automatically request favicon.ico<br>
+    - Provides proper branding for the API in browser tabs<br>
+    <br>
+    **Usage:**<br>
+    Browsers automatically call this endpoint - no manual interaction needed.<br>
+    """,
+    tags=["General"],
+    include_in_schema=False,  # Hide from API documentation
+)
+async def favicon():
+    """Serve the AggieSBP favicon file"""
+    from pathlib import Path
+
+    # Get the path to the static favicon file
+    static_dir = Path(__file__).parent / "static"
+    favicon_path = static_dir / "favicon.ico"
+
+    if favicon_path.exists():
+        return FileResponse(
+            path=str(favicon_path), media_type="image/x-icon", filename="favicon.ico"
+        )
+    else:
+        # Fallback to empty response if file doesn't exist
+        raise HTTPException(status_code=404, detail="Favicon file not found")
 
 
 @app.get(
@@ -1406,7 +1453,7 @@ async def get_departments(
     - Check `sectionAttributes` for core curriculum requirements<br>
     - Higher `rating` indicates student satisfaction<br>
     - `enrollment` numbers show course popularity<br>
-    """ 
+    """,
 )
 async def get_courses(
     department: Optional[str] = None,
@@ -3536,6 +3583,7 @@ async def get_professors(
                             "Fair": 8,
                             "Engaging": 6,
                         },
+                        "overall_summary": "Dr. Johnson is consistently praised by students for her clear explanations and helpful teaching style. Students appreciate her availability during office hours and fair grading practices. Many students find her courses challenging but rewarding, with excellent preparation for advanced coursework.",
                     },
                     "schema": {
                         "type": "object",
@@ -3635,6 +3683,10 @@ async def get_professors(
                                 "type": "object",
                                 "description": "Most common student tags with frequencies",
                             },
+                            "overall_summary": {
+                                "type": "string",
+                                "description": "AI-generated summary of all student reviews for this professor (null if no summary available)",
+                            },
                         },
                     },
                 }
@@ -3673,6 +3725,7 @@ async def get_professors(
     - Teaching effectiveness by subject area<br>
     <br>
     **Student Feedback Analysis:**<br>
+    - AI-generated overall summary of all student reviews<br>
     - Recent student reviews with full text<br>
     - Grade distributions and academic outcomes<br>
     - Most common student tags (Clear, Helpful, Fair, etc.)<br>
@@ -3817,6 +3870,26 @@ async def get_professor_profile(
                 tag_freq_result.tag_frequencies, professor_id
             )
 
+        # Get overall summary if available
+        overall_summary_query = text("""
+            SELECT 
+                ps.summary_text
+            FROM professor_summaries ps
+            WHERE ps.professor_id = :professor_id
+              AND ps.summary_type = 'overall'
+              AND ps.summary_text IS NOT NULL
+              AND ps.summary_text != ''
+            LIMIT 1
+        """)
+
+        overall_summary_result = db.execute(
+            overall_summary_query, {"professor_id": professor_id}
+        ).fetchone()
+
+        overall_summary = None
+        if overall_summary_result and overall_summary_result.summary_text:
+            overall_summary = overall_summary_result.summary_text
+
         # Get recent reviews (last 5)
         recent_reviews_query = text("""
             SELECT 
@@ -3919,6 +3992,7 @@ async def get_professor_profile(
             else [],
             "recent_reviews": recent_reviews,
             "tag_frequencies": overall_tag_frequencies,
+            "overall_summary": overall_summary,
         }
 
         return professor_profile
