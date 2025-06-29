@@ -1118,7 +1118,28 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
 
         # Get professors from professor_summaries table with individual grade distributions
         professors_query = text("""
-            WITH professor_grades AS (
+            WITH latest_semester_per_prof AS (
+                SELECT 
+                    gd.professor,
+                    gd.dept,
+                    gd.course_number,
+                    gd.year,
+                    gd.semester,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY gd.professor, gd.dept, gd.course_number 
+                        ORDER BY gd.year DESC, 
+                                 CASE gd.semester 
+                                     WHEN 'FALL' THEN 1 
+                                     WHEN 'SPRING' THEN 2 
+                                     WHEN 'SUMMER' THEN 3 
+                                 END
+                    ) as rn
+                FROM gpa_data gd
+                WHERE gd.dept = :dept 
+                  AND gd.course_number = :course_num
+                  AND gd.total_students > 0
+            ),
+            professor_grades AS (
                 SELECT 
                     UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1)) as anex_name,
                     SUM(gd.grade_a) as total_a,
@@ -1129,11 +1150,13 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
                     SUM(gd.grade_a + gd.grade_b + gd.grade_c + gd.grade_d + gd.grade_f) as total_grades,
                     p.id as professor_id
                 FROM professors p
-                LEFT JOIN gpa_data gd ON gd.professor = UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1))
-                    AND gd.dept = :dept 
-                    AND gd.course_number = :course_num
-                    AND gd.year = '2024' 
-                    AND gd.semester = 'FALL'
+                LEFT JOIN latest_semester_per_prof lsp ON lsp.professor = UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1))
+                    AND lsp.rn = 1
+                LEFT JOIN gpa_data gd ON gd.professor = lsp.professor
+                    AND gd.dept = lsp.dept
+                    AND gd.course_number = lsp.course_number
+                    AND gd.year = lsp.year
+                    AND gd.semester = lsp.semester
                 WHERE p.id IN (
                     SELECT ps.professor_id 
                     FROM professor_summaries ps 
@@ -2575,9 +2598,7 @@ async def get_professors(
     description="Advanced fuzzy search for professors by name with intelligent handling of multi-part surnames and complex names. Uses PostgreSQL trigram similarity when available, falls back to token-based matching. Returns professors with RateMyProf IDs and relevance scores.",
 )
 async def find_professor(
-    name: str = Query(
-        ..., description="Professor name to search (e.g. 'Smith, John')"
-    ),
+    name: str = Query(..., description="Professor name to search (e.g. 'Smith, John')"),
     limit: int = 5,
     min_score: float = 20.0,
     db: Session = Depends(get_db_session),
