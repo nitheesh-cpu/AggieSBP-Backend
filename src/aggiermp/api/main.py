@@ -453,7 +453,7 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
                 COALESCE(SUM(last_sem.course_count), 0) as total_courses,
                 COALESCE(SUM(last_sem.professor_count), 0) as total_professors,
                 ROUND(AVG(last_sem.weighted_avg_gpa)::numeric, 2) as overall_avg_gpa,
-                ROUND(AVG(review_ratings.avg_difficulty_rating)::numeric, 1) as overall_avg_rating,
+                ROUND(AVG(review_ratings.avg_professor_rating)::numeric, 1) as overall_avg_rating,
                 COUNT(CASE WHEN d.short_name IN ('CSCE', 'ECEN', 'ENGR', 'MATH', 'BIOL', 'CHEM', 'PHYS', 'STAT') THEN 1 END) as stem_departments,
                 COUNT(CASE WHEN d.short_name NOT IN ('CSCE', 'ECEN', 'ENGR', 'MATH', 'BIOL', 'CHEM', 'PHYS', 'STAT') THEN 1 END) as liberal_arts_departments
             FROM departments d
@@ -474,12 +474,13 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
             LEFT JOIN (
                 SELECT 
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
-                    ROUND(6.0 - AVG(difficulty_rating::numeric), 1) as avg_difficulty_rating
-                FROM reviews 
-                WHERE difficulty_rating IS NOT NULL 
-                  AND course_code IS NOT NULL
-                  AND SUBSTRING(course_code FROM '^[A-Z]+') IS NOT NULL
-                GROUP BY SUBSTRING(course_code FROM '^[A-Z]+')
+                    ROUND(AVG(p.avg_rating::numeric), 1) as avg_professor_rating
+                FROM reviews r
+                JOIN professors p ON r.professor_id = p.id
+                WHERE p.avg_rating IS NOT NULL 
+                  AND r.course_code IS NOT NULL
+                  AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
+                GROUP BY SUBSTRING(r.course_code FROM '^[A-Z]+')
             ) review_ratings ON d.short_name = review_ratings.dept_code
         """)
 
@@ -497,7 +498,7 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
                 COALESCE(last_sem.course_count, 0) as courses,
                 COALESCE(last_sem.professor_count, 0) as professors,
                 COALESCE(last_sem.weighted_avg_gpa, 3.0) as avg_gpa,
-                COALESCE(review_ratings.avg_difficulty_rating, 3.0) as rating
+                COALESCE(review_ratings.avg_professor_rating, 3.0) as rating
             FROM departments d
             LEFT JOIN (
                 SELECT 
@@ -516,12 +517,13 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
             LEFT JOIN (
                 SELECT 
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
-                    ROUND(6.0 - AVG(difficulty_rating::numeric), 1) as avg_difficulty_rating
-                FROM reviews 
-                WHERE difficulty_rating IS NOT NULL 
-                  AND course_code IS NOT NULL
-                  AND SUBSTRING(course_code FROM '^[A-Z]+') IS NOT NULL
-                GROUP BY SUBSTRING(course_code FROM '^[A-Z]+')
+                    ROUND(AVG(p.avg_rating::numeric), 1) as avg_professor_rating
+                FROM reviews r
+                JOIN professors p ON r.professor_id = p.id
+                WHERE p.avg_rating IS NOT NULL 
+                  AND r.course_code IS NOT NULL
+                  AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
+                GROUP BY SUBSTRING(r.course_code FROM '^[A-Z]+')
             ) review_ratings ON d.short_name = review_ratings.dept_code
             WHERE last_sem.course_count > 0
             ORDER BY last_sem.course_count DESC
@@ -541,7 +543,7 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
                     if dept_row.professors
                     else 0,
                     "avgGpa": float(dept_row.avg_gpa) if dept_row.avg_gpa else 3.0,
-                    "rating": float(dept_row.rating) if dept_row.rating else 3.0,
+                    "rating": float(dept_row.rating) if dept_row.rating else None,
                 }
             )
 
@@ -690,7 +692,7 @@ async def get_departments(
                 COALESCE(last_sem.course_count, 0) as courses,
                 COALESCE(last_sem.professor_count, 0) as professors,
                 COALESCE(last_sem.weighted_avg_gpa, 3.0) as avgGpa,
-                COALESCE(review_ratings.avg_difficulty_rating, 3.0) as rating,
+                COALESCE(review_ratings.avg_professor_rating, 3.0) as rating,
                 d.title as description
             FROM departments d
             LEFT JOIN (
@@ -710,17 +712,18 @@ async def get_departments(
             LEFT JOIN (
                 SELECT 
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
-                    ROUND(6.0 - AVG(difficulty_rating::numeric), 1) as avg_difficulty_rating
-                FROM reviews 
-                WHERE difficulty_rating IS NOT NULL 
-                  AND course_code IS NOT NULL
-                  AND SUBSTRING(course_code FROM '^[A-Z]+') IS NOT NULL
-                GROUP BY SUBSTRING(course_code FROM '^[A-Z]+')
+                    ROUND(AVG(p.avg_rating::numeric), 1) as avg_professor_rating
+                FROM reviews r
+                JOIN professors p ON r.professor_id = p.id
+                WHERE p.avg_rating IS NOT NULL 
+                  AND r.course_code IS NOT NULL
+                  AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
+                GROUP BY SUBSTRING(r.course_code FROM '^[A-Z]+')
             ) review_ratings ON d.short_name = review_ratings.dept_code
             {where_clause}
             GROUP BY d.id, d.short_name, d.long_name, d.title, 
                      last_sem.course_count, last_sem.professor_count, last_sem.weighted_avg_gpa,
-                     review_ratings.avg_difficulty_rating
+                     review_ratings.avg_professor_rating
             ORDER BY d.short_name
             LIMIT :limit OFFSET :skip
         """
@@ -756,7 +759,7 @@ async def get_departments(
                     "courses": int(row.courses) if row.courses else 0,
                     "professors": int(row.professors) if row.professors else 0,
                     "avgGpa": float(row.avggpa) if row.avggpa else 3.0,
-                    "rating": float(row.rating) if row.rating else 4.0,
+                    "rating": float(row.rating) if row.rating else None,
                     "topCourses": top_courses,
                     "description": row.description,
                 }
@@ -855,13 +858,14 @@ async def get_courses(
                 SELECT 
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
                     SUBSTRING(course_code FROM '[0-9]+') as course_num,
-                    ROUND(6.0 - AVG(difficulty_rating::numeric), 1) as avg_difficulty_rating
-                FROM reviews 
-                WHERE difficulty_rating IS NOT NULL 
-                  AND course_code IS NOT NULL
-                  AND SUBSTRING(course_code FROM '^[A-Z]+') IS NOT NULL
-                  AND SUBSTRING(course_code FROM '[0-9]+') IS NOT NULL
-                GROUP BY SUBSTRING(course_code FROM '^[A-Z]+'), SUBSTRING(course_code FROM '[0-9]+')
+                    ROUND(AVG(p.avg_rating::numeric), 1) as avg_professor_rating
+                FROM reviews r
+                JOIN professors p ON r.professor_id = p.id
+                WHERE p.avg_rating IS NOT NULL 
+                  AND r.course_code IS NOT NULL
+                  AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
+                  AND SUBSTRING(r.course_code FROM '[0-9]+') IS NOT NULL
+                GROUP BY SUBSTRING(r.course_code FROM '^[A-Z]+'), SUBSTRING(r.course_code FROM '[0-9]+')
             )
             SELECT DISTINCT
                 c.subject_short_name || c.course_number as id,
@@ -889,7 +893,7 @@ async def get_courses(
                 END as difficulty,
                 COALESCE(lsd.total_enrollment, 0) as enrollment,
                 COALESCE(lsd.section_count, 0) as sections,
-                COALESCE(cr.avg_difficulty_rating, 3.0) as rating,
+                COALESCE(cr.avg_professor_rating, 3.0) as rating,
                 c.description,
                 CASE 
                     WHEN c.course_number ~ '^[0-9]+$' AND c.course_number::int < 300 THEN ARRAY['Undergraduate']
@@ -1167,7 +1171,7 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
             SELECT 
                 ps.professor_id,
                 p.first_name || ' ' || p.last_name as name,
-                ROUND((6.0 - ps.avg_difficulty)::numeric, 1) as rating,
+                COALESCE(p.avg_rating, NULL) as rating,
                 ps.total_reviews as reviews,
                 ps.tag_frequencies,
                 ps.summary_text as description,
@@ -1214,7 +1218,7 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
             professor_data = {
                 "id": prof.professor_id,
                 "name": prof.name,
-                "rating": float(prof.rating) if prof.rating else 3.0,
+                "rating": float(prof.rating) if prof.rating else None,
                 "reviews": int(prof.reviews) if prof.reviews else 0,
                 "description": prof.description or "Course instruction",
                 "tag_frequencies": tag_frequencies,
@@ -1452,6 +1456,7 @@ async def get_course_professors(course_id: str, db: Session = Depends(get_db_ses
                 p.first_name || ' ' || p.last_name as name,
                 ps.total_reviews,
                 ps.avg_difficulty,
+                p.avg_rating,
                 ps.tag_frequencies
             FROM professor_summaries ps
             JOIN professors p ON ps.professor_id = p.id
@@ -1489,9 +1494,10 @@ async def get_course_professors(course_id: str, db: Session = Depends(get_db_ses
                     ps.course_code as course_id,
                     COALESCE(c.course_title, 'Course Title') as course_name,
                     ps.total_reviews as reviews_count,
-                    ROUND((6.0 - ps.avg_difficulty)::numeric, 1) as avg_rating
+                    COALESCE(p.avg_rating, NULL) as avg_rating
                 FROM professor_summaries ps
                 LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                LEFT JOIN professors p ON ps.professor_id = p.id
                 WHERE ps.professor_id = :professor_id
                 ORDER BY ps.total_reviews DESC
             """)
@@ -1510,7 +1516,7 @@ async def get_course_professors(course_id: str, db: Session = Depends(get_db_ses
                         else 0,
                         "avg_rating": float(course.avg_rating)
                         if course.avg_rating
-                        else 3.0,
+                        else None,
                     }
                 )
 
@@ -1615,9 +1621,9 @@ async def get_course_professors(course_id: str, db: Session = Depends(get_db_ses
             professor_profile = {
                 "id": professor_id,
                 "name": prof_row.name,
-                "overall_rating": round(6.0 - prof_row.avg_difficulty, 1)
-                if prof_row.avg_difficulty
-                else 3.0,
+                "overall_rating": prof_row.avg_rating
+                if prof_row.avg_rating is not None
+                else None,
                 "total_reviews": int(prof_row.total_reviews)
                 if prof_row.total_reviews
                 else 0,
@@ -2292,7 +2298,7 @@ async def compare_courses(
                 SELECT 
                     ps.professor_id,
                     p.first_name || ' ' || p.last_name as name,
-                    ROUND((6.0 - ps.avg_difficulty)::numeric, 1) as rating,
+                    COALESCE(p.avg_rating, NULL) as rating,
                     ps.total_reviews as reviews
                 FROM professor_summaries ps
                 JOIN professors p ON ps.professor_id = p.id
@@ -2511,7 +2517,7 @@ async def get_professors(
             params["department"] = department.upper()
 
         if min_rating:
-            where_conditions.append("COALESCE(pst.overall_rating, 3.0) >= :min_rating")
+            where_conditions.append("pst.overall_rating IS NOT NULL AND pst.overall_rating >= :min_rating")
             params["min_rating"] = min_rating
 
         where_clause = ""
@@ -2525,18 +2531,19 @@ async def get_professors(
                     ps.professor_id,
                     COUNT(DISTINCT ps.course_code) as total_courses,
                     SUM(ps.total_reviews) as total_reviews,
-                    ROUND(AVG((6.0 - ps.avg_difficulty)::numeric), 1) as overall_rating,
+                    p.avg_rating as overall_rating,
                     ARRAY_AGG(DISTINCT SUBSTRING(ps.course_code FROM '^[A-Z]+')) as departments,
                     ARRAY_AGG(DISTINCT ps.course_code) as courses_taught
                 FROM professor_summaries ps
-                GROUP BY ps.professor_id
+                JOIN professors p ON ps.professor_id = p.id
+                GROUP BY ps.professor_id, p.avg_rating
             )
             SELECT DISTINCT
                 p.id,
                 p.first_name || ' ' || p.last_name as name,
                 p.first_name,
                 p.last_name,
-                COALESCE(pst.overall_rating, 3.0) as overall_rating,
+                COALESCE(pst.overall_rating, NULL) as overall_rating,
                 COALESCE(pst.total_reviews, 0) as total_reviews,
                 COALESCE(pst.departments, ARRAY[]::text[]) as departments,
                 COALESCE(pst.courses_taught, ARRAY[]::text[]) as courses_taught
@@ -2943,15 +2950,17 @@ async def get_professor_profile(
                     ps.course_code,
                     ps.total_reviews,
                     ps.avg_difficulty,
-                    c.course_title
+                    c.course_title,
+                    p.avg_rating
                 FROM professor_summaries ps
                 LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                JOIN professors p ON ps.professor_id = p.id
                 WHERE ps.professor_id = :professor_id
             )
             SELECT 
                 COUNT(course_code) as total_courses,
                 SUM(total_reviews) as total_reviews,
-                ROUND(AVG((6.0 - avg_difficulty)::numeric), 1) as overall_rating,
+                AVG(avg_rating) as overall_rating,
                 ARRAY_AGG(DISTINCT SUBSTRING(course_code FROM '^[A-Z]+')) as departments
             FROM professor_stats
         """)
@@ -2982,9 +2991,10 @@ async def get_professor_profile(
                 ps.course_code as course_id,
                 COALESCE(c.course_title, 'Course Title') as course_name,
                 ps.total_reviews as reviews_count,
-                ROUND((6.0 - ps.avg_difficulty)::numeric, 1) as avg_rating
+                COALESCE(p.avg_rating, NULL) as avg_rating
             FROM professor_summaries ps
             LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+            LEFT JOIN professors p ON ps.professor_id = p.id
             WHERE ps.professor_id = :professor_id
             ORDER BY ps.total_reviews DESC
         """)
@@ -3680,13 +3690,14 @@ async def search_professors(
                     ps.professor_id,
                     COUNT(DISTINCT ps.course_code) as total_courses,
                     SUM(ps.total_reviews) as total_reviews,
-                    ROUND(AVG((6.0 - ps.avg_difficulty)::numeric), 1) as overall_rating,
+                    p.avg_rating as overall_rating,
                     ARRAY_AGG(DISTINCT SUBSTRING(ps.course_code FROM '^[A-Z]+')) as departments,
                     ARRAY_AGG(DISTINCT ps.course_code) as courses_taught,
                     STRING_AGG(DISTINCT c.course_title, ', ') as course_titles
                 FROM professor_summaries ps
                 LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
-                GROUP BY ps.professor_id
+                JOIN professors p ON ps.professor_id = p.id
+                GROUP BY ps.professor_id, p.avg_rating
             ),
             would_take_again_stats AS (
                 SELECT 
@@ -3704,7 +3715,7 @@ async def search_professors(
                 p.first_name || ' ' || p.last_name as name,
                 p.first_name,
                 p.last_name,
-                COALESCE(pst.overall_rating, 3.0) as overall_rating,
+                COALESCE(pst.overall_rating, NULL) as overall_rating,
                 COALESCE(pst.total_reviews, 0) as total_reviews,
                 COALESCE(wta.would_take_again_percent, 0.0) as would_take_again_percent,
                 COALESCE(pst.departments, ARRAY[]::text[]) as departments,
@@ -4077,15 +4088,17 @@ async def compare_professors(
                             ps.course_code,
                             ps.total_reviews,
                             ps.avg_difficulty,
-                            c.course_title
+                            c.course_title,
+                            p.avg_rating
                         FROM professor_summaries ps
                         LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                        JOIN professors p ON ps.professor_id = p.id
                         WHERE ps.professor_id = :professor_id
                     )
                     SELECT 
                         COUNT(course_code) as total_courses,
                         SUM(total_reviews) as total_reviews,
-                        ROUND(AVG((6.0 - avg_difficulty)::numeric), 1) as overall_rating,
+                        AVG(avg_rating) as overall_rating,
                         ARRAY_AGG(DISTINCT SUBSTRING(course_code FROM '^[A-Z]+')) as departments
                     FROM professor_stats
                 """)
@@ -4116,9 +4129,10 @@ async def compare_professors(
                         ps.course_code as course_id,
                         COALESCE(c.course_title, 'Course Title') as course_name,
                         ps.total_reviews as reviews_count,
-                        ROUND((6.0 - ps.avg_difficulty)::numeric, 1) as avg_rating
+                        COALESCE(p.avg_rating, NULL) as avg_rating
                     FROM professor_summaries ps
                     LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                    LEFT JOIN professors p ON ps.professor_id = p.id
                     WHERE ps.professor_id = :professor_id
                     ORDER BY ps.total_reviews DESC
                 """)
