@@ -1116,7 +1116,7 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
         if not course_result:
             raise HTTPException(status_code=404, detail="Course not found")
 
-        # Get professors from professor_summaries table with individual grade distributions
+        # Get grade distribution data from anex (gpa_data) directly
         professors_query = text("""
             WITH latest_semester_per_prof AS (
                 SELECT 
@@ -1141,36 +1141,29 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
             ),
             professor_grades AS (
                 SELECT 
-                    UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1)) as anex_name,
+                    lsp.professor as anex_name,
                     SUM(gd.grade_a) as total_a,
                     SUM(gd.grade_b) as total_b,
                     SUM(gd.grade_c) as total_c,
                     SUM(gd.grade_d) as total_d,
                     SUM(gd.grade_f) as total_f,
-                    SUM(gd.grade_a + gd.grade_b + gd.grade_c + gd.grade_d + gd.grade_f) as total_grades,
-                    p.id as professor_id
-                FROM professors p
-                LEFT JOIN latest_semester_per_prof lsp ON lsp.professor = UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1))
-                    AND lsp.rn = 1
+                    SUM(gd.grade_a + gd.grade_b + gd.grade_c + gd.grade_d + gd.grade_f) as total_grades
+                FROM latest_semester_per_prof lsp
                 LEFT JOIN gpa_data gd ON gd.professor = lsp.professor
                     AND gd.dept = lsp.dept
                     AND gd.course_number = lsp.course_number
                     AND gd.year = lsp.year
                     AND gd.semester = lsp.semester
-                WHERE p.id IN (
-                    SELECT ps.professor_id 
-                    FROM professor_summaries ps 
-                    WHERE ps.course_code = :course_code
-                )
-                GROUP BY p.id, p.first_name, p.last_name
+                WHERE lsp.rn = 1
+                GROUP BY lsp.professor
             )
             SELECT 
-                ps.professor_id,
-                p.first_name || ' ' || p.last_name as name,
-                ROUND((6.0 - ps.avg_difficulty)::numeric, 1) as rating,
-                ps.total_reviews as reviews,
-                ps.tag_frequencies,
-                ps.summary_text as description,
+                NULL as professor_id,
+                pg.anex_name as name,
+                NULL as rating,
+                NULL as reviews,
+                NULL as tag_frequencies,
+                NULL as description,
                 CASE 
                     WHEN pg.total_grades > 0 THEN ROUND((pg.total_a::numeric / pg.total_grades) * 100)
                     ELSE NULL
@@ -1191,33 +1184,21 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
                     WHEN pg.total_grades > 0 THEN ROUND((pg.total_f::numeric / pg.total_grades) * 100)
                     ELSE NULL
                 END as grade_f_percent
-            FROM professor_summaries ps
-            JOIN professors p ON ps.professor_id = p.id
-            LEFT JOIN professor_grades pg ON ps.professor_id = pg.professor_id
-            WHERE ps.course_code = :course_code
-            ORDER BY ps.total_reviews DESC
-            LIMIT 10
+            FROM professor_grades pg
+            WHERE pg.total_grades > 0
+            ORDER BY pg.total_grades DESC
+            LIMIT 20
         """)
 
         professors_result = db.execute(
             professors_query,
-            {"course_code": course_id.upper(), "dept": dept, "course_num": course_num},
+            {"dept": dept, "course_num": course_num},
         )
 
         professors = []
         for prof in professors_result:
-            # Parse tag frequencies
-            tag_frequencies = parse_tag_frequencies(
-                prof.tag_frequencies, prof.professor_id
-            )
-
             professor_data = {
-                "id": prof.professor_id,
                 "name": prof.name,
-                "rating": float(prof.rating) if prof.rating else 3.0,
-                "reviews": int(prof.reviews) if prof.reviews else 0,
-                "description": prof.description or "Course instruction",
-                "tag_frequencies": tag_frequencies,
             }
 
             # Only include gradeDistribution if we have actual data
