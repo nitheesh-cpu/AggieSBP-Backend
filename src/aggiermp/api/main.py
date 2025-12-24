@@ -454,8 +454,8 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
                 COALESCE(SUM(last_sem.professor_count), 0) as total_professors,
                 ROUND(AVG(last_sem.weighted_avg_gpa)::numeric, 2) as overall_avg_gpa,
                 ROUND(AVG(review_ratings.avg_professor_rating)::numeric, 1) as overall_avg_rating,
-                COUNT(CASE WHEN d.short_name IN ('CSCE', 'ECEN', 'ENGR', 'MATH', 'BIOL', 'CHEM', 'PHYS', 'STAT') THEN 1 END) as stem_departments,
-                COUNT(CASE WHEN d.short_name NOT IN ('CSCE', 'ECEN', 'ENGR', 'MATH', 'BIOL', 'CHEM', 'PHYS', 'STAT') THEN 1 END) as liberal_arts_departments
+                COUNT(CASE WHEN d.id IN ('CSCE', 'ECEN', 'ENGR', 'MATH', 'BIOL', 'CHEM', 'PHYS', 'STAT') THEN 1 END) as stem_departments,
+                COUNT(CASE WHEN d.id NOT IN ('CSCE', 'ECEN', 'ENGR', 'MATH', 'BIOL', 'CHEM', 'PHYS', 'STAT') THEN 1 END) as liberal_arts_departments
             FROM departments d
             LEFT JOIN (
                 SELECT 
@@ -470,7 +470,7 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
                 WHERE year = '2024' AND semester = 'FALL'
                   AND gpa IS NOT NULL AND total_students > 0
                 GROUP BY dept
-            ) last_sem ON d.short_name = last_sem.dept
+            ) last_sem ON d.id = last_sem.dept
             LEFT JOIN (
                 SELECT 
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
@@ -481,7 +481,7 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
                   AND r.course_code IS NOT NULL
                   AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
                 GROUP BY SUBSTRING(r.course_code FROM '^[A-Z]+')
-            ) review_ratings ON d.short_name = review_ratings.dept_code
+            ) review_ratings ON d.id = review_ratings.dept_code
         """)
 
         result = db.execute(query)
@@ -493,7 +493,7 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
         # Get top departments by various metrics
         top_departments_query = text("""
             SELECT 
-                d.short_name as code,
+                d.id as code,
                 d.long_name as name,
                 COALESCE(last_sem.course_count, 0) as courses,
                 COALESCE(last_sem.professor_count, 0) as professors,
@@ -513,7 +513,7 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
                 WHERE year = '2024' AND semester = 'FALL'
                   AND gpa IS NOT NULL AND total_students > 0
                 GROUP BY dept
-            ) last_sem ON d.short_name = last_sem.dept
+            ) last_sem ON d.id = last_sem.dept
             LEFT JOIN (
                 SELECT 
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
@@ -524,7 +524,7 @@ async def get_departments_info(db: Session = Depends(get_db_session)):
                   AND r.course_code IS NOT NULL
                   AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
                 GROUP BY SUBSTRING(r.course_code FROM '^[A-Z]+')
-            ) review_ratings ON d.short_name = review_ratings.dept_code
+            ) review_ratings ON d.id = review_ratings.dept_code
             WHERE last_sem.course_count > 0
             ORDER BY last_sem.course_count DESC
             LIMIT 5
@@ -674,19 +674,17 @@ async def get_departments(
         params = {"limit": limit, "skip": skip}
 
         if search:
-            where_clause = (
-                "WHERE (d.short_name ILIKE :search OR d.long_name ILIKE :search)"
-            )
+            where_clause = "WHERE (d.id ILIKE :search OR d.long_name ILIKE :search)"
             params["search"] = f"%{search}%"
 
         # Query departments with aggregated data from last semester (Fall 2024)
         query_string = f"""
             SELECT 
                 d.id,
-                d.short_name as code,
+                d.id as code,
                 d.long_name as name,
                 CASE 
-                    WHEN d.short_name IN ('CSCE', 'ECEN', 'ENGR', 'MATH', 'BIOL', 'CHEM', 'PHYS', 'STAT') THEN 'stem'
+                    WHEN d.id IN ('CSCE', 'ECEN', 'ENGR', 'MATH', 'BIOL', 'CHEM', 'PHYS', 'STAT') THEN 'stem'
                     ELSE 'liberal-arts'
                 END as category,
                 COALESCE(last_sem.course_count, 0) as courses,
@@ -708,7 +706,7 @@ async def get_departments(
                 WHERE year = '2024' AND semester = 'FALL'
                   AND gpa IS NOT NULL AND total_students > 0
                 GROUP BY dept
-            ) last_sem ON d.short_name = last_sem.dept
+            ) last_sem ON d.id = last_sem.dept
             LEFT JOIN (
                 SELECT 
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
@@ -719,12 +717,12 @@ async def get_departments(
                   AND r.course_code IS NOT NULL
                   AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
                 GROUP BY SUBSTRING(r.course_code FROM '^[A-Z]+')
-            ) review_ratings ON d.short_name = review_ratings.dept_code
+            ) review_ratings ON d.id = review_ratings.dept_code
             {where_clause}
-            GROUP BY d.id, d.short_name, d.long_name, d.title, 
+            GROUP BY d.id, d.id, d.long_name, d.title, 
                      last_sem.course_count, last_sem.professor_count, last_sem.weighted_avg_gpa,
                      review_ratings.avg_professor_rating
-            ORDER BY d.short_name
+            ORDER BY d.id
             LIMIT :limit OFFSET :skip
         """
 
@@ -829,30 +827,50 @@ async def get_courses(
     try:
         # Base query with aggregated data from last 4 semesters and last semester
         query_base = """
-            WITH last_4_semesters_gpa AS (
+            WITH recent_semesters AS (
+                -- Determine the most recent N (4) semester-year combinations available in gpa_data
+                SELECT year, semester
+                FROM gpa_data
+                WHERE gpa IS NOT NULL AND total_students > 0
+                GROUP BY year, semester
+                ORDER BY (year::int) DESC,
+                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SPRING' THEN 2 WHEN 'SUMMER' THEN 3 ELSE 4 END
+                LIMIT 4
+            ),
+            last_4_semesters_gpa AS (
                 SELECT 
-                    dept, 
-                    course_number,
+                    gd.dept, 
+                    gd.course_number,
                     ROUND(
-                        SUM(gpa::numeric * total_students) / NULLIF(SUM(total_students), 0), 
+                        SUM(gd.gpa::numeric * gd.total_students) / NULLIF(SUM(gd.total_students), 0), 
                         2
                     ) as weighted_avg_gpa
-                FROM gpa_data 
-                WHERE ((year = '2024' AND semester IN ('FALL', 'SPRING', 'SUMMER')) 
-                       OR (year = '2023' AND semester = 'FALL'))
-                  AND gpa IS NOT NULL AND total_students > 0
-                GROUP BY dept, course_number
+                FROM gpa_data gd
+                JOIN recent_semesters rs ON gd.year = rs.year AND gd.semester = rs.semester
+                WHERE gd.gpa IS NOT NULL AND gd.total_students > 0
+                GROUP BY gd.dept, gd.course_number
+            ),
+            latest_semester AS (
+                SELECT year, semester FROM (
+                    SELECT year, semester
+                    FROM gpa_data
+                    WHERE total_students > 0
+                    GROUP BY year, semester
+                    ORDER BY (year::int) DESC,
+                             CASE semester WHEN 'FALL' THEN 1 WHEN 'SPRING' THEN 2 WHEN 'SUMMER' THEN 3 ELSE 4 END
+                    LIMIT 1
+                ) t
             ),
             last_semester_data AS (
                 SELECT 
-                    dept,
-                    course_number,
-                    SUM(total_students) as total_enrollment,
+                    gd.dept,
+                    gd.course_number,
+                    SUM(gd.total_students) as total_enrollment,
                     COUNT(*) as section_count
-                FROM gpa_data 
-                WHERE year = '2024' AND semester = 'FALL'
-                  AND total_students > 0
-                GROUP BY dept, course_number
+                FROM gpa_data gd
+                JOIN latest_semester ls ON gd.year = ls.year AND gd.semester = ls.semester
+                WHERE gd.total_students > 0
+                GROUP BY gd.dept, gd.course_number
             ),
             course_reviews AS (
                 SELECT 
@@ -868,17 +886,17 @@ async def get_courses(
                 GROUP BY SUBSTRING(r.course_code FROM '^[A-Z]+'), SUBSTRING(r.course_code FROM '[0-9]+')
             )
             SELECT DISTINCT
-                c.subject_short_name || c.course_number as id,
-                c.subject_short_name || ' ' || c.course_number as code,
-                c.course_title as name,
-                c.subject_short_name as department_id,
+                c.subject_id || c.course_number as id,
+                c.code as code,
+                c.name as name,
+                c.subject_id as department_id,
                 c.subject_long_name as department_name,
-                c.subject_short_name as sort_dept,
+                c.subject_id as sort_dept,
                 CASE 
                     WHEN c.course_number ~ '^[0-9]+$' THEN c.course_number::int
                     ELSE COALESCE(SUBSTRING(c.course_number FROM '^[0-9]+')::int, 9999)
                 END as sort_course_num,
-                4 as credits,
+                COALESCE(c.credits, 4) as credits,
                 CASE 
                     WHEN l4s.weighted_avg_gpa IS NOT NULL THEN l4s.weighted_avg_gpa
                     ELSE -1
@@ -908,22 +926,20 @@ async def get_courses(
                     ELSE ARRAY['Other']
                 END as tags
             FROM courses c
-            LEFT JOIN last_4_semesters_gpa l4s ON c.subject_short_name = l4s.dept AND c.course_number = l4s.course_number
-            LEFT JOIN last_semester_data lsd ON c.subject_short_name = lsd.dept AND c.course_number = lsd.course_number
-            LEFT JOIN course_reviews cr ON c.subject_short_name = cr.dept_code AND c.course_number = cr.course_num
+            LEFT JOIN last_4_semesters_gpa l4s ON c.subject_id = l4s.dept AND c.course_number = l4s.course_number
+            LEFT JOIN last_semester_data lsd ON c.subject_id = lsd.dept AND c.course_number = lsd.course_number
+            LEFT JOIN course_reviews cr ON c.subject_id = cr.dept_code AND c.course_number = cr.course_num
         """
 
         where_conditions = []
         params = {}
 
         if department:
-            where_conditions.append("c.subject_short_name = :department")
+            where_conditions.append("c.subject_id = :department")
             params["department"] = department.upper()
 
         if search:
-            where_conditions.append(
-                "(c.subject_short_name || ' ' || c.course_number ILIKE :search OR c.course_title ILIKE :search)"
-            )
+            where_conditions.append("(c.code ILIKE :search OR c.name ILIKE :search)")
             params["search"] = f"%{search}%"
 
         where_clause = ""
@@ -1062,36 +1078,55 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
 
         # Get course basic info with anex data
         course_query = text("""
-            WITH last_4_semesters_gpa AS (
+            WITH recent_semesters AS (
+                SELECT year, semester
+                FROM gpa_data
+                WHERE gpa IS NOT NULL AND total_students > 0
+                GROUP BY year, semester
+                ORDER BY (year::int) DESC,
+                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SPRING' THEN 2 WHEN 'SUMMER' THEN 3 ELSE 4 END
+                LIMIT 4
+            ),
+            last_4_semesters_gpa AS (
                 SELECT 
-                    dept, 
-                    course_number,
+                    gd.dept, 
+                    gd.course_number,
                     ROUND(
-                        SUM(gpa::numeric * total_students) / NULLIF(SUM(total_students), 0), 
+                        SUM(gd.gpa::numeric * gd.total_students) / NULLIF(SUM(gd.total_students), 0), 
                         2
                     ) as weighted_avg_gpa
-                FROM gpa_data 
-                WHERE ((year = '2024' AND semester IN ('FALL', 'SPRING', 'SUMMER')) 
-                       OR (year = '2023' AND semester = 'FALL'))
-                  AND gpa IS NOT NULL AND total_students > 0
-                GROUP BY dept, course_number
+                FROM gpa_data gd
+                JOIN recent_semesters rs ON gd.year = rs.year AND gd.semester = rs.semester
+                WHERE gd.gpa IS NOT NULL AND gd.total_students > 0
+                GROUP BY gd.dept, gd.course_number
+            ),
+            latest_semester AS (
+                SELECT year, semester FROM (
+                    SELECT year, semester
+                    FROM gpa_data
+                    WHERE total_students > 0
+                    GROUP BY year, semester
+                    ORDER BY (year::int) DESC,
+                             CASE semester WHEN 'FALL' THEN 1 WHEN 'SPRING' THEN 2 WHEN 'SUMMER' THEN 3 ELSE 4 END
+                    LIMIT 1
+                ) t
             ),
             last_semester_data AS (
                 SELECT 
-                    dept,
-                    course_number,
-                    SUM(total_students) as total_enrollment,
+                    gd.dept,
+                    gd.course_number,
+                    SUM(gd.total_students) as total_enrollment,
                     COUNT(*) as section_count
-                FROM gpa_data 
-                WHERE year = '2024' AND semester = 'FALL'
-                  AND total_students > 0
-                GROUP BY dept, course_number
+                FROM gpa_data gd
+                JOIN latest_semester ls ON gd.year = ls.year AND gd.semester = ls.semester
+                WHERE gd.total_students > 0
+                GROUP BY gd.dept, gd.course_number
             )
             SELECT 
-                c.subject_short_name || ' ' || c.course_number as code,
-                c.course_title as name,
+                c.code as code,
+                c.name as name,
                 c.description,
-                4 as credits,
+                COALESCE(c.credits, 4) as credits,
                 CASE 
                     WHEN l4s.weighted_avg_gpa IS NOT NULL THEN l4s.weighted_avg_gpa
                     ELSE -1
@@ -1107,9 +1142,9 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
                 COALESCE(lsd.total_enrollment, 0) as enrollment,
                 COALESCE(lsd.section_count, 0) as sections
             FROM courses c
-            LEFT JOIN last_4_semesters_gpa l4s ON c.subject_short_name = l4s.dept AND c.course_number = l4s.course_number
-            LEFT JOIN last_semester_data lsd ON c.subject_short_name = lsd.dept AND c.course_number = lsd.course_number
-            WHERE c.subject_short_name = :dept AND c.course_number = :course_num
+            LEFT JOIN last_4_semesters_gpa l4s ON c.subject_id = l4s.dept AND c.course_number = l4s.course_number
+            LEFT JOIN last_semester_data lsd ON c.subject_id = lsd.dept AND c.course_number = lsd.course_number
+            WHERE c.subject_id = :dept AND c.course_number = :course_num
             LIMIT 1
         """)
 
@@ -1368,15 +1403,15 @@ async def get_course_details(course_id: str, db: Session = Depends(get_db_sessio
         # Get related courses (courses in same department with similar numbers)
         related_query = text("""
             SELECT 
-                c.subject_short_name || ' ' || c.course_number as code,
-                c.course_title as name,
+                c.code as code,
+                c.name as name,
                 CASE 
                     WHEN ABS(c.course_number::int - :course_num_int) <= 10 THEN 95
                     WHEN ABS(c.course_number::int - :course_num_int) <= 50 THEN 78
                     ELSE 72
                 END as similarity
             FROM courses c
-            WHERE c.subject_short_name = :dept 
+            WHERE c.subject_id = :dept 
               AND c.course_number != :course_num
               AND ABS(c.course_number::int - :course_num_int) <= 100
             ORDER BY similarity DESC, c.course_number::int
@@ -1585,11 +1620,11 @@ async def get_course_professors(course_id: str, db: Session = Depends(get_db_ses
             all_courses_query = text("""
                 SELECT 
                     ps.course_code as course_id,
-                    COALESCE(c.course_title, 'Course Title') as course_name,
+                    COALESCE(c.name, 'Course Title') as course_name,
                     ps.total_reviews as reviews_count,
                     COALESCE(p.avg_rating, NULL) as avg_rating
                 FROM professor_summaries ps
-                LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
                 LEFT JOIN professors p ON ps.professor_id = p.id
                 WHERE ps.professor_id = :professor_id
                 ORDER BY ps.total_reviews DESC
@@ -1638,9 +1673,9 @@ async def get_course_professors(course_id: str, db: Session = Depends(get_db_ses
                     r.review_date,
                     r.course_code,
                     r.rating_tags,
-                    COALESCE(c.course_title, 'Course') as course_name
+                    COALESCE(c.name, 'Course') as course_name
                 FROM reviews r
-                LEFT JOIN courses c ON c.subject_short_name || c.course_number = r.course_code
+                LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
                 WHERE r.professor_id = :professor_id
                   AND r.course_code = :course_code
                   AND r.review_text IS NOT NULL
@@ -1685,8 +1720,9 @@ async def get_course_professors(course_id: str, db: Session = Depends(get_db_ses
                             if isinstance(review.rating_tags, str)
                             else review.rating_tags
                         )
-                    except:
+                    except Exception as e:
                         tags = []
+                        logger.debug(f"Failed to parse rating_tags: {e}")
 
                 recent_reviews.append(
                     {
@@ -2354,10 +2390,10 @@ async def compare_courses(
                     GROUP BY dept, course_number
                 )
                 SELECT 
-                    c.subject_short_name || ' ' || c.course_number as code,
-                    c.course_title as name,
+                    c.code as code,
+                    c.name as name,
                     c.description,
-                    4 as credits,
+                    COALESCE(c.credits, 4) as credits,
                     CASE 
                         WHEN l4s.weighted_avg_gpa IS NOT NULL THEN l4s.weighted_avg_gpa
                         ELSE -1
@@ -2373,9 +2409,9 @@ async def compare_courses(
                     COALESCE(lsd.total_enrollment, 0) as enrollment,
                     COALESCE(lsd.section_count, 0) as sections
                 FROM courses c
-                LEFT JOIN last_4_semesters_gpa l4s ON c.subject_short_name = l4s.dept AND c.course_number = l4s.course_number
-                LEFT JOIN last_semester_data lsd ON c.subject_short_name = lsd.dept AND c.course_number = lsd.course_number
-                WHERE c.subject_short_name = :dept AND c.course_number = :course_num
+                LEFT JOIN last_4_semesters_gpa l4s ON c.subject_id = l4s.dept AND c.course_number = l4s.course_number
+                LEFT JOIN last_semester_data lsd ON c.subject_id = lsd.dept AND c.course_number = lsd.course_number
+                WHERE c.subject_id = :dept AND c.course_number = :course_num
                 LIMIT 1
             """)
 
@@ -3045,10 +3081,10 @@ async def get_professor_profile(
                     ps.course_code,
                     ps.total_reviews,
                     ps.avg_difficulty,
-                    c.course_title,
+                    c.name,
                     p.avg_rating
                 FROM professor_summaries ps
-                LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
                 JOIN professors p ON ps.professor_id = p.id
                 WHERE ps.professor_id = :professor_id
             )
@@ -3084,11 +3120,11 @@ async def get_professor_profile(
         courses_query = text("""
             SELECT 
                 ps.course_code as course_id,
-                COALESCE(c.course_title, 'Course Title') as course_name,
+                COALESCE(c.name, 'Course Title') as course_name,
                 ps.total_reviews as reviews_count,
                 COALESCE(p.avg_rating, NULL) as avg_rating
             FROM professor_summaries ps
-            LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+            LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
             LEFT JOIN professors p ON ps.professor_id = p.id
             WHERE ps.professor_id = :professor_id
             ORDER BY ps.total_reviews DESC
@@ -3165,9 +3201,9 @@ async def get_professor_profile(
                 r.review_date,
                 r.course_code,
                 r.rating_tags,
-                COALESCE(c.course_title, 'Course') as course_name
+                COALESCE(c.name, 'Course') as course_name
             FROM reviews r
-            LEFT JOIN courses c ON c.subject_short_name || c.course_number = r.course_code
+            LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
             WHERE r.professor_id = :professor_id
               AND r.review_text IS NOT NULL
               AND r.review_text != ''
@@ -3211,8 +3247,9 @@ async def get_professor_profile(
                         if isinstance(review.rating_tags, str)
                         else review.rating_tags
                     )
-                except:
+                except Exception as e:
                     tags = []
+                    logger.debug(f"Failed to parse rating_tags: {e}")
 
             recent_reviews.append(
                 {
@@ -3520,10 +3557,10 @@ async def get_professor_reviews(
                 r.rating_tags,
                 r.teacher_note,
                 r.course_code,
-                COALESCE(c.course_title, 'Course') as course_name,
+                COALESCE(c.name, 'Course') as course_name,
                 c.subject_long_name as department_name
             FROM reviews r
-            LEFT JOIN courses c ON c.subject_short_name || c.course_number = r.course_code
+            LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
             WHERE {where_clause}
               AND r.review_text IS NOT NULL
               AND r.review_text != ''
@@ -3572,8 +3609,9 @@ async def get_professor_reviews(
                         if isinstance(review.rating_tags, str)
                         else review.rating_tags
                     )
-                except:
+                except Exception as e:
                     tags = []
+                    logger.debug(f"Failed to parse rating_tags: {e}")
 
             review_data = {
                 "id": review.id,
@@ -3788,9 +3826,9 @@ async def search_professors(
                     p.avg_rating as overall_rating,
                     ARRAY_AGG(DISTINCT SUBSTRING(ps.course_code FROM '^[A-Z]+')) as departments,
                     ARRAY_AGG(DISTINCT ps.course_code) as courses_taught,
-                    STRING_AGG(DISTINCT c.course_title, ', ') as course_titles
+                    STRING_AGG(DISTINCT c.name, ', ') as course_titles
                 FROM professor_summaries ps
-                LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
                 JOIN professors p ON ps.professor_id = p.id
                 GROUP BY ps.professor_id, p.avg_rating
             ),
@@ -4183,10 +4221,10 @@ async def compare_professors(
                             ps.course_code,
                             ps.total_reviews,
                             ps.avg_difficulty,
-                            c.course_title,
+                            c.name,
                             p.avg_rating
                         FROM professor_summaries ps
-                        LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                        LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
                         JOIN professors p ON ps.professor_id = p.id
                         WHERE ps.professor_id = :professor_id
                     )
@@ -4222,11 +4260,11 @@ async def compare_professors(
                 courses_query = text("""
                     SELECT 
                         ps.course_code as course_id,
-                        COALESCE(c.course_title, 'Course Title') as course_name,
+                        COALESCE(c.name, 'Course Title') as course_name,
                         ps.total_reviews as reviews_count,
                         COALESCE(p.avg_rating, NULL) as avg_rating
                     FROM professor_summaries ps
-                    LEFT JOIN courses c ON c.subject_short_name || c.course_number = ps.course_code
+                    LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
                     LEFT JOIN professors p ON ps.professor_id = p.id
                     WHERE ps.professor_id = :professor_id
                     ORDER BY ps.total_reviews DESC
@@ -4283,9 +4321,9 @@ async def compare_professors(
                         r.review_date,
                         r.course_code,
                         r.rating_tags,
-                        COALESCE(c.course_title, 'Course') as course_name
+                        COALESCE(c.name, 'Course') as course_name
                     FROM reviews r
-                    LEFT JOIN courses c ON c.subject_short_name || c.course_number = r.course_code
+                    LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
                     WHERE r.professor_id = :professor_id
                       AND r.review_text IS NOT NULL
                       AND r.review_text != ''
@@ -4329,8 +4367,9 @@ async def compare_professors(
                                 if isinstance(review.rating_tags, str)
                                 else review.rating_tags
                             )
-                        except:
+                        except Exception as e:
                             tags = []
+                            logger.debug(f"Failed to parse rating_tags: {e}")
 
                     recent_reviews.append(
                         {
