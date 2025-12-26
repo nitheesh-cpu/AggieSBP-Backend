@@ -1,0 +1,10 @@
+# Cache directories
+.cache/
+*.pkl
+*.cache
+
+# Model cache
+models/
+__pycache__/
+*.pyc
+
