@@ -171,7 +171,51 @@ class HierarchicalSummarizationPipeline:
             else:
                 course_summary.confidence = 0.0
             
-            course_summaries.append(course_summary)
+            # Calculate course stats
+            all_cluster_reviews = []
+            for reviews in clusters.values():
+                all_cluster_reviews.extend(reviews)
+            
+            avg_rating = None
+            avg_difficulty = None
+            common_tags = []
+            tag_frequencies = {}
+            
+            if all_cluster_reviews:
+                ratings = [r.original_rating for r in all_cluster_reviews if r.original_rating is not None]
+                if ratings:
+                    avg_rating = sum(ratings) / len(ratings)
+                
+                difficulties = [r.original_difficulty for r in all_cluster_reviews if r.original_difficulty is not None]
+                if difficulties:
+                    avg_difficulty = sum(difficulties) / len(difficulties)
+                
+                all_tags = []
+                for r in all_cluster_reviews:
+                    if r.tags:
+                        all_tags.extend(r.tags)
+                
+                if all_tags:
+                    tag_counts = Counter(all_tags)
+                    tag_frequencies = dict(tag_counts)
+                    common_tags = [tag for tag, _ in tag_counts.most_common(5)]
+
+            course_summaries.append(CourseSummary(
+                course=course_code,
+                teaching=course_summary.teaching,
+                exams=course_summary.exams,
+                grading=course_summary.grading,
+                workload=course_summary.workload,
+                personality=course_summary.personality,
+                policies=course_summary.policies,
+                other=course_summary.other,
+                confidence=course_summary.confidence,
+                total_reviews=course_summary.total_reviews,
+                avg_rating=avg_rating,
+                avg_difficulty=avg_difficulty,
+                common_tags=common_tags,
+                tag_frequencies=tag_frequencies
+            ))
         
         return course_summaries
     
@@ -230,6 +274,31 @@ class HierarchicalSummarizationPipeline:
         else:
             confidence = 0.0
         
+        # Calculate global stats
+        avg_rating = None
+        avg_difficulty = None
+        common_tags = []
+        tag_frequencies = {}
+        
+        if all_reviews:
+            ratings = [r.original_rating for r in all_reviews if r.original_rating is not None]
+            if ratings:
+                avg_rating = sum(ratings) / len(ratings)
+            
+            difficulties = [r.original_difficulty for r in all_reviews if r.original_difficulty is not None]
+            if difficulties:
+                avg_difficulty = sum(difficulties) / len(difficulties)
+            
+            all_tags = []
+            for r in all_reviews:
+                if r.tags:
+                    all_tags.extend(r.tags)
+            
+            if all_tags:
+                tag_counts = Counter(all_tags)
+                tag_frequencies = dict(tag_counts)
+                common_tags = [tag for tag, _ in tag_counts.most_common(10)]
+
         return ProfessorSummary(
             professor_id=professor_id,
             overall_sentiment=overall_sentiment,
@@ -237,7 +306,11 @@ class HierarchicalSummarizationPipeline:
             complaints=complaints[:5],  # Top 5
             consistency=consistency,
             confidence=confidence,
-            course_summaries=course_summaries
+            course_summaries=course_summaries,
+            avg_rating=avg_rating,
+            avg_difficulty=avg_difficulty,
+            common_tags=common_tags,
+            tag_frequencies=tag_frequencies
         )
     
     def process_single_course(

@@ -354,6 +354,13 @@ class ProfessorSummaryNewDB(Base):
     # Common fields
     confidence = Column(Float, nullable=False)
     total_reviews = Column(Integer, nullable=False, default=0)
+    
+    # New statistics fields
+    avg_rating = Column(Float, nullable=True)
+    avg_difficulty = Column(Float, nullable=True)
+    common_tags = Column(ARRAY(String), nullable=True)
+    tag_frequencies = Column(JSON, nullable=True)
+
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
     

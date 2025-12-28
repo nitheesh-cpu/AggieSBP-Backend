@@ -150,13 +150,23 @@ class ReviewPreprocessor:
             normalized_text = self.normalize_text(original_text)
             word_count = self.word_count(normalized_text)
             
+            # Calculate original rating (average of clarity and helpfulness)
+            clarity = review.get("clarity_rating")
+            helpful = review.get("helpful_rating")
+            original_rating = None
+            if clarity is not None and helpful is not None:
+                original_rating = (clarity + helpful) / 2.0
+            
             processed.append(ProcessedReview(
                 review_id=review.get("id", ""),
                 professor_id=review.get("professor_id", ""),
                 course_code=review.get("course_code"),
                 text=normalized_text,
                 original_text=original_text,
-                word_count=word_count
+                word_count=word_count,
+                original_rating=original_rating,
+                original_difficulty=review.get("difficulty_rating"),
+                tags=review.get("rating_tags") or []
             ))
         
         # Filter by length

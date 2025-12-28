@@ -3,7 +3,7 @@ Output schemas for hierarchical summarization system.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 
 @dataclass
@@ -29,6 +29,11 @@ class CourseSummary:
     other: Optional[str] = None
     confidence: float = 0.0
     total_reviews: int = 0
+    # Stats
+    avg_rating: Optional[float] = None
+    avg_difficulty: Optional[float] = None
+    common_tags: Optional[List[str]] = None
+    tag_frequencies: Optional[Dict[str, int]] = None
 
 
 @dataclass
@@ -41,6 +46,11 @@ class ProfessorSummary:
     consistency: str
     confidence: float
     course_summaries: List[CourseSummary]
+    # Stats
+    avg_rating: Optional[float] = None
+    avg_difficulty: Optional[float] = None
+    common_tags: Optional[List[str]] = None
+    tag_frequencies: Optional[Dict[str, int]] = None
 
 
 @dataclass
@@ -52,4 +62,8 @@ class ProcessedReview:
     text: str
     original_text: str
     word_count: int
+    # Stats
+    original_rating: Optional[float] = None
+    original_difficulty: Optional[float] = None
+    tags: Optional[List[str]] = None
 

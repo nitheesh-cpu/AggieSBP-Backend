@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..database.base import check_database_health, get_session
+from .routers.discover import router as discover_router
 
 # Rate limiter configuration
 limiter = Limiter(key_func=get_remote_address)
@@ -231,6 +232,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Force reload for UCC stats update
+app.include_router(discover_router)
 
 
 def get_db_session():
