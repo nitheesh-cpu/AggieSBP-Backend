@@ -166,6 +166,12 @@ def bulk_insert_records(records: List[Dict[str, Any]]) -> int:
 
     session = get_session()
     try:
+        # Ensure transaction is clean
+        try:
+            if session.in_transaction():
+                session.execute(text("SELECT 1"))
+        except Exception:
+            session.rollback()
         # Convert to schema and then to dict for database
         gpa_records = []
         for record in records:
@@ -197,7 +203,10 @@ def bulk_insert_records(records: List[Dict[str, Any]]) -> int:
 
     except Exception as e:
         print(f"[ERROR] Error in bulk insert: {e}")
-        session.rollback()
+        try:
+            session.rollback()
+        except Exception:
+            pass
         return 0
     finally:
         session.close()

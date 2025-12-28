@@ -34,6 +34,7 @@ from sqlalchemy import (
     String,
     Text,
     select,
+    text,
     update,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, insert
@@ -198,6 +199,13 @@ def upsert_departments(departments: list[DepartmentSchema]):
     session = get_session()
 
     try:
+        # Ensure transaction is clean
+        try:
+            if session.in_transaction():
+                session.execute(text("SELECT 1"))
+        except Exception:
+            session.rollback()
+
         # Get all existing departments
         existing_depts = session.execute(select(DepartmentNewDB)).scalars().all()
         existing_ids = {dept.id for dept in existing_depts}
@@ -241,7 +249,10 @@ def upsert_departments(departments: list[DepartmentSchema]):
         return len(insert_departments) + len(update_departments)
 
     except Exception as e:
-        session.rollback()
+        try:
+            session.rollback()
+        except Exception:
+            pass
         print(f"  ✗ Error upserting departments: {e}")
         raise
     finally:
@@ -316,6 +327,12 @@ def bulk_upsert_courses(all_courses: List[CourseSchema], batch_size: int = 1000)
     session = get_session()
 
     try:
+        # Ensure transaction is clean
+        try:
+            if session.in_transaction():
+                session.execute(text("SELECT 1"))
+        except Exception:
+            session.rollback()
         print(f"\n  Preparing bulk upsert for {len(all_courses)} courses...")
 
         # Convert all courses to dicts (no need to check existing - ON CONFLICT handles it)
@@ -375,7 +392,10 @@ def bulk_upsert_courses(all_courses: List[CourseSchema], batch_size: int = 1000)
         return total_processed
 
     except Exception as e:
-        session.rollback()
+        try:
+            session.rollback()
+        except Exception:
+            pass
         print(f"  ✗ Error bulk upserting courses: {e}")
         import traceback
 
@@ -390,6 +410,12 @@ def upsert_courses(courses: list[CourseSchema], department_code: str):
     session = get_session()
 
     try:
+        # Ensure transaction is clean
+        try:
+            if session.in_transaction():
+                session.execute(text("SELECT 1"))
+        except Exception:
+            session.rollback()
         # Get all existing courses
         existing_courses = session.execute(select(CourseNewDB)).scalars().all()
         existing_ids = {course.id for course in existing_courses}
@@ -472,7 +498,10 @@ def upsert_courses(courses: list[CourseSchema], department_code: str):
         return len(insert_courses) + len(update_courses)
 
     except Exception as e:
-        session.rollback()
+        try:
+            session.rollback()
+        except Exception:
+            pass
         print(f"    ✗ Error upserting courses for {department_code}: {e}")
         raise
     finally:

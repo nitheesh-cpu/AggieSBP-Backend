@@ -1,9 +1,9 @@
 from datetime import datetime
 import os
-from sqlalchemy import ARRAY, DateTime, create_engine, Column, String, Integer, Float, Boolean, select, text, ForeignKey, update
+from sqlalchemy import ARRAY, DateTime, create_engine, Column, String, Integer, Float, Boolean, select, text, ForeignKey, update, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import insert, JSON
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import uuid
@@ -157,6 +157,218 @@ class SectionAttributeDB(Base):
 
     def __repr__(self):
         return f"<SectionAttribute(id='{self.id}', course='{self.dept} {self.course_number}', section='{self.section}', attr='{self.attribute_id}')>"
+
+class TermDB(Base):
+    """Database model for academic terms from Howdy API"""
+    __tablename__ = "terms"
+    
+    term_code = Column(String, primary_key=True)  # e.g., "202611"
+    term_desc = Column(String, nullable=False)  # e.g., "Spring 2026 - College Station"
+    start_date = Column(DateTime, nullable=True)  # STVTERM_START_DATE
+    end_date = Column(DateTime, nullable=True)  # STVTERM_END_DATE
+    academic_year = Column(String, nullable=True)  # STVTERM_ACYR_CODE (e.g., "2025")
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        return f"<Term(code='{self.term_code}', desc='{self.term_desc}')>"
+
+
+class SectionDB(Base):
+    """Database model for course sections from Howdy API"""
+    __tablename__ = "sections"
+    
+    id = Column(String, primary_key=True)  # e.g., "202611_56508" (term_code + CRN)
+    term_code = Column(String, nullable=False, index=True)  # e.g., "202611"
+    crn = Column(String, nullable=False)  # Course Reference Number
+    dept = Column(String, nullable=False, index=True)  # Department code (e.g., "CSCE")
+    dept_desc = Column(String, nullable=True)  # Department description (e.g., "CSCE - Computer Sci & Engr")
+    course_number = Column(String, nullable=False)  # Course number (e.g., "221")
+    section_number = Column(String, nullable=False)  # Section number (e.g., "501")
+    course_title = Column(String, nullable=True)  # SWV_CLASS_SEARCH_TITLE
+    
+    # Credit hours
+    credit_hours = Column(String, nullable=True)  # HRS_COLUMN_FIELD - displayed hours (always populated)
+    hours_low = Column(Integer, nullable=True)  # SWV_CLASS_SEARCH_HOURS_LOW (always populated)
+    hours_high = Column(Integer, nullable=True)  # SWV_CLASS_SEARCH_HOURS_HIGH (rarely populated)
+    
+    # Section info
+    campus = Column(String, nullable=True)  # SWV_CLASS_SEARCH_SITE (93% populated)
+    part_of_term = Column(String, nullable=True)  # SWV_CLASS_SEARCH_PTRM (always populated)
+    session_type = Column(String, nullable=True)  # SWV_CLASS_SEARCH_SESSION (always populated)
+    schedule_type = Column(String, nullable=True)  # SWV_CLASS_SEARCH_SCHD (LEC, LAB, SEM - always populated)
+    instruction_type = Column(String, nullable=True)  # SWV_CLASS_SEARCH_INST_TYPE (always populated)
+    
+    # Availability
+    is_open = Column(Boolean, nullable=False, default=False)  # STUSEAT_OPEN == "Y" (always populated)
+    
+    # Syllabus
+    has_syllabus = Column(Boolean, nullable=False, default=False)  # SWV_CLASS_SEARCH_HAS_SYL_IND == "Y"
+    syllabus_url = Column(Text, nullable=True)  # Constructed from CRN and term
+    
+    # Attributes
+    attributes_text = Column(Text, nullable=True)  # SWV_CLASS_SEARCH_ATTRIBUTES (pipe-delimited)
+    
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        return f"<Section(id='{self.id}', course='{self.dept} {self.course_number}', section='{self.section_number}', open={self.is_open})>"
+
+
+class SectionInstructorDB(Base):
+    """Database model for section-to-instructor mapping"""
+    __tablename__ = "section_instructors"
+    
+    id = Column(String, primary_key=True)  # e.g., "202611_56508_584135" (term_code + CRN + PIDM)
+    section_id = Column(String, ForeignKey('sections.id'), nullable=False, index=True)
+    term_code = Column(String, nullable=False)
+    crn = Column(String, nullable=False)
+    instructor_name = Column(String, nullable=False, index=True)  # Parsed from NAME (remove "(P)" suffix)
+    instructor_pidm = Column(Integer, nullable=True)  # MORE field
+    has_cv = Column(Boolean, nullable=True)  # HAS_CV == "Y"
+    cv_url = Column(Text, nullable=True)  # Constructed URL
+    is_primary = Column(Boolean, default=False)  # First instructor in list
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        return f"<SectionInstructor(id='{self.id}', instructor='{self.instructor_name}', primary={self.is_primary})>"
+
+
+class SectionMeetingDB(Base):
+    """Database model for section meeting times and locations"""
+    __tablename__ = "section_meetings"
+    
+    id = Column(String, primary_key=True)  # e.g., "202611_56508_0" (term_code + CRN + meeting_index)
+    section_id = Column(String, ForeignKey('sections.id'), nullable=False, index=True)
+    term_code = Column(String, nullable=False)
+    crn = Column(String, nullable=False)
+    meeting_index = Column(Integer, nullable=False)  # Order in the array
+    credit_hours_session = Column(Integer, nullable=True)  # SSRMEET_CREDIT_HR_SESS
+    days_of_week = Column(ARRAY(String), nullable=True)  # Array of day codes (M, T, W, R, F, S, U)
+    begin_time = Column(String, nullable=True)  # SSRMEET_BEGIN_TIME
+    end_time = Column(String, nullable=True)  # SSRMEET_END_TIME
+    start_date = Column(String, nullable=True)  # SSRMEET_START_DATE
+    end_date = Column(String, nullable=True)  # SSRMEET_END_DATE
+    building_code = Column(String, nullable=True)  # SSRMEET_BLDG_CODE
+    room_code = Column(String, nullable=True)  # SSRMEET_ROOM_CODE
+    meeting_type = Column(String, nullable=True)  # SSRMEET_MTYP_CODE (Lecture, Examination)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        return f"<SectionMeeting(id='{self.id}', type='{self.meeting_type}', days={self.days_of_week})>"
+
+
+class SectionAttributeDetailedDB(Base):
+    """Database model for detailed section attributes with descriptions"""
+    __tablename__ = "section_attributes_detailed"
+    
+    id = Column(String, primary_key=True)  # section_id + "_" + attr_code
+    section_id = Column(String, ForeignKey('sections.id'), nullable=False, index=True)
+    term_code = Column(String, nullable=False)
+    crn = Column(String, nullable=False)
+    attribute_code = Column(String, nullable=False, index=True)  # SSRATTR_ATTR_CODE (e.g., "DIST")
+    attribute_desc = Column(String, nullable=True)  # STVATTR_DESC (e.g., "Distance Education")
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        return f"<SectionAttributeDetailed(section='{self.section_id}', code='{self.attribute_code}', desc='{self.attribute_desc}')>"
+
+
+class SectionPrereqDB(Base):
+    """Database model for section prerequisites"""
+    __tablename__ = "section_prereqs"
+    
+    id = Column(String, primary_key=True)  # section_id
+    section_id = Column(String, ForeignKey('sections.id'), nullable=False, index=True, unique=True)
+    term_code = Column(String, nullable=False)
+    crn = Column(String, nullable=False)
+    prereqs_text = Column(Text, nullable=True)  # P_PRE_REQS_OUT (human-readable)
+    prereqs_json = Column(JSON, nullable=True)  # Full structured data if available
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        return f"<SectionPrereq(section='{self.section_id}', prereqs='{self.prereqs_text[:50] if self.prereqs_text else None}...')>"
+
+
+class SectionRestrictionDB(Base):
+    """Database model for section restrictions (all types in one table)"""
+    __tablename__ = "section_restrictions"
+    
+    id = Column(String, primary_key=True)  # section_id + "_" + restriction_type + "_" + index
+    section_id = Column(String, ForeignKey('sections.id'), nullable=False, index=True)
+    term_code = Column(String, nullable=False)
+    crn = Column(String, nullable=False)
+    restriction_type = Column(String, nullable=False, index=True)  # 'program', 'college', 'level', etc.
+    restriction_code = Column(String, nullable=True)  # The code value
+    restriction_desc = Column(String, nullable=True)  # Description
+    include_exclude = Column(String, nullable=True)  # 'I' for include, 'E' for exclude
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        return f"<SectionRestriction(section='{self.section_id}', type='{self.restriction_type}', code='{self.restriction_code}')>"
+
+
+class SectionBookstoreLinkDB(Base):
+    """Database model for section bookstore/textbook links"""
+    __tablename__ = "section_bookstore_links"
+    
+    id = Column(String, primary_key=True)  # section_id
+    section_id = Column(String, ForeignKey('sections.id'), nullable=False, index=True, unique=True)
+    term_code = Column(String, nullable=False)
+    crn = Column(String, nullable=False)
+    bookstore_url = Column(Text, nullable=True)
+    link_data = Column(JSON, nullable=True)  # Full response data
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        return f"<SectionBookstoreLink(section='{self.section_id}', url='{self.bookstore_url}')>"
+
+
+class ProfessorSummaryNewDB(Base):
+    """Database model for new hierarchical professor summaries (separate rows per course)"""
+    __tablename__ = "professor_summaries_new"
+    
+    id = Column(String, primary_key=True)  # UUID or hash: professor_id + course_code (or just professor_id for overall)
+    professor_id = Column(String, ForeignKey('professors.id'), nullable=False, index=True)
+    course_code = Column(String, nullable=True, index=True)  # NULL for overall summary, course code for course-specific
+    
+    # Overall summary fields (populated when course_code is NULL)
+    overall_sentiment = Column(String, nullable=True)
+    strengths = Column(ARRAY(Text), nullable=True)  # List of strings
+    complaints = Column(ARRAY(Text), nullable=True)  # List of strings
+    consistency = Column(String, nullable=True)
+    
+    # Course-specific summary fields (populated when course_code is NOT NULL)
+    teaching = Column(Text, nullable=True)
+    exams = Column(Text, nullable=True)
+    grading = Column(Text, nullable=True)
+    workload = Column(Text, nullable=True)
+    personality = Column(Text, nullable=True)
+    policies = Column(Text, nullable=True)
+    other = Column(Text, nullable=True)
+    
+    # Common fields
+    confidence = Column(Float, nullable=False)
+    total_reviews = Column(Integer, nullable=False, default=0)
+    
+    # New statistics fields
+    avg_rating = Column(Float, nullable=True)
+    avg_difficulty = Column(Float, nullable=True)
+    common_tags = Column(ARRAY(String), nullable=True)
+    tag_frequencies = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        if self.course_code:
+            return f"<ProfessorSummaryNew(professor_id='{self.professor_id}', course='{self.course_code}', confidence={self.confidence})>"
+        else:
+            return f"<ProfessorSummaryNew(professor_id='{self.professor_id}', overall, confidence={self.confidence})>"
 
 # Global engine instance for connection pooling
 _engine = None
@@ -367,68 +579,89 @@ def upsert_professors(session, professors: List[Professor]):
     Upsert professors into the database.
     Insert new records and update existing ones based on ID.
     """
-    query_all = session.execute(select(ProfessorDB))
-    all_db_profs = query_all.scalars().all()
-    insert_professors: list[dict] = []
-    update_professors: list[dict] = []
+    # Ensure transaction is clean
+    try:
+        if session.in_transaction():
+            session.execute(text("SELECT 1"))
+    except Exception:
+        session.rollback()
     
-    for professor in professors:
-        # Generate UUID if no ID provided
-        if not professor.id:
-            raise ValueError("Professor ID is required")
-            
-        db_prof_obj = next(
-                (
-                    x
-                    for x in all_db_profs
-                    if x.id == professor.id
-                ),
-                None,
-            )
+    try:
+        query_all = session.execute(select(ProfessorDB))
+        all_db_profs = query_all.scalars().all()
+        insert_professors: list[dict] = []
+        update_professors: list[dict] = []
         
-        if db_prof_obj:
-            # if the new professor has more ratings, update the existing professor
-            if professor.num_ratings > db_prof_obj.num_ratings:
-                update_professors.append({
+        for professor in professors:
+            # Generate UUID if no ID provided
+            if not professor.id:
+                raise ValueError("Professor ID is required")
+                
+            db_prof_obj = next(
+                    (
+                        x
+                        for x in all_db_profs
+                        if x.id == professor.id
+                    ),
+                    None,
+                )
+            
+            if db_prof_obj:
+                # if the new professor has more ratings, update the existing professor
+                if professor.num_ratings > db_prof_obj.num_ratings:
+                    update_professors.append({
+                        'id': professor.id,
+                        'avg_rating': professor.avg_rating,
+                        'avg_difficulty': professor.avg_difficulty,
+                        'num_ratings': professor.num_ratings,
+                        'would_take_again_percent': professor.would_take_again_percent,
+                        'updated_at': datetime.now()
+                    })
+            else:
+                insert_professors.append({
                     'id': professor.id,
+                    'university_id': professor.university_id,
+                    'legacy_id': professor.legacy_id,
+                    'first_name': professor.first_name,
+                    'last_name': professor.last_name,
+                    'department': professor.department,
                     'avg_rating': professor.avg_rating,
                     'avg_difficulty': professor.avg_difficulty,
                     'num_ratings': professor.num_ratings,
                     'would_take_again_percent': professor.would_take_again_percent,
+                    'created_at': datetime.now(),
                     'updated_at': datetime.now()
                 })
-        else:
-            insert_professors.append({
-                'id': professor.id,
-                'university_id': professor.university_id,
-                'legacy_id': professor.legacy_id,
-                'first_name': professor.first_name,
-                'last_name': professor.last_name,
-                'department': professor.department,
-                'avg_rating': professor.avg_rating,
-                'avg_difficulty': professor.avg_difficulty,
-                'num_ratings': professor.num_ratings,
-                'would_take_again_percent': professor.would_take_again_percent,
-                'created_at': datetime.now(),
-                'updated_at': datetime.now()
-            })
-    
-    print("Number of professors to insert: ", len(insert_professors))
-    print("Number of professors to update: ", len(update_professors))
-    
-    if insert_professors:
-        session.execute(insert(ProfessorDB), insert_professors)
-    if update_professors:
-        session.execute(update(ProfessorDB), update_professors)
-    
-    session.commit()
-    return insert_professors + update_professors
+        
+        print("Number of professors to insert: ", len(insert_professors))
+        print("Number of professors to update: ", len(update_professors))
+        
+        if insert_professors:
+            session.execute(insert(ProfessorDB), insert_professors)
+        if update_professors:
+            session.execute(update(ProfessorDB), update_professors)
+        
+        session.commit()
+        return insert_professors + update_professors
+    except Exception as e:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        raise
 
 def upsert_reviews(session, reviews: List[Review]):
     """
     Upsert reviews into the database.
     Insert new records and update existing ones based on ID.
     """
+    # Ensure transaction is clean
+    try:
+        if session.in_transaction():
+            session.execute(text("SELECT 1"))
+    except Exception:
+        session.rollback()
+    
     insert_reviews: list[dict] = []
 
     for review in reviews:
@@ -438,7 +671,14 @@ def upsert_reviews(session, reviews: List[Review]):
             "updated_at": datetime.now()
         })
     
-    if insert_reviews:
-        session.execute(insert(ReviewDB), insert_reviews)
-        session.commit()
-    return insert_reviews
+    try:
+        if insert_reviews:
+            session.execute(insert(ReviewDB), insert_reviews)
+            session.commit()
+        return insert_reviews
+    except Exception as e:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        raise
