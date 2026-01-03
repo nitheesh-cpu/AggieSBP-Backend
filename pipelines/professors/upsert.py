@@ -89,7 +89,7 @@ def upsert_professor_summary(
             "policies": None,
             "other": None,
             "confidence": professor_summary.confidence,
-            "total_reviews": sum(cs.total_reviews for cs in professor_summary.course_summaries),
+            "total_reviews": professor_summary.total_reviews,
             "avg_rating": professor_summary.avg_rating,
             "avg_difficulty": professor_summary.avg_difficulty,
             "common_tags": professor_summary.common_tags or [],
