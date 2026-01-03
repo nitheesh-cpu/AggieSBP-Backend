@@ -1,10 +1,10 @@
 # AggieRMP - Texas A&M University Rate My Professor Analysis
 
-A comprehensive data collection and analysis system for Texas A&M University professor ratings and course information.
+A comprehensive data collection and analysis system for Texas A&M University professor ratings, grade distribtuions and course information.
 
 ## 🚀 Features
 
-- **Department & Course Scraping**: Automated collection of department and course data from TAMU College Scheduler
+- **Department & Course Scraping**: Automated collection of department and course data from TAMU Course Catalog
 - **Rate My Professor Integration**: Collection and analysis of professor ratings and reviews
 - **Database Management**: PostgreSQL-based storage with SQLAlchemy ORM
 - **Data Analysis**: AI-powered summarization and insights generation
@@ -21,14 +21,12 @@ AggieRMP/
 │   ├── 📁 models/             # Pydantic data models
 │   ├── 📁 core/               # Core utilities and configuration
 │   └── main.py                # Main application entry point
-├── 📁 data/                   # Data storage
-│   ├── 📁 raw/                # Raw scraped data
-│   ├── 📁 processed/          # Cleaned/processed data
-│   └── 📁 exports/            # Export files
-├── 📁 scripts/                # Standalone scripts
-├── 📁 tests/                  # Test files
+├── 📁 pipelines/              # Data processing pipelines
+│   ├── 📁 professors/         # Professor reviews and summarization
+│   ├── 📁 gpa/                # GPA data collection and processing
+│   ├── 📁 sections/           # Course section updates
+│   └── 📁 courses/            # Course catalog updates
 ├── 📁 docs/                   # Documentation
-├── 📁 config/                 # Configuration files
 ├── pyproject.toml             # Project dependencies
 └── README.md                  # This file
 ```
@@ -61,16 +59,16 @@ AggieRMP/
 
 ## 🎯 Usage
 
-### Data Collection
+### Data Pipelines
 
-1. **Scrape Departments & Courses**
+1. **Upsert Professor Reviews & Summaries**
    ```bash
-   python scripts/scrape_departments_auth.py
+   python pipelines/professors/upsert_reviews_and_summaries.py --force-update
    ```
 
-2. **Collect Professor Reviews**
+2. **Upsert GPA Data**
    ```bash
-   python src/aggiermp/collectors/rmp_review_collector.py
+   python pipelines/gpa/upsert_gpa_data.py
    ```
 
 ### API Server
@@ -81,21 +79,10 @@ python src/aggiermp/main.py
 
 ## 📊 Data Sources
 
-- **TAMU College Scheduler**: Department and course information
+- **TAMU Course Catalog**: Department and course information
+- **Anex.us**: Historical GPA Data
 - **Rate My Professor**: Professor ratings and reviews
 - **Manual Curation**: Additional data validation and enhancement
-
-## 🔧 Configuration
-
-Configuration files are stored in the `config/` directory:
-- `cookies.json`: Authentication cookies for web scraping
-
-## 🧪 Testing
-
-Run tests with:
-```bash
-python -m pytest tests/
-```
 
 ## 📝 Contributing
 

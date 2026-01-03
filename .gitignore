@@ -55,3 +55,4 @@ __pycache__/
 
 scripts/
 data/
+tests/
