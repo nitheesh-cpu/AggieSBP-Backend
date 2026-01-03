@@ -1,8 +1,7 @@
 from datetime import datetime
 import os
 from sqlalchemy import ARRAY, DateTime, create_engine, Column, String, Integer, Float, Boolean, select, text, ForeignKey, update, Text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.dialects.postgresql import insert, JSON
 from pydantic import BaseModel, Field
 from typing import Optional, List

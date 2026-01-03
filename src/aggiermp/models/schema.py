@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
 import uuid
 
@@ -16,10 +16,9 @@ class University(BaseModel):
     city: Optional[str]
     state: Optional[str]
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(populate_by_name=True)
+
+
 
 class Professor(BaseModel):
     """Professor model - Updated to match PostgreSQL schema"""
@@ -34,10 +33,8 @@ class Professor(BaseModel):
     num_ratings: int = Field(alias="numRatings")
     would_take_again_percent: Optional[float] = Field(alias="wouldTakeAgainPercent")
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(populate_by_name=True)
+
         
 
 class Course(BaseModel):
@@ -49,10 +46,7 @@ class Course(BaseModel):
     department: Optional[str] = None
     normalized_code: Optional[str] = None
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+
 
 class ProfessorCourseStats(BaseModel):
     """Professor course statistics model"""
@@ -62,10 +56,7 @@ class ProfessorCourseStats(BaseModel):
     course_count: int = 0
     normalized_code: Optional[str] = None
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(populate_by_name=True)
 
 class ProfessorCourse(BaseModel):
     """Professor-Course mapping model"""
@@ -74,10 +65,7 @@ class ProfessorCourse(BaseModel):
     course_id: str
     created_at: Optional[datetime] = None
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(populate_by_name=True)
 
 class Review(BaseModel):
     """Review model with comprehensive RMP fields - Updated to match PostgreSQL schema"""
@@ -103,7 +91,8 @@ class Review(BaseModel):
     flag_status: Optional[str] = Field(alias="flagStatus")
     created_by_user: bool = Field(alias="createdByUser")
 
-    @validator('rating_tags', pre=True)
+    @field_validator('rating_tags', mode='before')
+    @classmethod
     def parse_rating_tags(cls, v):
         """Parse rating tags string into list of individual tags"""
         if v is None:
@@ -120,7 +109,8 @@ class Review(BaseModel):
         
         return None
 
-    @validator('review_date', 'admin_reviewed_at', pre=True)
+    @field_validator('review_date', 'admin_reviewed_at', mode='before')
+    @classmethod
     def parse_datetime(cls, v):
         """Parse datetime strings from RMP API format to datetime objects"""
         if v is None:
@@ -167,10 +157,10 @@ class Review(BaseModel):
         # If we can't parse it, return None
         return None
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(populate_by_name=True)
+
+
+
 
 class ReviewTag(BaseModel):
     """Review tag model"""
@@ -179,10 +169,8 @@ class ReviewTag(BaseModel):
     tag: str
     created_at: Optional[datetime] = None
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(populate_by_name=True)
+
 
 class Summary(BaseModel):
     """Summary model for AI-generated content"""
@@ -198,10 +186,8 @@ class Summary(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
+    model_config = ConfigDict(populate_by_name=True)
+
 
 # Table name mapping for PostgreSQL
 TABLE_NAMES = {

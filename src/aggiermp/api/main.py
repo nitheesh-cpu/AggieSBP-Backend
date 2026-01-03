@@ -5080,7 +5080,7 @@ async def compare_professors(
     ids: str = Query(
         ...,
         description="Comma-separated list of professor IDs (max 10)",
-        example="prof123,prof456,prof789",
+        examples=["prof123,prof456,prof789"],
     ),
     db: Session = Depends(get_db_session),
 ):
