@@ -84,14 +84,8 @@ def get_new_reviews_for_professor(
     try:
         # Create a new collector instance (one per thread)
         collector = RMPReviewCollector()
-        # Get all reviews from RMP
-        all_reviews = collector.get_all_reviews(professor_id)
-        
-        # Filter to only new reviews
-        new_reviews = [
-            review for review in all_reviews 
-            if review.id not in existing_review_ids
-        ]
+        # Get only new reviews (optimized fetch)
+        new_reviews = collector.get_new_reviews(professor_id, list(existing_review_ids))
         
         return (professor_id, new_reviews)
     except Exception as e:
@@ -141,8 +135,10 @@ def upsert_reviews_and_summaries(
         if clear_checkpoint_on_start:
             clear_checkpoint()
         
-        # Load checkpoint if resuming
-        processed_professors = load_checkpoint() if resume else set()
+        # Load checkpoint if resuming and allowed
+        use_checkpoint = resume and professor_ids is None
+        processed_professors = load_checkpoint() if use_checkpoint else set()
+        
         if processed_professors:
             print(f"Resuming: {len(processed_professors)} professors already processed")
         
@@ -262,6 +258,23 @@ def upsert_reviews_and_summaries(
                         for review in all_reviews
                     ]
                     
+                    # Smart Skip: Check if we actually need to regenerate summary
+                    # If we are in force-update mode, but the total reviews match what's in DB,
+                    # and we found no *new* reviews, we can probably skip clustering.
+                    should_skip_clustering = False
+                    if not new_reviews_dict.get(professor_id):
+                        from aggiermp.database.base import ProfessorSummaryNewDB
+                        existing_summary_row = session.query(ProfessorSummaryNewDB.total_reviews).filter(
+                             ProfessorSummaryNewDB.professor_id == professor_id,
+                             ProfessorSummaryNewDB.course_code.is_(None)
+                        ).first()
+                        
+                        if existing_summary_row and existing_summary_row.total_reviews == len(raw_reviews):
+                            print("(up to date, skipping)", end=" ")
+                            results["professors_processed"] += 1 # Count as processed so we don't look stuck
+                            processed_professors.add(professor_id)
+                            continue
+
                     # Generate summary
                     professor_summary = pipeline.process_professor_reviews(
                         raw_reviews,
@@ -286,7 +299,7 @@ def upsert_reviews_and_summaries(
                             pass
                     
                     # Save checkpoint periodically (every 10 professors)
-                    if results["professors_processed"] % 10 == 0:
+                    if results["professors_processed"] % 10 == 0 and use_checkpoint:
                         save_checkpoint(processed_professors)
                         
                 except Exception as e:
@@ -300,10 +313,13 @@ def upsert_reviews_and_summaries(
                         pass
             
             # Save checkpoint after each batch
-            save_checkpoint(processed_professors)
+            if use_checkpoint:
+                save_checkpoint(processed_professors)
         
-        # Final checkpoint save
-        save_checkpoint(processed_professors)
+        # Clear checkpoint on successful completion
+        if use_checkpoint:
+            print("Processing complete. Clearing checkpoint.")
+            clear_checkpoint()
         
         # Print summary
         print(f"\nComplete: {results['professors_processed']} processed, "
@@ -331,6 +347,8 @@ def main():
     parser = argparse.ArgumentParser(description="Upsert reviews and summaries")
     parser.add_argument("--no-resume", action="store_true", help="Don't resume from checkpoint")
     parser.add_argument("--clear-checkpoint", action="store_true", help="Clear checkpoint and start fresh")
+    parser.add_argument("--force-update", action="store_true", help="Force update summaries even if no new reviews")
+    parser.add_argument("--professor-id", type=str, help="Process only a specific professor ID")
     args = parser.parse_args()
     
     # Set environment variables for performance
@@ -338,9 +356,13 @@ def main():
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
     
     # Process all professors (or specify a list of IDs)
+    professor_ids = [args.professor_id] if args.professor_id else None
+    
     result = upsert_reviews_and_summaries(
-        resume=not args.no_resume,
-        clear_checkpoint_on_start=args.clear_checkpoint
+        professor_ids=professor_ids,
+        resume=(not args.no_resume and not args.force_update and not args.professor_id),
+        clear_checkpoint_on_start=args.clear_checkpoint,
+        skip_if_no_new_reviews=not args.force_update
     )
     
     if "error" in result:

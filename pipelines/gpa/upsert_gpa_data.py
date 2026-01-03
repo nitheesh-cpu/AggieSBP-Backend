@@ -292,8 +292,9 @@ async def main_async():
         return
 
     # Step 5: Bulk insert in chunks
+    total_batches = (len(all_records) + BULK_INSERT_SIZE - 1) // BULK_INSERT_SIZE
     print(
-        f"\n[STEP 5] Bulk inserting records ({BULK_INSERT_SIZE} records per batch)..."
+        f"\n[STEP 5] Bulk inserting records ({BULK_INSERT_SIZE} records/batch, {total_batches} batches)..."
     )
 
     total_inserted = 0
@@ -303,29 +304,28 @@ async def main_async():
         chunk_num += 1
         chunk_size = len(chunk)
 
-        print(f"[INFO] Inserting batch {chunk_num} ({chunk_size} records)...", end=" ")
+        print(f"  > Inserting batch {chunk_num}/{total_batches} ({chunk_size} records)...", end=" ", flush=True)
 
         inserted = bulk_insert_records(chunk)
         total_inserted += inserted
 
         if inserted == chunk_size:
-            print("[OK]")
+            print("OK")
         else:
-            print(f"[WARNING] {inserted}/{chunk_size} inserted")
+            print(f"WARNING ({inserted}/{chunk_size} success)")
 
     # Final summary
     end_time = datetime.now()
     duration = end_time - start_time
+    courses_per_sec = len(courses_to_fetch) / duration.total_seconds() if duration.total_seconds() > 0 else 0
 
     print("\n" + "=" * 60)
-    print("[OK] Operation Complete!")
+    print("GPA UPSERT COMPLETE")
     print("=" * 60)
-    print(f"[INFO] Duration: {duration}")
-    print(f"[INFO] Courses processed: {len(successful_responses)}")
-    print(f"[INFO] Records inserted: {total_inserted}")
-    print(
-        f"[INFO] Speed: {len(courses_to_fetch) / duration.total_seconds():.2f} courses/second"
-    )
+    print(f"{'Duration':<20}: {duration}")
+    print(f"{'Courses Processed':<20}: {len(successful_responses)}")
+    print(f"{'Records Inserted':<20}: {total_inserted}")
+    print(f"{'Speed':<20}: {courses_per_sec:.2f} courses/sec")
 
     if total_inserted > 0:
         print(f"\n[OK] SUCCESS! {total_inserted} GPA records added to database!")

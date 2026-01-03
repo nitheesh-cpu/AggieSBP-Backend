@@ -74,6 +74,7 @@ class HierarchicalSummarizationPipeline:
                 complaints=[],
                 consistency="Unknown",
                 confidence=0.0,
+                total_reviews=len(raw_reviews),
                 course_summaries=[]
             )
         
@@ -117,7 +118,8 @@ class HierarchicalSummarizationPipeline:
         professor_summary = self._generate_professor_summary(
             professor_id,
             course_summaries,
-            processed_reviews
+            processed_reviews,
+            total_review_count=len(raw_reviews)
         )
         
         return professor_summary
@@ -223,7 +225,8 @@ class HierarchicalSummarizationPipeline:
         self,
         professor_id: str,
         course_summaries: List[CourseSummary],
-        all_reviews: List[ProcessedReview]
+        all_reviews: List[ProcessedReview],
+        total_review_count: int
     ) -> ProfessorSummary:
         """Generate overall professor summary from course summaries"""
         
@@ -307,6 +310,7 @@ class HierarchicalSummarizationPipeline:
             consistency=consistency,
             confidence=confidence,
             course_summaries=course_summaries,
+            total_reviews=total_review_count,
             avg_rating=avg_rating,
             avg_difficulty=avg_difficulty,
             common_tags=common_tags,

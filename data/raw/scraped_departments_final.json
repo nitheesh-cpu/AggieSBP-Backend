@@ -72,12 +72,6 @@
     "title": "ALED - Ag Leadership & Dev"
   },
   {
-    "id": "ANLY",
-    "short": "ANLY",
-    "long": "ANLY - Analytics",
-    "title": "ANLY - Analytics"
-  },
-  {
     "id": "ANSC",
     "short": "ANSC",
     "long": "ANSC - Animal Science",
@@ -228,12 +222,6 @@
     "title": "CARC - College of Architecture"
   },
   {
-    "id": "CEHD",
-    "short": "CEHD",
-    "long": "CEHD - Coll of Ed & Human Dev",
-    "title": "CEHD - Coll of Ed & Human Dev"
-  },
-  {
     "id": "CHEM",
     "short": "CHEM",
     "long": "CHEM - Chemistry",
@@ -258,10 +246,22 @@
     "title": "CLAS - Classics"
   },
   {
+    "id": "CLBA",
+    "short": "CLBA",
+    "long": "CLBA - Mays Business School",
+    "title": "CLBA - Mays Business School"
+  },
+  {
     "id": "CLEN",
     "short": "CLEN",
     "long": "CLEN - College of Engineering",
     "title": "CLEN - College of Engineering"
+  },
+  {
+    "id": "CLSC",
+    "short": "CLSC",
+    "long": "CLSC - College of Science",
+    "title": "CLSC - College of Science"
   },
   {
     "id": "COMM",
@@ -288,22 +288,28 @@
     "title": "CSCE - Computer Sci & Engr"
   },
   {
-    "id": "CULN",
-    "short": "CULN",
-    "long": "CULN - Culinology",
-    "title": "CULN - Culinology"
-  },
-  {
     "id": "CVEN",
     "short": "CVEN",
     "long": "CVEN - Civil Engineering",
     "title": "CVEN - Civil Engineering"
   },
   {
+    "id": "CYBR",
+    "short": "CYBR",
+    "long": "CYBR - Cybersecurity",
+    "title": "CYBR - Cybersecurity"
+  },
+  {
     "id": "DAEN",
     "short": "DAEN",
     "long": "DAEN - Data Engineering",
     "title": "DAEN - Data Engineering"
+  },
+  {
+    "id": "DASC",
+    "short": "DASC",
+    "long": "DASC - Dairy Science",
+    "title": "DASC - Dairy Science"
   },
   {
     "id": "DCED",
@@ -318,12 +324,6 @@
     "title": "DDHS - Dental Hygiene"
   },
   {
-    "id": "DHUM",
-    "short": "DHUM",
-    "long": "DHUM - Digital Humanities",
-    "title": "DHUM - Digital Humanities"
-  },
-  {
     "id": "DPHS",
     "short": "DPHS",
     "long": "DPHS - Dental Public Health",
@@ -334,12 +334,6 @@
     "short": "ECCB",
     "long": "ECCB - Eco & Conservation Biol",
     "title": "ECCB - Eco & Conservation Biol"
-  },
-  {
-    "id": "ECDE",
-    "short": "ECDE",
-    "long": "ECDE-Early Chldhd Devl & Educ",
-    "title": "ECDE-Early Chldhd Devl & Educ"
   },
   {
     "id": "ECEN",
@@ -390,12 +384,6 @@
     "title": "EHRD - Ed Human Res Develop"
   },
   {
-    "id": "ENDG",
-    "short": "ENDG",
-    "long": "ENDG - Engr Design Graphics",
-    "title": "ENDG - Engr Design Graphics"
-  },
-  {
     "id": "ENDO",
     "short": "ENDO",
     "long": "ENDO - Endodontics",
@@ -444,6 +432,18 @@
     "title": "ENTO - Entomology"
   },
   {
+    "id": "ENTR",
+    "short": "ENTR",
+    "long": "ENTR - Entrepreneurship",
+    "title": "ENTR - Entrepreneurship"
+  },
+  {
+    "id": "EPFB",
+    "short": "EPFB",
+    "long": "EPFB - Educ Psyc Field Based",
+    "title": "EPFB - Educ Psyc Field Based"
+  },
+  {
     "id": "EPSY",
     "short": "EPSY",
     "long": "EPSY - Educational Psychology",
@@ -454,6 +454,12 @@
     "short": "ESET",
     "long": "ESET - Electronic Sys Eng Tech",
     "title": "ESET - Electronic Sys Eng Tech"
+  },
+  {
+    "id": "EURO",
+    "short": "EURO",
+    "long": "EURO - European Studies",
+    "title": "EURO - European Studies"
   },
   {
     "id": "EVEN",
@@ -558,12 +564,6 @@
     "title": "HBEH -  Health Behavior"
   },
   {
-    "id": "HCPI",
-    "short": "HCPI",
-    "long": "HCPI - Healthcare Prof Core In",
-    "title": "HCPI - Healthcare Prof Core In"
-  },
-  {
     "id": "HISP",
     "short": "HISP",
     "long": "HISP - Hispanic Studies",
@@ -586,12 +586,6 @@
     "short": "HMGT",
     "long": "HMGT - Hosp, Hotel Mgmt, Tour",
     "title": "HMGT - Hosp, Hotel Mgmt, Tour"
-  },
-  {
-    "id": "HONR",
-    "short": "HONR",
-    "long": "HONR - Honors",
-    "title": "HONR - Honors"
   },
   {
     "id": "HORT",
@@ -672,6 +666,12 @@
     "title": "JOUR - Journalism"
   },
   {
+    "id": "JWST",
+    "short": "JWST",
+    "long": "JWST - Jewish Studies",
+    "title": "JWST - Jewish Studies"
+  },
+  {
     "id": "KINE",
     "short": "KINE",
     "long": "KINE - Kinesiology",
@@ -700,6 +700,24 @@
     "short": "LDTC",
     "long": "LDTC - Learning Design & Techn",
     "title": "LDTC - Learning Design & Techn"
+  },
+  {
+    "id": "LING",
+    "short": "LING",
+    "long": "LING -Linguistics",
+    "title": "LING -Linguistics"
+  },
+  {
+    "id": "LMAS",
+    "short": "LMAS",
+    "long": "LMAS - Latino/Mex Amer Studies",
+    "title": "LMAS - Latino/Mex Amer Studies"
+  },
+  {
+    "id": "LTPS",
+    "short": "LTPS",
+    "long": "LTPS - Learn Tech & Perf Sys",
+    "title": "LTPS - Learn Tech & Perf Sys"
   },
   {
     "id": "MASC",
@@ -780,6 +798,12 @@
     "title": "MPHY - Medical Physiology"
   },
   {
+    "id": "MPIM",
+    "short": "MPIM",
+    "long": "MPIM - Microbial Pathogen Imm",
+    "title": "MPIM - Microbial Pathogen Imm"
+  },
+  {
     "id": "MSCI",
     "short": "MSCI",
     "long": "MSCI - Medical Sciences",
@@ -810,6 +834,12 @@
     "title": "MUSC - Music"
   },
   {
+    "id": "MUST",
+    "short": "MUST",
+    "long": "MUST - Museum Studies",
+    "title": "MUST - Museum Studies"
+  },
+  {
     "id": "MXET",
     "short": "MXET",
     "long": "MXET - Multidiscip Engr Tech",
@@ -826,12 +856,6 @@
     "short": "NRSC",
     "long": "NRSC - Neuroscience",
     "title": "NRSC - Neuroscience"
-  },
-  {
-    "id": "NSEB",
-    "short": "NSEB",
-    "long": "NSEB - Nat'l Student Exch-Home",
-    "title": "NSEB - Nat'l Student Exch-Home"
   },
   {
     "id": "NUEN",
@@ -1050,12 +1074,6 @@
     "title": "RWFM - Rang Wild & Fish Mgmt"
   },
   {
-    "id": "SABR",
-    "short": "SABR",
-    "long": "SABR - Study Abroad",
-    "title": "SABR - Study Abroad"
-  },
-  {
     "id": "SCMT",
     "short": "SCMT",
     "long": "SCMT - Supply Chain Mgmt",
@@ -1138,12 +1156,6 @@
     "short": "SYEX",
     "long": "SYEX - Second Year Experience",
     "title": "SYEX - Second Year Experience"
-  },
-  {
-    "id": "TAMU",
-    "short": "TAMU",
-    "long": "TAMU - Enrollment Type/Holding",
-    "title": "TAMU - Enrollment Type/Holding"
   },
   {
     "id": "TCMG",

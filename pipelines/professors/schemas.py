@@ -46,6 +46,7 @@ class ProfessorSummary:
     consistency: str
     confidence: float
     course_summaries: List[CourseSummary]
+    total_reviews: int = 0
     # Stats
     avg_rating: Optional[float] = None
     avg_difficulty: Optional[float] = None
