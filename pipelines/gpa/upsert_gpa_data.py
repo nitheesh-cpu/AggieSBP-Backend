@@ -304,7 +304,11 @@ async def main_async():
         chunk_num += 1
         chunk_size = len(chunk)
 
-        print(f"  > Inserting batch {chunk_num}/{total_batches} ({chunk_size} records)...", end=" ", flush=True)
+        print(
+            f"  > Inserting batch {chunk_num}/{total_batches} ({chunk_size} records)...",
+            end=" ",
+            flush=True,
+        )
 
         inserted = bulk_insert_records(chunk)
         total_inserted += inserted
@@ -317,7 +321,11 @@ async def main_async():
     # Final summary
     end_time = datetime.now()
     duration = end_time - start_time
-    courses_per_sec = len(courses_to_fetch) / duration.total_seconds() if duration.total_seconds() > 0 else 0
+    courses_per_sec = (
+        len(courses_to_fetch) / duration.total_seconds()
+        if duration.total_seconds() > 0
+        else 0
+    )
 
     print("\n" + "=" * 60)
     print("GPA UPSERT COMPLETE")

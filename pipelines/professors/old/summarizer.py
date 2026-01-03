@@ -8,7 +8,6 @@ hybrid extractive + abstractive approaches with BART model.
 import os
 import re
 from collections import Counter
-from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -20,7 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from transformers import BartForConditionalGeneration, BartTokenizer
 
-from aggiermp.database.base import ProfessorDB, ReviewDB
+from aggiermp.database.base import ReviewDB
 from pipelines.professors.schemas import ReviewData
 
 load_dotenv()
@@ -381,8 +380,6 @@ class ReviewSummarizer:
                 "extractive_length": 0,
                 "final_length": 0,
             }
-
-        summary_type = "course-specific" if is_course_specific else "overall"
 
         try:
             # Step 1: Extractive phase - get key sentences
@@ -783,7 +780,7 @@ class ReviewSummarizer:
 
         # Combine all texts
         combined_text = " ".join(texts)
-        original_length = len(combined_text)
+        len(combined_text)
 
         # Truncate if too long (BART has token limits)
         if len(combined_text) > 8000:  # Conservative limit
@@ -919,4 +916,3 @@ class ReviewSummarizer:
             "courses_merged": reduction,
             "merged_course_details": {k: list(v) for k, v in merged_courses.items()},
         }
-

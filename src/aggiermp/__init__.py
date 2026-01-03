@@ -4,4 +4,4 @@ AggieRMP - Texas A&M University Rate My Professor data collection and analysis s
 
 __version__ = "1.0.0"
 __author__ = "Your Name"
-__email__ = "your.email@example.com" 
+__email__ = "your.email@example.com"

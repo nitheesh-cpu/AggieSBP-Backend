@@ -79,3 +79,7 @@ minversion = "7.0"
 addopts = "-ra -q"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff.lint.per-file-ignores]
+"pipelines/*" = ["E402"]
+"tests/*" = ["E402"]

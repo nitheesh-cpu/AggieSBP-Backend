@@ -14,13 +14,13 @@ from .scraper import (
     get_all_sections,
     get_sections_by_department,
     get_sections_by_course,
-    get_section_statistics
+    get_section_statistics,
 )
 from .upsert import (
     upsert_terms,
     upsert_sections,
     upsert_all_sections,
-    delete_old_sections
+    delete_old_sections,
 )
 
 __all__ = [
@@ -42,4 +42,3 @@ __all__ = [
     "upsert_all_sections",
     "delete_old_sections",
 ]
-

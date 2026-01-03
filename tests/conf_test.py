@@ -1,4 +1,3 @@
-
 import sys
 from pathlib import Path
 import pytest
@@ -12,6 +11,7 @@ sys.path.insert(0, str(src_path))
 # Adjust the import path based on your findings
 # It looks like it's in src/aggiermp/api/main.py
 from aggiermp.api.main import app
+
 
 @pytest.fixture(scope="module")
 def client():

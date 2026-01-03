@@ -9,6 +9,7 @@ from typing import List, Optional, Dict
 @dataclass
 class ClusterSummary:
     """Summary of a single semantic cluster"""
+
     cluster_type: str
     summary: str
     review_count: int
@@ -19,6 +20,7 @@ class ClusterSummary:
 @dataclass
 class CourseSummary:
     """Structured summary for a specific course"""
+
     course: str
     teaching: Optional[str] = None
     exams: Optional[str] = None
@@ -39,6 +41,7 @@ class CourseSummary:
 @dataclass
 class ProfessorSummary:
     """Overall summary for a professor across all courses"""
+
     professor_id: str
     overall_sentiment: str
     strengths: List[str]
@@ -57,6 +60,7 @@ class ProfessorSummary:
 @dataclass
 class ProcessedReview:
     """Cleaned and processed review"""
+
     review_id: str
     professor_id: str
     course_code: Optional[str]
@@ -67,4 +71,3 @@ class ProcessedReview:
     original_rating: Optional[float] = None
     original_difficulty: Optional[float] = None
     tags: Optional[List[str]] = None
-

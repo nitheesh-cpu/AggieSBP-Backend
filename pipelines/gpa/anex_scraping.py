@@ -45,7 +45,9 @@ async def get_newest_semester(session: aiohttp.ClientSession) -> Tuple[str, str]
         data = {"dept": "MATH", "number": "151"}
 
         timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-        async with session.post(url, headers=headers, data=data, timeout=timeout) as response:
+        async with session.post(
+            url, headers=headers, data=data, timeout=timeout
+        ) as response:
             if response.status != 200:
                 print(
                     f"[WARNING] Could not fetch semester data from anex.us API (status {response.status})"
@@ -172,7 +174,9 @@ async def fetch_course_data(
 
         try:
             timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-            async with session.post(url, headers=headers, data=data, timeout=timeout) as response:
+            async with session.post(
+                url, headers=headers, data=data, timeout=timeout
+            ) as response:
                 if response.status == 200:
                     try:
                         text_response = await response.text()
@@ -374,4 +378,3 @@ async def fetch_all_courses_concurrent(
         print(f"[ERROR] Failed: {failed_count}")
 
         return successful_responses
-

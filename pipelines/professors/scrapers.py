@@ -328,20 +328,22 @@ class RMPReviewCollector:
         reviews = self.get_all_reviews(professor_id)
         return [review for review in reviews if review.review_date > last_review_date]
 
-    def get_new_reviews(self, professor_id: str, existing_review_ids: list[str]) -> List[Review]:
+    def get_new_reviews(
+        self, professor_id: str, existing_review_ids: list[str]
+    ) -> List[Review]:
         """
         Fetches only new reviews for a professor by stopping when a known review ID is found.
-        
+
         Args:
             professor_id: The Rate My Professor ID
             existing_review_ids: List or set of review IDs already in the database
-            
+
         Returns:
             List of new Review objects
         """
         existing_ids = set(existing_review_ids)
         new_reviews = []
-        
+
         # Initial request
         response = self.session.post(
             "https://www.ratemyprofessors.com/graphql",
@@ -357,7 +359,7 @@ class RMPReviewCollector:
                 },
             },
         )
-        
+
         data = (
             response.json()
             .get("data", {})
@@ -381,17 +383,17 @@ class RMPReviewCollector:
             .get("pageInfo", {})
             .get("endCursor", "")
         )
-        
+
         # Check first batch
         batch_reviews = [
             Review(**review["node"], professor_id=professor_id) for review in data
         ]
-        
+
         for review in batch_reviews:
             if review.id in existing_ids:
                 return new_reviews  # Stop immediately if we hit a known review
             new_reviews.append(review)
-            
+
         # Continue if we haven't hit a known review yet
         while more_data:
             response = self.session.post(
@@ -431,15 +433,14 @@ class RMPReviewCollector:
                 .get("pageInfo", {})
                 .get("endCursor", "")
             )
-            
+
             batch_reviews = [
                 Review(**review["node"], professor_id=professor_id) for review in data
             ]
-            
+
             for review in batch_reviews:
                 if review.id in existing_ids:
                     return new_reviews  # Stop immediately if we hit a known review
                 new_reviews.append(review)
-                
-        return new_reviews
 
+        return new_reviews

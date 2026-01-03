@@ -8,11 +8,10 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from sqlalchemy import ARRAY, Column, DateTime, Float, Integer, String, Text, create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import ARRAY, Column, DateTime, Float, Integer, String, Text
+from sqlalchemy.orm import declarative_base
 
-from aggiermp.database.base import ProfessorDB, ReviewDB, upsert_professors, upsert_reviews
-from pipelines.professors.schemas import ReviewData
+from aggiermp.database.base import ProfessorDB, upsert_professors, upsert_reviews
 from pipelines.professors.summarizer import ReviewSummarizer
 
 Base = declarative_base()
@@ -20,12 +19,15 @@ Base = declarative_base()
 
 class SummaryDB(Base):
     """Database model for professor summaries"""
+
     __tablename__ = "professor_summaries"
 
     id = Column(String, primary_key=True)
     professor_id = Column(String, nullable=False)
     course_code = Column(String, nullable=True)  # None for overall summary
-    summary_type = Column(String, nullable=False)  # 'overall', 'course_specific', or 'course_number'
+    summary_type = Column(
+        String, nullable=False
+    )  # 'overall', 'course_specific', or 'course_number'
     summary_text = Column(Text, nullable=False)
     total_reviews = Column(Integer, nullable=False)
     avg_rating = Column(Float, nullable=True)
@@ -43,10 +45,10 @@ async def get_new_reviews_for_professor(session, professor_id):
     )
     if not professor:
         return []
-    
+
     last_review_date = professor.updated_at
     from pipelines.professors.scrapers import RMPReviewCollector
-    
+
     collector = RMPReviewCollector()
     reviews = collector.get_reviews_since_date(professor_id, last_review_date)
     if reviews:
@@ -57,21 +59,23 @@ async def get_new_reviews_for_professor(session, professor_id):
 async def update_professors(session, university_id):
     """Get all professors with new reviews"""
     from pipelines.professors.scrapers import RMPReviewCollector
-    
+
     collector = RMPReviewCollector()
     professors = collector.get_all_professors(university_id, 1000)
     updated_professors = upsert_professors(session, professors)
-    
+
     summarizer = ReviewSummarizer()
     for professor in updated_professors:
         await get_new_reviews_for_professor(session, professor.id)
         process_professor(summarizer, professor.id, include_course_numbers=True)
-    
+
     summarizer.close()
     return len(updated_professors)
 
 
-def create_overall_summary(summarizer: ReviewSummarizer, professor_id: str) -> Optional[str]:
+def create_overall_summary(
+    summarizer: ReviewSummarizer, professor_id: str
+) -> Optional[str]:
     """Create an overall summary for a professor across all courses"""
     reviews = summarizer.fetch_reviews_for_professor(professor_id)
 
@@ -80,7 +84,7 @@ def create_overall_summary(summarizer: ReviewSummarizer, professor_id: str) -> O
 
     # Prepare text and generate summary
     combined_text = summarizer.prepare_text_for_summarization(reviews, overall=True)
-    if type(combined_text) == list:
+    if isinstance(combined_text, list):
         course_result = summarizer.generate_hybrid_summary(
             combined_text, is_course_specific=False
         )
@@ -128,7 +132,9 @@ def create_overall_summary(summarizer: ReviewSummarizer, professor_id: str) -> O
     return summary_id
 
 
-def create_course_specific_summaries(summarizer: ReviewSummarizer, professor_id: str) -> List[str]:
+def create_course_specific_summaries(
+    summarizer: ReviewSummarizer, professor_id: str
+) -> List[str]:
     """Create course-specific summaries for a professor"""
     reviews = summarizer.fetch_reviews_for_professor(professor_id)
 
@@ -148,7 +154,7 @@ def create_course_specific_summaries(summarizer: ReviewSummarizer, professor_id:
         combined_text = summarizer.prepare_text_for_summarization(
             course_review_list, overall=False
         )
-        if type(combined_text) == list:
+        if isinstance(combined_text, list):
             course_result = summarizer.generate_hybrid_summary(
                 combined_text, is_course_specific=True
             )
@@ -196,7 +202,9 @@ def create_course_specific_summaries(summarizer: ReviewSummarizer, professor_id:
     return summary_ids
 
 
-def create_course_number_summaries(summarizer: ReviewSummarizer, professor_id: str) -> List[str]:
+def create_course_number_summaries(
+    summarizer: ReviewSummarizer, professor_id: str
+) -> List[str]:
     """Create course number summaries using professor's department context for proper formatting"""
     reviews = summarizer.fetch_reviews_for_professor(professor_id)
 
@@ -219,7 +227,7 @@ def create_course_number_summaries(summarizer: ReviewSummarizer, professor_id: s
         combined_text = summarizer.prepare_text_for_summarization(
             course_review_list, overall=False
         )
-        if type(combined_text) == list:
+        if isinstance(combined_text, list):
             course_result = summarizer.generate_hybrid_summary(
                 combined_text, is_course_specific=True
             )
@@ -268,9 +276,7 @@ def create_course_number_summaries(summarizer: ReviewSummarizer, professor_id: s
 
 
 def process_professor(
-    summarizer: ReviewSummarizer,
-    professor_id: str,
-    include_course_numbers: bool = True
+    summarizer: ReviewSummarizer, professor_id: str, include_course_numbers: bool = True
 ) -> Dict[str, any]:
     """Process both overall and course-specific summaries for a professor"""
     results = {
@@ -302,14 +308,14 @@ def process_professor(
         results["error"] = str(e)
         print(f"ERROR processing professor {professor_id}: {e}")
         import traceback
+
         traceback.print_exc()
 
     return results
 
 
 def process_all_professors(
-    summarizer: ReviewSummarizer,
-    include_course_numbers: bool = True
+    summarizer: ReviewSummarizer, include_course_numbers: bool = True
 ) -> List[Dict[str, any]]:
     """Process summaries for all professors with reviews"""
     print("\nSTARTING BATCH PROCESSING OF ALL PROFESSORS")
@@ -418,11 +424,10 @@ def get_all_summaries_for_professor(
 if __name__ == "__main__":
     from aggiermp.database.base import get_session
     import asyncio
-    
+
     session = get_session()
     try:
         count = asyncio.run(update_professors(session, "U2Nob29zLTEwMDM="))
         print(f"Updated professors count: {count}")
     finally:
         session.close()
-
