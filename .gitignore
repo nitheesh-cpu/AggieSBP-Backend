@@ -54,3 +54,4 @@ __pycache__/
 .cache/
 
 scripts/
+data/
