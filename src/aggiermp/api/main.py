@@ -234,7 +234,6 @@ app.add_middleware(
 )
 
 
-
 def get_db_session() -> Iterator[Session]:
     """Dependency to get database session with performance monitoring"""
     start_time = time.time()

@@ -83,7 +83,11 @@ def calculate_confidence_score(total_reviews: int, gpa_student_count: int) -> fl
     return min(1.0, math.log10(total_data_points + 1) / 3.0)
 
 
-@router.get("/{term_code}/ucc", response_model=List[UccCategoryGroup], summary="/discover/{term_code}/ucc")
+@router.get(
+    "/{term_code}/ucc",
+    response_model=List[UccCategoryGroup],
+    summary="/discover/{term_code}/ucc",
+)
 async def discover_ucc_courses(
     term_code: str, db: Session = Depends(get_session)
 ) -> List[UccCategoryGroup]:
