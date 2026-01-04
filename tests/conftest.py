@@ -49,11 +49,19 @@ def seed_data(db_session: Session) -> None:
         """)
         )
 
+        # Insert dummy University
+        db_session.execute(
+            text("""
+            INSERT INTO universities (id, name, created_at, updated_at)
+            VALUES (1, 'Texas A&M University', NOW(), NOW())
+        """)
+        )
+
         # Insert dummy Professor
         db_session.execute(
             text("""
-            INSERT INTO professors (id, first_name, last_name, avg_rating, num_ratings, created_at, updated_at)
-            VALUES ('P1', 'Test', 'Professor', 4.5, 10, NOW(), NOW())
+            INSERT INTO professors (id, first_name, last_name, avg_rating, num_ratings, university_id, created_at, updated_at)
+            VALUES ('P1', 'Test', 'Professor', 4.5, 10, 1, NOW(), NOW())
         """)
         )
 
