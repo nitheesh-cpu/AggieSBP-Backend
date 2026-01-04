@@ -633,9 +633,9 @@ def main():
     print("=" * 60)
     print(f"Total departments: {dept_count}")
     print(f"Total courses: {total_courses}")
-    print(f"Duration: {duration:.2f} seconds ({duration/60:.2f} minutes)")
+    print(f"Duration: {duration:.2f} seconds ({duration / 60:.2f} minutes)")
     if duration > 0:
-        print(f"Speed: {len(all_courses)/duration:.1f} courses/second")
+        print(f"Speed: {len(all_courses) / duration:.1f} courses/second")
     print("\n✓ Data has been upserted to:")
     print("  - departments")
     print("  - courses")

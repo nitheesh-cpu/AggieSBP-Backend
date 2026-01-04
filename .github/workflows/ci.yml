@@ -22,17 +22,23 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # We include httpx for async testing and pytest
-          pip install ruff mypy pytest httpx 
+          # Install CI tools + project dependencies
+          pip install ruff mypy pytest httpx safety
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Lint and Format
-        run: ruff check . && ruff format --check .
+        # This stops the workflow early if linting fails
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Type Check
+        run: mypy .
 
       - name: Run Tests
         run: pytest
 
       - name: Security Scan (Safety)
-        run: |
-          pip install safety
-          safety scan
+        env:
+          SAFETY_API_KEY: ${{ secrets.SAFETY_API_KEY }}
+        run: safety scan

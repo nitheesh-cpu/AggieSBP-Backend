@@ -292,7 +292,7 @@ def upsert_sections(sections: List[SectionSchema], session=None) -> Dict[str, in
                 except Exception as e:
                     session.rollback()
                     results["errors"].append(
-                        f"Error upserting sections batch {i//batch_size}: {e}"
+                        f"Error upserting sections batch {i // batch_size}: {e}"
                     )
                     continue
 
@@ -321,7 +321,7 @@ def upsert_sections(sections: List[SectionSchema], session=None) -> Dict[str, in
                 except Exception as e:
                     session.rollback()
                     results["errors"].append(
-                        f"Error upserting instructors batch {i//batch_size}: {e}"
+                        f"Error upserting instructors batch {i // batch_size}: {e}"
                     )
                     continue
 
@@ -354,7 +354,7 @@ def upsert_sections(sections: List[SectionSchema], session=None) -> Dict[str, in
                 except Exception as e:
                     session.rollback()
                     results["errors"].append(
-                        f"Error upserting meetings batch {i//batch_size}: {e}"
+                        f"Error upserting meetings batch {i // batch_size}: {e}"
                     )
                     continue
 
@@ -574,7 +574,7 @@ def upsert_section_details(
                 except Exception as e:
                     session.rollback()
                     results["errors"].append(
-                        f"Error upserting attributes batch {i//batch_size}: {e}"
+                        f"Error upserting attributes batch {i // batch_size}: {e}"
                     )
                     continue
             session.commit()
@@ -599,7 +599,7 @@ def upsert_section_details(
                 except Exception as e:
                     session.rollback()
                     results["errors"].append(
-                        f"Error upserting prereqs batch {i//batch_size}: {e}"
+                        f"Error upserting prereqs batch {i // batch_size}: {e}"
                     )
                     continue
             session.commit()
@@ -624,7 +624,7 @@ def upsert_section_details(
                 except Exception as e:
                     session.rollback()
                     results["errors"].append(
-                        f"Error upserting restrictions batch {i//batch_size}: {e}"
+                        f"Error upserting restrictions batch {i // batch_size}: {e}"
                     )
                     continue
             session.commit()
@@ -648,7 +648,7 @@ def upsert_section_details(
                 except Exception as e:
                     session.rollback()
                     results["errors"].append(
-                        f"Error upserting bookstore links batch {i//batch_size}: {e}"
+                        f"Error upserting bookstore links batch {i // batch_size}: {e}"
                     )
                     continue
             session.commit()
@@ -706,7 +706,9 @@ def upsert_all_section_details(
 
     # Progress callback
     def progress(completed, total):
-        print(f"  Progress: {completed}/{total} sections ({100*completed/total:.1f}%)")
+        print(
+            f"  Progress: {completed}/{total} sections ({100 * completed / total:.1f}%)"
+        )
 
     # Fetch details
     details_list = fetch_section_details_sync(

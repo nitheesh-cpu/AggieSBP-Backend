@@ -359,7 +359,7 @@ def process_all_professors(
     print("Final Stats:")
     print(f"   Successful: {successful}/{len(professor_ids)}")
     print(f"   Failed: {failed}/{len(professor_ids)}")
-    print(f"   Success Rate: {successful/len(professor_ids)*100:.1f}%")
+    print(f"   Success Rate: {successful / len(professor_ids) * 100:.1f}%")
 
     return results
 
