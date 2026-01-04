@@ -68,8 +68,8 @@ def seed_data(db_session: Session) -> None:
         # Insert dummy Section
         db_session.execute(
             text("""
-            INSERT INTO sections (id, term_code, crn, dept, course_number, section_number, course_title, max_enrollment, current_enrollment, is_open, has_syllabus, created_at, updated_at)
-            VALUES ('202611_12345', '202611', '12345', 'CSCE', '121', '500', 'INTRO TO COMP SCI', 100, 50, FALSE, FALSE, NOW(), NOW())
+            INSERT INTO sections (id, term_code, crn, dept, course_number, section_number, course_title, is_open, has_syllabus, created_at, updated_at)
+            VALUES ('202611_12345', '202611', '12345', 'CSCE', '121', '500', 'INTRO TO COMP SCI', FALSE, FALSE, NOW(), NOW())
         """)
         )
 
