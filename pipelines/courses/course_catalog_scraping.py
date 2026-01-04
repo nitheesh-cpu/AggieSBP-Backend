@@ -4,14 +4,14 @@
 import re
 from html import unescape
 from urllib.parse import urljoin
-
+from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://catalog.tamu.edu/undergraduate/course-descriptions/"
 
 
-def get_all_departments():
+def get_all_departments() -> List[Dict[str, Any]]:
     """
     Scrape all departments and their course catalog links from the base URL.
 
@@ -42,7 +42,12 @@ def get_all_departments():
         )
 
         for link in department_links:
-            href = link.get("href", "")
+            href_val = link.get("href", "")
+            if isinstance(href_val, list):
+                href = href_val[0] if href_val else ""
+            else:
+                href = str(href_val)
+
             text = link.get_text(strip=True)
 
             # Skip if it's not a department link (should have format: "CODE - Name (CODE)")
@@ -83,7 +88,7 @@ def get_all_departments():
                 unique_departments.append(dept)
 
         # Sort by department code for consistency
-        unique_departments.sort(key=lambda x: x["id"])
+        unique_departments.sort(key=lambda x: str(x.get("id", "")))
 
         return unique_departments
 
@@ -95,7 +100,7 @@ def get_all_departments():
         return []
 
 
-def parse_course_block(course_block):
+def parse_course_block(course_block: Any) -> Dict[str, Any]:
     """
     Parse a single course block div and extract all course information.
 
@@ -114,7 +119,7 @@ def parse_course_block(course_block):
             - prerequisite_courses: List of prerequisite course codes (e.g., ["CSCE 120", "CSCE 121"])
             - cross_listings: List of cross-listed course codes (or empty list)
     """
-    course_data = {
+    course_data: Dict[str, Any] = {
         "code": None,
         "name": None,
         "credits": None,
@@ -626,7 +631,7 @@ def parse_course_block(course_block):
     return course_data
 
 
-def get_courses_from_department(department_url):
+def get_courses_from_department(department_url: str) -> List[Dict[str, Any]]:
     """
     Scrape all courses from a department's course catalog page.
 

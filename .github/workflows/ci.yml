@@ -23,7 +23,7 @@ jobs:
       - name: Install Dependencies
         run: |
           # Use 'uv pip' as a drop-in replacement for standard pip
-          uv pip install ruff mypy pytest httpx safety
+          uv pip install ruff mypy pytest httpx safety types-requests
           if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
 
       - name: Lint and Format
@@ -33,6 +33,9 @@ jobs:
 
       - name: Run Tests
         run: uv run pytest
+
+      - name: Type Check
+        run: uv run mypy .
 
       - name: Security Scan (Safety)
         env:

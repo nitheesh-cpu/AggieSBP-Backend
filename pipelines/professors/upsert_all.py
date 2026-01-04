@@ -31,7 +31,7 @@ from pipelines.professors.upsert_reviews_and_summaries import (
 )
 
 
-def main():
+def main() -> None:
     """Run complete workflow"""
     import argparse
 

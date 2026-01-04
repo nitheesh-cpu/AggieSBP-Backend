@@ -71,3 +71,18 @@ class ProcessedReview:
     original_rating: Optional[float] = None
     original_difficulty: Optional[float] = None
     tags: Optional[List[str]] = None
+
+
+@dataclass
+class ReviewData:
+    """Raw review data structure for legacy summarizer"""
+
+    id: str
+    professor_id: str
+    course_code: Optional[str]
+    review_text: str
+    clarity_rating: float
+    difficulty_rating: float
+    helpful_rating: float
+    rating_tags: List[str]
+    grade: Optional[str]

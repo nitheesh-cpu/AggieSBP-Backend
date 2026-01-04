@@ -17,7 +17,7 @@ from pipelines.professors.schemas import ProcessedReview
 class ReviewClusterer:
     """Clusters reviews using HDBSCAN"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.min_cluster_size = HDBSCAN_MIN_CLUSTER_SIZE
         self.min_samples = HDBSCAN_MIN_SAMPLES
 
@@ -86,7 +86,7 @@ class ReviewClusterer:
 
         # Return type with highest score, or "other" if no match
         if scores and max(scores.values()) > 0:
-            return max(scores, key=scores.get)
+            return max(list(scores.keys()), key=lambda k: scores[k])
         return "other"
 
     def cluster_by_course(

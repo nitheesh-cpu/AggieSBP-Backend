@@ -19,7 +19,7 @@ from pipelines.professors.schemas import ProcessedReview
 class ReviewPreprocessor:
     """Preprocesses reviews: normalizes, cleans, and deduplicates"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Load embedding model for deduplication
         print("Loading embedding model for deduplication...")
         import torch

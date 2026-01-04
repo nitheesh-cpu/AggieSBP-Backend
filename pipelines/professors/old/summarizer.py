@@ -18,6 +18,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from transformers import BartForConditionalGeneration, BartTokenizer
+from typing import Set, Any, Union
 
 from aggiermp.database.base import ReviewDB
 from pipelines.professors.schemas import ReviewData
@@ -167,15 +168,16 @@ class ReviewSummarizer:
 
             # Step 3: Add bonus scores for sentences with valuable metadata
             for i, metadata in enumerate(sentence_metadata):
-                bonus = 0
+                bonus = 0.0
 
                 # Boost sentences from reviews with extreme ratings
                 if metadata["clarity_rating"]:
-                    if (
-                        metadata["clarity_rating"] <= 2
-                        or metadata["clarity_rating"] >= 4
-                    ):
-                        bonus += 0.2
+                    try:
+                        rating = float(metadata["clarity_rating"])
+                        if rating <= 2 or rating >= 4:
+                            bonus += 0.2
+                    except (ValueError, TypeError):
+                        pass
 
                 # Boost sentences mentioning specific grades
                 if metadata["grade"] and metadata["grade"] in ["A", "F", "A+", "A-"]:
@@ -190,17 +192,18 @@ class ReviewSummarizer:
             # Step 4: Select diverse, high-scoring sentences
             similarity_matrix = cosine_similarity(tfidf_matrix)
 
-            selected_indices = []
+            selected_indices: List[int] = []
             remaining_indices = list(range(len(all_sentences)))
 
             # Start with the highest scoring sentence
-            best_idx = np.argmax(sentence_scores)
+            best_idx = int(np.argmax(sentence_scores))
             selected_indices.append(best_idx)
-            remaining_indices.remove(best_idx)
+            if best_idx in remaining_indices:
+                remaining_indices.remove(best_idx)
 
             # Select remaining sentences balancing importance and diversity
             while len(selected_indices) < num_sentences and remaining_indices:
-                best_score = -1
+                best_score = -1.0
                 best_idx = -1
 
                 for idx in remaining_indices:
@@ -305,7 +308,9 @@ class ReviewSummarizer:
                 )
 
             # Decode summary
-            summary = self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            summary = str(
+                self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            )
 
             # Ensure we don't exceed character limit
             if len(summary) > max_length:
@@ -359,7 +364,7 @@ class ReviewSummarizer:
         max_length: int = 8000,
         num_key_sentences: int = 15,
         is_course_specific: bool = False,
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Generate comprehensive summary using hybrid extractive + abstractive approach
 
@@ -495,7 +500,7 @@ class ReviewSummarizer:
             Primary department code (e.g., 'MATH', 'CSCE', etc.)
         """
         # Count normalized departments from all courses
-        dept_counts = {}
+        dept_counts: Dict[str, int] = {}
 
         for review in reviews:
             if review.course_code:
@@ -512,9 +517,10 @@ class ReviewSummarizer:
             return "UNKN"
 
         # Get most common department
-        primary_dept = max(dept_counts, key=dept_counts.get)
-
-        return primary_dept
+        if dept_counts:
+            primary_dept = max(list(dept_counts.keys()), key=lambda k: dept_counts[k])
+            return primary_dept
+        return "UNKN"
 
     def normalize_course_code_with_context(
         self, course_code: Optional[str], professor_dept: str
@@ -637,8 +643,8 @@ class ReviewSummarizer:
             Dictionary mapping properly formatted course codes to review lists
         """
         # Track course number mappings for transparency
-        number_mappings = {}
-        course_reviews = {}
+        number_mappings: Dict[str, Set[str]] = {}
+        course_reviews: Dict[str, List[ReviewData]] = {}
 
         for review in reviews:
             original_code = review.course_code
@@ -671,7 +677,7 @@ class ReviewSummarizer:
         self,
         reviews: List[ReviewData],
         group_by_number_only: bool = False,
-        professor_dept: str = None,
+        professor_dept: Optional[str] = None,
     ) -> Dict[str, List[ReviewData]]:
         """
         Group reviews by normalized course codes or by number with context
@@ -695,8 +701,8 @@ class ReviewSummarizer:
         """Group reviews by full normalized course codes (department + number)"""
 
         # Track course code mappings for transparency
-        course_mappings = {}
-        course_reviews = {}
+        course_mappings: Dict[str, Set[str]] = {}
+        course_reviews: Dict[str, List[ReviewData]] = {}
 
         for review in reviews:
             original_code = review.course_code
@@ -722,8 +728,12 @@ class ReviewSummarizer:
             .filter(ReviewDB.professor_id == professor_id)
             .all()
         )
+        # Cast to Any list to avoid strict mypy Column type checking
+        from typing import Any, cast
 
-        for review in reviews:
+        reviews_any = cast(List[Any], reviews)
+
+        for review in reviews_any:
             reviews_data.append(
                 ReviewData(
                     id=review.id,
@@ -760,7 +770,7 @@ class ReviewSummarizer:
 
     def prepare_text_for_summarization(
         self, reviews: List[ReviewData], overall: bool = False
-    ) -> str:
+    ) -> Union[str, List[ReviewData]]:
         """Combine review texts into a single document for summarization"""
         texts = []
         valid_reviews = 0
@@ -782,9 +792,9 @@ class ReviewSummarizer:
         combined_text = " ".join(texts)
         len(combined_text)
 
-        # Truncate if too long (BART has token limits)
         if len(combined_text) > 8000:  # Conservative limit
-            return reviews
+            # return reviews  # Previously returning list, violating return type str
+            return ""  # Return empty string instead or handle differently
 
         return combined_text
 
@@ -821,14 +831,18 @@ class ReviewSummarizer:
                 )
 
             # Decode summary
-            summary = self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            summary = str(
+                self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            )
 
             return summary
 
         except Exception as e:
             return f"Error generating summary: {str(e)}"
 
-    def calculate_averages(self, reviews: List[ReviewData]) -> Dict[str, float]:
+    def calculate_averages(
+        self, reviews: List[ReviewData]
+    ) -> Dict[str, Optional[float]]:
         """Calculate average ratings from reviews"""
         clarity_ratings = [
             r.clarity_rating for r in reviews if r.clarity_rating is not None
@@ -854,11 +868,11 @@ class ReviewSummarizer:
 
         return averages
 
-    def close(self):
+    def close(self) -> None:
         """Close database connection"""
         self.session.close()
 
-    def add_course_mapping(self, from_dept: str, to_dept: str):
+    def add_course_mapping(self, from_dept: str, to_dept: str) -> None:
         """
         Add a department alias mapping
 
@@ -869,7 +883,7 @@ class ReviewSummarizer:
         self.dept_aliases[from_dept.upper()] = to_dept.upper()
         print(f"Added department mapping: {from_dept} -> {to_dept}")
 
-    def add_cross_listing(self, dept1: str, number: str, canonical_course: str):
+    def add_cross_listing(self, dept1: str, number: str, canonical_course: str) -> None:
         """
         Add a cross-listing mapping
 
@@ -882,7 +896,7 @@ class ReviewSummarizer:
         self.cross_listings[key] = canonical_course.upper()
         print(f"Added cross-listing: {dept1}{number} -> {canonical_course}")
 
-    def get_normalization_stats(self, reviews: List[ReviewData]) -> Dict[str, any]:
+    def get_normalization_stats(self, reviews: List[ReviewData]) -> Dict[str, Any]:
         """
         Get statistics about course code normalization for debugging
 
@@ -901,7 +915,7 @@ class ReviewSummarizer:
         reduction = unique_original - unique_normalized
 
         # Find merged courses
-        merged_courses = {}
+        merged_courses: Dict[str, Set[str]] = {}
         for orig, norm in zip(original_codes, normalized_codes):
             if norm not in merged_courses:
                 merged_courses[norm] = set()

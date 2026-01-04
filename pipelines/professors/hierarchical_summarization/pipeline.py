@@ -2,7 +2,7 @@
 Main pipeline orchestrator for hierarchical summarization.
 """
 
-from typing import List, Dict
+from typing import List, Dict, Any
 from collections import Counter
 
 from pipelines.professors.hierarchical_summarization.preprocess import (
@@ -28,7 +28,7 @@ from pipelines.professors.schemas import (
 class HierarchicalSummarizationPipeline:
     """Orchestrates the full hierarchical summarization pipeline"""
 
-    def __init__(self, session=None):
+    def __init__(self, session: Any = None) -> None:
         """
         Initialize the pipeline.
 

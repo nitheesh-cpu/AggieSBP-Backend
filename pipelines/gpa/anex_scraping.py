@@ -10,7 +10,7 @@ This module contains functions to:
 import asyncio
 import json
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import aiohttp
 
@@ -20,7 +20,9 @@ REQUEST_TIMEOUT = 30
 ANEX_BASE_URL = "https://anex.us/grades/"
 
 
-async def get_newest_semester(session: aiohttp.ClientSession) -> Tuple[str, str]:
+async def get_newest_semester(
+    session: aiohttp.ClientSession,
+) -> Tuple[Optional[str], Optional[str]] | None:
     """
     Query anex.us API to find the newest semester and year available.
     Uses a sample course (MATH 151) to get semester data.
@@ -211,7 +213,9 @@ async def fetch_course_data(
 
 
 def extract_class_records(
-    course_data: Dict[str, Any], min_year: str = None, min_semester: str = None
+    course_data: Dict[str, Any],
+    min_year: Optional[str] = None,
+    min_semester: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Extract individual class records from a course's data.
@@ -364,7 +368,7 @@ async def fetch_all_courses_concurrent(
         failed_count = 0
 
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 failed_count += 1
                 print(f"[ERROR] Task failed with exception: {result}")
             else:

@@ -103,7 +103,7 @@ class Review(BaseModel):
 
     @field_validator("rating_tags", mode="before")
     @classmethod
-    def parse_rating_tags(cls, v):
+    def parse_rating_tags(cls, v: Any) -> Optional[List[str]]:
         """Parse rating tags string into list of individual tags"""
         if v is None:
             return None
@@ -121,7 +121,7 @@ class Review(BaseModel):
 
     @field_validator("review_date", "admin_reviewed_at", mode="before")
     @classmethod
-    def parse_datetime(cls, v):
+    def parse_datetime(cls, v: Any) -> Optional[datetime]:
         """Parse datetime strings from RMP API format to datetime objects"""
         if v is None:
             return None

@@ -19,7 +19,7 @@ from pipelines.professors.schemas import (
 class HierarchicalSummarizer:
     """Generates summaries using BART in a hierarchical manner"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Check CUDA availability BEFORE loading model
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
@@ -40,7 +40,7 @@ class HierarchicalSummarizer:
         # Simple sentence-based chunking
         sentences = re.split(r"[.!?]+", text)
         chunks = []
-        current_chunk = []
+        current_chunk: List[str] = []
         current_length = 0
 
         for sentence in sentences:
@@ -97,7 +97,11 @@ class HierarchicalSummarizer:
                 )
 
             # Decode
-            summary = self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            from typing import cast
+
+            summary = cast(
+                str, self.tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            )
             return summary.strip()
 
         except Exception as e:

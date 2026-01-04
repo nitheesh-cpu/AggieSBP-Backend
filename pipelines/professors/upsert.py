@@ -9,7 +9,7 @@ import hashlib
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent.parent
@@ -31,7 +31,9 @@ def generate_summary_id(professor_id: str, course_code: Optional[str] = None) ->
     return hashlib.md5(key.encode()).hexdigest()
 
 
-def upsert_professor_summary(professor_summary: ProfessorSummary, session=None) -> bool:
+def upsert_professor_summary(
+    professor_summary: ProfessorSummary, session: Any = None
+) -> bool:
     """
     Upsert a professor summary to the database.
     Creates separate rows for overall summary and each course summary.
@@ -213,7 +215,7 @@ def upsert_professor_summary(professor_summary: ProfessorSummary, session=None) 
 
 
 def get_professor_summary(
-    professor_id: str, session=None
+    professor_id: str, session: Any = None
 ) -> Optional[ProfessorSummary]:
     """
     Retrieve a professor summary from the database.
@@ -294,7 +296,9 @@ def get_professor_summary(
             session.close()
 
 
-def process_all_professors(professor_ids: List[str], pipeline, session=None) -> dict:
+def process_all_professors(
+    professor_ids: List[str], pipeline: Any, session: Any = None
+) -> Dict[str, Any]:
     """
     Process summaries for multiple professors.
 
@@ -313,7 +317,7 @@ def process_all_professors(professor_ids: List[str], pipeline, session=None) -> 
         session = get_session()
         close_session = True
 
-    results = {"processed": 0, "failed": 0, "errors": []}
+    results: Dict[str, Any] = {"processed": 0, "failed": 0, "errors": []}
 
     try:
         for professor_id in professor_ids:

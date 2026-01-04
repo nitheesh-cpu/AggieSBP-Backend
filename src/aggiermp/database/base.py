@@ -15,9 +15,9 @@ from sqlalchemy import (
     update,
     Text,
 )
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker, DeclarativeBase, Session as SQLAlchemySession
 from sqlalchemy.dialects.postgresql import insert, JSON
-from typing import List
+from typing import List, Any, Dict
 import logging
 
 from ..models.schema import Review, University, Professor
@@ -29,7 +29,9 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    pass
 
 
 class UniversityDB(Base):
@@ -41,7 +43,7 @@ class UniversityDB(Base):
     city = Column(String, nullable=True)
     state = Column(String, nullable=True)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<University(id='{self.id}', name='{self.name}')>"
 
 
@@ -61,7 +63,7 @@ class ProfessorDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Professor(id='{self.id}', name='{self.first_name} {self.last_name}')>"
 
 
@@ -85,13 +87,13 @@ class ReviewDB(Base):
     textbook_use = Column(Integer, nullable=True)
     thumbs_up_total = Column(Integer, nullable=True)
     thumbs_down_total = Column(Integer, nullable=True)
-    rating_tags = Column(ARRAY(String), nullable=True)
+    rating_tags: Column[List[str]] = Column(ARRAY(String), nullable=True)
     admin_reviewed_at = Column(DateTime, nullable=True)
     flag_status = Column(String, nullable=True)
     created_by_user = Column(Boolean, nullable=False)
     teacher_note = Column(String, nullable=True)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Review(id='{self.id}', professor_id='{self.professor_id}', course_code='{self.course_code}')>"
 
 
@@ -105,7 +107,7 @@ class DepartmentDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Department(id='{self.id}', short_name='{self.short_name}', long_name='{self.long_name}', title='{self.title}')>"
 
 
@@ -155,7 +157,7 @@ class GpaDataDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<GpaData(id='{self.id}', course='{self.dept} {self.course_number}', prof='{self.professor}', gpa='{self.gpa}')>"
 
 
@@ -173,7 +175,7 @@ class SectionAttributeDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<SectionAttribute(id='{self.id}', course='{self.dept} {self.course_number}', section='{self.section}', attr='{self.attribute_id}')>"
 
 
@@ -190,7 +192,7 @@ class TermDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Term(code='{self.term_code}', desc='{self.term_desc}')>"
 
 
@@ -255,7 +257,7 @@ class SectionDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Section(id='{self.id}', course='{self.dept} {self.course_number}', section='{self.section_number}', open={self.is_open})>"
 
 
@@ -280,7 +282,7 @@ class SectionInstructorDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<SectionInstructor(id='{self.id}', instructor='{self.instructor_name}', primary={self.is_primary})>"
 
 
@@ -297,7 +299,7 @@ class SectionMeetingDB(Base):
     crn = Column(String, nullable=False)
     meeting_index = Column(Integer, nullable=False)  # Order in the array
     credit_hours_session = Column(Integer, nullable=True)  # SSRMEET_CREDIT_HR_SESS
-    days_of_week = Column(
+    days_of_week: Column[List[str]] = Column(
         ARRAY(String), nullable=True
     )  # Array of day codes (M, T, W, R, F, S, U)
     begin_time = Column(String, nullable=True)  # SSRMEET_BEGIN_TIME
@@ -312,7 +314,7 @@ class SectionMeetingDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<SectionMeeting(id='{self.id}', type='{self.meeting_type}', days={self.days_of_week})>"
 
 
@@ -333,7 +335,7 @@ class SectionAttributeDetailedDB(Base):
     )  # STVATTR_DESC (e.g., "Distance Education")
     created_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<SectionAttributeDetailed(section='{self.section_id}', code='{self.attribute_code}', desc='{self.attribute_desc}')>"
 
 
@@ -353,7 +355,7 @@ class SectionPrereqDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<SectionPrereq(section='{self.section_id}', prereqs='{self.prereqs_text[:50] if self.prereqs_text else None}...')>"
 
 
@@ -376,7 +378,7 @@ class SectionRestrictionDB(Base):
     include_exclude = Column(String, nullable=True)  # 'I' for include, 'E' for exclude
     created_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<SectionRestriction(section='{self.section_id}', type='{self.restriction_type}', code='{self.restriction_code}')>"
 
 
@@ -395,7 +397,7 @@ class SectionBookstoreLinkDB(Base):
     link_data = Column(JSON, nullable=True)  # Full response data
     created_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<SectionBookstoreLink(section='{self.section_id}', url='{self.bookstore_url}')>"
 
 
@@ -416,8 +418,10 @@ class ProfessorSummaryNewDB(Base):
 
     # Overall summary fields (populated when course_code is NULL)
     overall_sentiment = Column(String, nullable=True)
-    strengths = Column(ARRAY(Text), nullable=True)  # List of strings
-    complaints = Column(ARRAY(Text), nullable=True)  # List of strings
+    strengths: Column[List[str]] = Column(ARRAY(Text), nullable=True)  # List of strings
+    complaints: Column[List[str]] = Column(
+        ARRAY(Text), nullable=True
+    )  # List of strings
     consistency = Column(String, nullable=True)
 
     # Course-specific summary fields (populated when course_code is NOT NULL)
@@ -436,13 +440,13 @@ class ProfessorSummaryNewDB(Base):
     # New statistics fields
     avg_rating = Column(Float, nullable=True)
     avg_difficulty = Column(Float, nullable=True)
-    common_tags = Column(ARRAY(String), nullable=True)
+    common_tags: Column[List[str]] = Column(ARRAY(String), nullable=True)
     tag_frequencies = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.course_code:
             return f"<ProfessorSummaryNew(professor_id='{self.professor_id}', course='{self.course_code}', confidence={self.confidence})>"
         else:
@@ -454,7 +458,7 @@ _engine = None
 _session_factory = None
 
 
-def create_db_engine():
+def create_db_engine() -> Any:
     """Create database engine with connection pooling for better performance"""
     global _engine
 
@@ -498,7 +502,7 @@ def create_db_engine():
     return _engine
 
 
-def get_session_factory():
+def get_session_factory() -> sessionmaker:
     """Get session factory with connection pooling"""
     global _session_factory
 
@@ -516,20 +520,20 @@ def get_session_factory():
     return _session_factory
 
 
-def get_session():
+def get_session() -> Any:
     """Get database session from connection pool"""
     SessionFactory = get_session_factory()
     return SessionFactory()
 
 
 # Performance monitoring decorator
-def monitor_db_performance(func):
+def monitor_db_performance(func: Any) -> Any:
     """Decorator to monitor database query performance"""
     import time
     import functools
 
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         start_time = time.time()
         try:
             result = func(*args, **kwargs)
@@ -550,7 +554,7 @@ def monitor_db_performance(func):
 
 
 # Database health check function
-def check_database_health():
+def check_database_health() -> Dict[str, Any]:
     """Check database connection health and pool status"""
     try:
         engine = create_db_engine()
@@ -583,7 +587,7 @@ def check_database_health():
 
 
 # Configuration for local vs remote database
-def get_database_config():
+def get_database_config() -> Dict[str, int]:
     """Get database configuration with environment-specific optimizations"""
     host = os.getenv("POSTGRES_HOST", "localhost")
     is_local = host in ["localhost", "127.0.0.1", "::1"]
@@ -606,7 +610,9 @@ def get_database_config():
         }
 
 
-def upsert_universities(session, universities: List[University]):
+def upsert_universities(
+    session: SQLAlchemySession, universities: List[University]
+) -> List[dict]:
     """
     Upsert universities into the database.
     Insert new records and update existing ones based on ID.
@@ -662,7 +668,9 @@ def upsert_universities(session, universities: List[University]):
     return insert_universities + update_universities
 
 
-def upsert_professors(session, professors: List[Professor]):
+def upsert_professors(
+    session: SQLAlchemySession, professors: List[Professor]
+) -> List[dict]:
     """
     Upsert professors into the database.
     Insert new records and update existing ones based on ID.
@@ -739,7 +747,7 @@ def upsert_professors(session, professors: List[Professor]):
         raise
 
 
-def upsert_reviews(session, reviews: List[Review]):
+def upsert_reviews(session: SQLAlchemySession, reviews: List[Review]) -> List[dict]:
     """
     Upsert reviews into the database.
     Insert new records and update existing ones based on ID.

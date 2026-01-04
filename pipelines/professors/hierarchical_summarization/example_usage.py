@@ -16,7 +16,7 @@ from pipelines.professors.hierarchical_summarization import (
 )
 
 
-def main():
+def main() -> None:
     """Example: Process reviews for a professor"""
 
     # Get reviews from database

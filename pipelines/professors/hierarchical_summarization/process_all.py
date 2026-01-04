@@ -22,7 +22,7 @@ from pipelines.professors.hierarchical_summarization import (
 from pipelines.professors.upsert import process_all_professors
 
 
-def main():
+def main() -> None:
     """Process all professors through the hierarchical summarization pipeline"""
 
     # Set environment variables for performance

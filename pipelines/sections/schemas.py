@@ -4,6 +4,7 @@ Pydantic schemas for section data from Howdy API.
 
 from typing import List, Optional
 from pydantic import BaseModel
+from typing import Any
 
 
 class InstructorSchema(BaseModel):
@@ -133,12 +134,17 @@ class SectionSchema(BaseModel):
     # Attributes (pipe-delimited string, always populated)
     attributes_text: Optional[str] = None  # SWV_CLASS_SEARCH_ATTRIBUTES
 
+    # Enrollment info
+    max_enrollment: Optional[int] = None
+    current_enrollment: Optional[int] = None
+    seats_available: Optional[int] = None
+
     # Related data
     instructors: List[InstructorSchema] = []  # 98% populated
     meetings: List[MeetingSchema] = []  # Always populated
 
     @staticmethod
-    def _parse_int(value) -> Optional[int]:
+    def _parse_int(value: Any) -> Optional[int]:
         """Parse integer from API value, handling 'NA' and None"""
         if value is None or value == "NA" or value == "":
             return None
@@ -219,6 +225,9 @@ class SectionSchema(BaseModel):
             has_syllabus=data.get("SWV_CLASS_SEARCH_HAS_SYL_IND") == "Y",
             syllabus_url=syllabus_url,
             attributes_text=data.get("SWV_CLASS_SEARCH_ATTRIBUTES"),
+            max_enrollment=cls._parse_int(data.get("SWV_CLASS_SEARCH_MAX_ENRL")),
+            current_enrollment=cls._parse_int(data.get("SWV_CLASS_SEARCH_ENRL")),
+            seats_available=cls._parse_int(data.get("SWV_CLASS_SEARCH_SEATS_AVAIL")),
             instructors=instructors,
             meetings=meetings,
         )

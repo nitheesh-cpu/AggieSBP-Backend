@@ -1,12 +1,12 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from ..main import get_session
+from ...database.base import get_session
 from pydantic import BaseModel
 import math
 
-router = APIRouter(prefix="/discover", tags=["Discovery"])
+router: APIRouter = APIRouter(prefix="/discover")
 
 # Constants
 UCC_ATTRIBUTES = [
@@ -43,7 +43,7 @@ class UccCourseDiscovery(BaseModel):
     dept: str
     courseNumber: str
     courseTitle: str
-    credits: str
+    credits: Optional[str]
     professor: ProfessorInfo
     # Computed scores
     easinessScore: Optional[float] = None
@@ -83,8 +83,10 @@ def calculate_confidence_score(total_reviews: int, gpa_student_count: int) -> fl
     return min(1.0, math.log10(total_data_points + 1) / 3.0)
 
 
-@router.get("/{term_code}/ucc", response_model=List[UccCategoryGroup])
-async def discover_ucc_courses(term_code: str, db: Session = Depends(get_session)):
+@router.get("/{term_code}/ucc", response_model=List[UccCategoryGroup], summary="/discover/{term_code}/ucc")
+async def discover_ucc_courses(
+    term_code: str, db: Session = Depends(get_session)
+) -> List[UccCategoryGroup]:
     """
     Get all University Core Curriculum (UCC) classes for a specific term,
     grouped by category and ordered by easiness score.
@@ -143,7 +145,7 @@ async def discover_ucc_courses(term_code: str, db: Session = Depends(get_session
         )
 
         # Group by category
-        grouped_courses = {}
+        grouped_courses: Dict[str, List[Dict[str, Any]]] = {}
         for row in result:
             category = row.attribute_desc
             if category not in grouped_courses:
@@ -198,9 +200,14 @@ async def discover_ucc_courses(term_code: str, db: Session = Depends(get_session
             )
 
         # Convert to response model
-        response = []
+        response: List[UccCategoryGroup] = []
         for category, courses in grouped_courses.items():
-            response.append({"category": category, "courses": courses})
+            response.append(
+                UccCategoryGroup(
+                    category=category,
+                    courses=[UccCourseDiscovery(**c) for c in courses],
+                )
+            )
 
         return response
 

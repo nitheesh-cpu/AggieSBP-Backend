@@ -10,7 +10,7 @@ Handles upserting:
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent.parent
@@ -18,7 +18,11 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from sqlalchemy.dialects.postgresql import insert
+
 from sqlalchemy import text
+from sqlalchemy.orm import Session
+from sqlalchemy.engine import CursorResult
+from typing import cast
 
 from aggiermp.database.base import (
     TermDB,
@@ -39,7 +43,9 @@ from pipelines.sections.scraper import (
 )
 
 
-def upsert_terms(terms: List[TermSchema], session=None) -> Dict[str, int]:
+def upsert_terms(
+    terms: List[TermSchema], session: Optional[Session] = None
+) -> Dict[str, Any]:
     """
     Upsert terms to database.
 
@@ -64,7 +70,7 @@ def upsert_terms(terms: List[TermSchema], session=None) -> Dict[str, int]:
         except Exception:
             pass
 
-    results = {"terms_upserted": 0, "errors": []}
+    results: Dict[str, Any] = {"terms_upserted": 0, "errors": []}
 
     if not terms:
         return results
@@ -140,7 +146,9 @@ def upsert_terms(terms: List[TermSchema], session=None) -> Dict[str, int]:
             session.close()
 
 
-def upsert_sections(sections: List[SectionSchema], session=None) -> Dict[str, int]:
+def upsert_sections(
+    sections: List[SectionSchema], session: Optional[Session] = None
+) -> Dict[str, Any]:
     """
     Upsert sections and related data to database.
 
@@ -165,7 +173,7 @@ def upsert_sections(sections: List[SectionSchema], session=None) -> Dict[str, in
         except Exception:
             pass
 
-    results = {
+    results: Dict[str, Any] = {
         "sections_upserted": 0,
         "instructors_upserted": 0,
         "meetings_upserted": 0,
@@ -179,9 +187,9 @@ def upsert_sections(sections: List[SectionSchema], session=None) -> Dict[str, in
         now = datetime.now()
 
         # Prepare section records
-        section_records = []
-        instructor_records = []
-        meeting_records = []
+        section_records: List[Dict[str, Any]] = []
+        instructor_records: List[Dict[str, Any]] = []
+        meeting_records: List[Dict[str, Any]] = []
 
         for section in sections:
             # Section record
@@ -380,7 +388,7 @@ def upsert_all_sections(
     semester_filter: Optional[List[str]] = None,
     max_workers: int = 4,
     include_all_terms: bool = False,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """
     Fetch and upsert all sections for specified terms.
     Also upserts term information to the terms table.
@@ -450,8 +458,8 @@ def upsert_all_sections(
 
 
 def upsert_section_details(
-    details_list: List[SectionDetailsSchema], session=None
-) -> Dict[str, int]:
+    details_list: List[SectionDetailsSchema], session: Optional[Session] = None
+) -> Dict[str, Any]:
     """
     Upsert section details (attributes, prereqs, restrictions, bookstore links).
 
@@ -476,7 +484,7 @@ def upsert_section_details(
         except Exception:
             pass
 
-    results = {
+    results: Dict[str, Any] = {
         "attributes_upserted": 0,
         "prereqs_upserted": 0,
         "restrictions_upserted": 0,
@@ -491,10 +499,10 @@ def upsert_section_details(
         now = datetime.now()
 
         # Prepare records
-        attribute_records = []
-        prereq_records = []
-        restriction_records = []
-        bookstore_records = []
+        attribute_records: List[Dict[str, Any]] = []
+        prereq_records: List[Dict[str, Any]] = []
+        restriction_records: List[Dict[str, Any]] = []
+        bookstore_records: List[Dict[str, Any]] = []
 
         for details in details_list:
             # Attributes
@@ -673,7 +681,7 @@ def upsert_all_section_details(
     semester_filter: Optional[List[str]] = None,
     max_concurrent: int = 50,
     sections: Optional[List[SectionSchema]] = None,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """
     Fetch and upsert section details for specified terms.
 
@@ -705,7 +713,7 @@ def upsert_all_section_details(
     print(f"Fetching details for {len(sections)} sections...")
 
     # Progress callback
-    def progress(completed, total):
+    def progress(completed: int, total: int) -> None:
         print(
             f"  Progress: {completed}/{total} sections ({100 * completed / total:.1f}%)"
         )
@@ -740,7 +748,9 @@ def upsert_all_section_details(
         session.close()
 
 
-def delete_old_sections(keep_term_codes: List[str], session=None) -> int:
+def delete_old_sections(
+    keep_term_codes: List[str], session: Optional[Session] = None
+) -> int:
     """
     Delete sections and all related data for terms not in the keep list.
     Useful for cleaning up old semester data.
@@ -806,7 +816,7 @@ def delete_old_sections(keep_term_codes: List[str], session=None) -> int:
         )
 
         session.commit()
-        deleted_count = result.rowcount
+        deleted_count = cast(CursorResult, result).rowcount
         print(f"Deleted {deleted_count} old sections")
         return deleted_count
 
@@ -820,7 +830,7 @@ def delete_old_sections(keep_term_codes: List[str], session=None) -> int:
             session.close()
 
 
-def main():
+def main() -> None:
     """Main entry point for sections upsert"""
     import argparse
 
