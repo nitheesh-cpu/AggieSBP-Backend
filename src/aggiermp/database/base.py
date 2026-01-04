@@ -128,7 +128,7 @@ class CourseDB(Base):
     has_corequisites = Column(Boolean, nullable=True)
     has_prerequisites = Column(Boolean, nullable=True)
     has_restrictions = Column(Boolean, nullable=False)
-    
+
     # New columns added to match actual DB schema
     code = Column(String, nullable=False)
     name = Column(String, nullable=False)
@@ -137,12 +137,12 @@ class CourseDB(Base):
     lab_hours = Column(Integer, nullable=True)
     other_hours = Column(Integer, nullable=True)
     prerequisites = Column(Text, nullable=True)
-    prerequisite_courses = Column(ARRAY(String), nullable=True)
+    prerequisite_courses: Column[List[str]] = Column(ARRAY(String), nullable=True)
     prerequisite_groups = Column(Text, nullable=True)
     corequisites = Column(Text, nullable=True)
-    corequisite_courses = Column(ARRAY(String), nullable=True)
+    corequisite_courses: Column[List[str]] = Column(ARRAY(String), nullable=True)
     corequisite_groups = Column(Text, nullable=True)
-    cross_listings = Column(ARRAY(String), nullable=True)
+    cross_listings: Column[List[str]] = Column(ARRAY(String), nullable=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
