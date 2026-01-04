@@ -92,9 +92,15 @@ def seed_data(db_session: Session) -> None:
         # Insert dummy Course
         db_session.execute(
             text("""
-            INSERT INTO courses (id, subject_long_name, subject_short_name, subject_id, course_number, course_display_title, course_title, course_title_long, has_topics, has_restrictions, created_at, updated_at)
-            VALUES ('CSCE121', 'Computer Science & Engineering', 'CSCE', 'CSCE', '121', 'CSCE 121', 'INTRO TO COMP SCI', 'Introduction to Computer Science', FALSE, FALSE, NOW(), NOW())
-        """)
+            INSERT INTO courses (id, code, name, subject_id, subject_long_name, course_number, credits, lecture_hours, lab_hours, other_hours, description, prerequisites, 
+            prerequisite_courses, prerequisite_groups, corequisites, corequisite_courses, corequisite_groups, cross_listings, course_topic, course_display_title, 
+            course_title, course_title_long, has_corequisites, has_prerequisites, created_at, updated_at
+            )
+
+            VALUES ('CSCE221', 'CSCE 221', 'Data Structures and Algorithms', 'CSCE', 'CSCE - Computer Sci & Engr', '221', '4', '3', '2', '', 'Specification and implementation of basic abstract data types and their associated algorithms including stacks, queues, lists, sorting and selection, searching, graphs, and hashing; performance tradeoffs of different implementations and asymptotic analysis of running time and memory usage; includes the execution of student programs written in C++.', 'Grade C or better in CSCE 120 or CSCE 121 ; grade of C or better in CSCE 222/ECEN 222 or ECEN 222/CSCE 222 , or concurrent enrollment', 
+            '{CSCE 120,CSCE 121,CSCE 222,ECEN 222}', '["CSCE 120", "CSCE 121"], ["CSCE 222", "ECEN 222"]', 'Concurrent enrollment in CSCE 222, ECEN 222', '{CSCE 222,ECEN 222}', '["CSCE\u00a0222", "ECEN\u00a0222"]', '', '', '221 Data Structures and Algorithms', 
+            'Data Structures and Algorithms', 'CSCE - Computer Sci & Engr 221 - Data Structures and Algorithms', 'true', 'true', NOW(), NOW())
+            """)
         )
 
         # Insert dummy Review
