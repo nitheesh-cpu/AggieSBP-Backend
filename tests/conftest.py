@@ -81,6 +81,38 @@ def seed_data(db_session: Session) -> None:
         """)
         )
 
+        # Insert dummy Department (Required for Course FK)
+        db_session.execute(
+            text("""
+            INSERT INTO departments (id, short_name, long_name, title, created_at, updated_at)
+            VALUES ('CSCE', 'CSCE', 'Computer Science & Engineering', 'Department of Computer Science & Engineering', NOW(), NOW())
+        """)
+        )
+
+        # Insert dummy Course
+        db_session.execute(
+            text("""
+            INSERT INTO courses (id, subject_long_name, subject_short_name, subject_id, course_number, course_display_title, course_title, course_title_long, has_topics, has_restrictions, created_at, updated_at)
+            VALUES ('CSCE121', 'Computer Science & Engineering', 'CSCE', 'CSCE', '121', 'CSCE 121', 'INTRO TO COMP SCI', 'Introduction to Computer Science', FALSE, FALSE, NOW(), NOW())
+        """)
+        )
+
+        # Insert dummy Review
+        db_session.execute(
+            text("""
+            INSERT INTO reviews (id, professor_id, course_code, is_online_class, is_for_credit, created_by_user, created_at, updated_at)
+            VALUES ('R1', 'P1', 'CSCE121', FALSE, TRUE, FALSE, NOW(), NOW())
+        """)
+        )
+
+        # Insert dummy Section Attribute
+        db_session.execute(
+            text("""
+            INSERT INTO section_attributes (id, dept, course_number, section, year, semester, attribute_id, attribute_title, attribute_value, created_at, updated_at)
+            VALUES ('CSCE_121_500_2026_Fall_KCOM', 'CSCE', '121', '500', '2026', 'Fall', 'KCOM', 'Communication', 'Y', NOW(), NOW())
+        """)
+        )
+
         # Insert dummy GPA Data
         db_session.execute(
             text("""
