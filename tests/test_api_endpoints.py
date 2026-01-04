@@ -1,16 +1,4 @@
-import pytest
 from fastapi.testclient import TestClient
-from aggiermp.api.main import app  # Import your FastAPI app instance
-
-
-from typing import Generator
-
-
-@pytest.fixture(scope="module")
-def client() -> Generator[TestClient, None, None]:
-    """Create a test client for the FastAPI application."""
-    with TestClient(app) as client:
-        yield client
 
 
 def test_root_endpoint(client: TestClient) -> None:

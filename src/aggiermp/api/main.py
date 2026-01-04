@@ -1972,6 +1972,9 @@ async def get_courses(
         return courses
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"FAILED QUERY: {query}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
