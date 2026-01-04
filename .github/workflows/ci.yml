@@ -35,4 +35,4 @@ jobs:
       - name: Security Scan (Safety)
         run: |
           pip install safety
-          safety check
+          safety scan
