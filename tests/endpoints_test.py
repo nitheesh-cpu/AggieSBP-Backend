@@ -1,14 +1,10 @@
 from fastapi.testclient import TestClient
 from aggiermp.api.main import app  # Import your FastAPI app instance
-
-client = TestClient(app)
-
-
 from fastapi.routing import APIRoute
 from typing import cast
 
 
-def test_all_get_endpoints() -> None:
+def test_all_get_endpoints(client: TestClient) -> None:
     """
     Automatically finds all GET endpoints and checks if they
     return a 200 OK (or 401/403 if they require auth).
@@ -36,7 +32,7 @@ def test_all_get_endpoints() -> None:
             ], f"Endpoint {route.path} failed with {response.status_code}"
 
 
-def test_health_check() -> None:
+def test_health_check(client: TestClient) -> None:
     """Manually test a specific critical endpoint."""
     response = client.get("/health")  # Adjust if your health path is different
     assert response.status_code == 200
