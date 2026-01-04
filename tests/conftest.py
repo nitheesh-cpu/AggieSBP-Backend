@@ -52,8 +52,8 @@ def seed_data(db_session: Session) -> None:
         # Insert dummy University
         db_session.execute(
             text("""
-            INSERT INTO universities (id, name, created_at, updated_at)
-            VALUES (1, 'Texas A&M University', NOW(), NOW())
+            INSERT INTO universities (id, name)
+            VALUES (1, 'Texas A&M University')
         """)
         )
 
@@ -68,24 +68,24 @@ def seed_data(db_session: Session) -> None:
         # Insert dummy Section
         db_session.execute(
             text("""
-            INSERT INTO sections (id, term_code, crn, dept, course_number, section_number, course_title, max_enrollment, current_enrollment, created_at, updated_at)
-            VALUES ('202611_12345', '202611', '12345', 'CSCE', '121', '500', 'INTRO TO COMP SCI', 100, 50, NOW(), NOW())
+            INSERT INTO sections (id, term_code, crn, dept, course_number, section_number, course_title, max_enrollment, current_enrollment, is_open, has_syllabus, created_at, updated_at)
+            VALUES ('202611_12345', '202611', '12345', 'CSCE', '121', '500', 'INTRO TO COMP SCI', 100, 50, FALSE, FALSE, NOW(), NOW())
         """)
         )
 
         # Insert dummy Section Instructor link
         db_session.execute(
             text("""
-            INSERT INTO section_instructors (section_id, instructor_name, created_at)
-            VALUES ('202611_12345', 'Test Professor', NOW())
+            INSERT INTO section_instructors (id, section_id, term_code, crn, instructor_name, created_at, updated_at)
+            VALUES ('202611_12345_P1', '202611_12345', '202611', '12345', 'Test Professor', NOW(), NOW())
         """)
         )
 
         # Insert dummy GPA Data
         db_session.execute(
             text("""
-            INSERT INTO gpa_data (dept, course_number, professor, year, semester, gpa, total_students, grade_a, grade_b, grade_c, grade_d, grade_f, grade_q, grade_x, grade_i, grade_s, grade_u, created_at)
-            VALUES ('CSCE', '121', 'PROFESSOR', 2026, 'FALL', 3.5, 100, 50, 40, 10, 0, 0, 0, 0, 0, 0, 0, NOW())
+            INSERT INTO gpa_data (id, dept, course_number, section, professor, year, semester, gpa, total_students, grade_a, grade_b, grade_c, grade_d, grade_f, grade_q, grade_x, grade_i, grade_s, grade_u, created_at, updated_at)
+            VALUES ('GPA_1', 'CSCE', '121', '500', 'PROFESSOR', '2026', 'FALL', 3.5, 100, 50, 40, 10, 0, 0, 0, 0, 0, 0, 0, NOW(), NOW())
         """)
         )
 
