@@ -8,7 +8,7 @@ import ast
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, cast, Iterator
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,11 +34,11 @@ REQUEST_TIMEOUT_SECONDS = 30
 class TimeoutMiddleware(BaseHTTPMiddleware):
     """Middleware to enforce request timeout"""
 
-    def __init__(self, app, timeout: int = REQUEST_TIMEOUT_SECONDS):
+    def __init__(self, app: Any, timeout: int = REQUEST_TIMEOUT_SECONDS):
         super().__init__(app)
         self.timeout = timeout
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
         try:
             return await asyncio.wait_for(call_next(request), timeout=self.timeout)
         except asyncio.TimeoutError:
@@ -52,7 +52,9 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
             )
 
 
-def parse_tag_frequencies(tag_frequencies_str, professor_id=None):
+def parse_tag_frequencies(
+    tag_frequencies_str: Any, professor_id: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Helper function to parse tag_frequencies from various formats
     """
@@ -63,16 +65,18 @@ def parse_tag_frequencies(tag_frequencies_str, professor_id=None):
         if isinstance(tag_frequencies_str, str):
             # Try to parse as JSON first
             try:
-                return json.loads(tag_frequencies_str)
+                return cast(Dict[str, Any], json.loads(tag_frequencies_str))
             except json.JSONDecodeError:
                 # If JSON parsing fails, try to fix common issues (single quotes to double quotes)
                 fixed_json = tag_frequencies_str.replace("'", '"')
                 try:
-                    return json.loads(fixed_json)
+                    return cast(Dict[str, Any], json.loads(fixed_json))
                 except json.JSONDecodeError:
                     # If still fails, try using ast.literal_eval for Python dict format
                     try:
-                        return ast.literal_eval(tag_frequencies_str)
+                        return cast(
+                            Dict[str, Any], ast.literal_eval(tag_frequencies_str)
+                        )
                     except (ValueError, SyntaxError):
                         if professor_id:
                             logger.warning(
@@ -80,7 +84,7 @@ def parse_tag_frequencies(tag_frequencies_str, professor_id=None):
                             )
                         return {}
         else:
-            return tag_frequencies_str
+            return cast(Dict[str, Any], tag_frequencies_str)
     except Exception as e:
         if professor_id:
             logger.warning(
@@ -215,7 +219,7 @@ app = FastAPI(
 
 # Configure rate limiter
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
 
 # Add timeout middleware (must be added before other middleware)
 app.add_middleware(TimeoutMiddleware, timeout=REQUEST_TIMEOUT_SECONDS)
@@ -230,11 +234,7 @@ app.add_middleware(
 )
 
 
-# Force reload for UCC stats update
-app.include_router(discover_router)
-
-
-def get_db_session():
+def get_db_session() -> Iterator[Session]:
     """Dependency to get database session with performance monitoring"""
     start_time = time.time()
     session = get_session()
@@ -262,7 +262,7 @@ def get_db_session():
     summary="/",
     description="API root endpoint. Returns welcome message.",
 )
-async def root():
+async def root() -> Dict[str, str]:
     """
     Root endpoint - API welcome message
 
@@ -289,7 +289,7 @@ async def root():
     description="Serves the AggieSBP favicon file for browsers.",
     include_in_schema=False,  # Hide from API documentation
 )
-async def favicon():
+async def favicon() -> Any:
     """Serve the AggieSBP favicon file"""
     from pathlib import Path
 
@@ -329,7 +329,7 @@ async def favicon():
     summary="/health",
     description="Returns system health status including database connectivity and connection pool metrics.",
 )
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """
     Health check endpoint with database status
 
@@ -374,7 +374,7 @@ async def health_check():
     summary="/db-status",
     description="Returns detailed database connection pool status and performance metrics.",
 )
-async def database_status():
+async def database_status() -> Dict[str, Any]:
     """
     Detailed database connection pool status
 
@@ -390,7 +390,7 @@ async def database_status():
 
 
 @app.get("/docs", include_in_schema=False)
-async def scalar_html():
+async def scalar_html() -> HTMLResponse:
     """
     Interactive API Documentation Portal
 
@@ -463,7 +463,9 @@ async def scalar_html():
     description="Returns statistics about the data",
 )
 @limiter.limit("30/minute")
-async def get_data_stats(request: Request, db: Session = Depends(get_db_session)):
+async def get_data_stats(
+    request: Request, db: Session = Depends(get_db_session)
+) -> Dict[str, Any]:
     """
     Returns simple database statistics.
     """
@@ -533,7 +535,9 @@ async def get_data_stats(request: Request, db: Session = Depends(get_db_session)
     description="Returns all terms with an end date after the current time, sorted by start date.",
 )
 @limiter.limit("60/minute")
-async def get_terms(request: Request, db: Session = Depends(get_db_session)):
+async def get_terms(
+    request: Request, db: Session = Depends(get_db_session)
+) -> List[Dict[str, Any]]:
     """
     Get active and upcoming terms
 
@@ -623,7 +627,7 @@ async def get_sections(
     ),
     skip: int = Query(0, description="Number of sections to skip"),
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     Get all course sections with instructors and meetings
 
@@ -687,7 +691,7 @@ async def get_sections(
         instructors_result = db.execute(instructors_query, {"section_ids": section_ids})
 
         # Build instructor lookup
-        instructors_by_section = {}
+        instructors_by_section: Dict[str, List[Dict[str, Any]]] = {}
         for row in instructors_result:
             if row.section_id not in instructors_by_section:
                 instructors_by_section[row.section_id] = []
@@ -720,7 +724,7 @@ async def get_sections(
         meetings_result = db.execute(meetings_query, {"section_ids": section_ids})
 
         # Build meeting lookup
-        meetings_by_section = {}
+        meetings_by_section: Dict[str, List[Dict[str, Any]]] = {}
         for row in meetings_result:
             if row.section_id not in meetings_by_section:
                 meetings_by_section[row.section_id] = []
@@ -818,7 +822,7 @@ async def get_sections_by_term(
     ),
     skip: int = Query(0, description="Number of sections to skip"),
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     Get all sections for a specific term
 
@@ -885,7 +889,7 @@ async def get_sections_by_term(
         instructors_result = db.execute(instructors_query, {"section_ids": section_ids})
 
         # Build instructor lookup
-        instructors_by_section = {}
+        instructors_by_section: Dict[str, List[Dict[str, Any]]] = {}
         for row in instructors_result:
             if row.section_id not in instructors_by_section:
                 instructors_by_section[row.section_id] = []
@@ -918,7 +922,7 @@ async def get_sections_by_term(
         meetings_result = db.execute(meetings_query, {"section_ids": section_ids})
 
         # Build meeting lookup
-        meetings_by_section = {}
+        meetings_by_section: Dict[str, List[Dict[str, Any]]] = {}
         for row in meetings_result:
             if row.section_id not in meetings_by_section:
                 meetings_by_section[row.section_id] = []
@@ -1023,7 +1027,7 @@ async def get_sections_by_term_and_course(
     term_code: str,
     course_code: str,
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     Get all sections for a specific course in a specific term
 
@@ -1106,7 +1110,7 @@ async def get_sections_by_term_and_course(
         instructors_result = db.execute(instructors_query, {"section_ids": section_ids})
 
         # Build instructor lookup
-        instructors_by_section = {}
+        instructors_by_section: Dict[str, List[Dict[str, Any]]] = {}
         for row in instructors_result:
             if row.section_id not in instructors_by_section:
                 instructors_by_section[row.section_id] = []
@@ -1139,7 +1143,7 @@ async def get_sections_by_term_and_course(
         meetings_result = db.execute(meetings_query, {"section_ids": section_ids})
 
         # Build meeting lookup
-        meetings_by_section = {}
+        meetings_by_section: Dict[str, List[Dict[str, Any]]] = {}
         for row in meetings_result:
             if row.section_id not in meetings_by_section:
                 meetings_by_section[row.section_id] = []
@@ -1234,7 +1238,7 @@ async def get_course_professors_by_term(
     term_code: str,
     course_code: str,
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     Get all professors teaching a specific course in a specific term
 
@@ -1347,7 +1351,9 @@ async def get_course_professors_by_term(
     description="Returns university-wide statistics including department counts, courses, professors, and GPA averages.",
 )
 @limiter.limit("60/minute")
-async def get_departments_info(request: Request, db: Session = Depends(get_db_session)):
+async def get_departments_info(
+    request: Request, db: Session = Depends(get_db_session)
+) -> Dict[str, Any]:
     """
     Get aggregate statistics about all departments
 
@@ -1582,7 +1588,7 @@ async def get_departments(
     limit: int = 30,
     skip: int = 0,
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     Get all departments with aggregated statistics from anex data
 
@@ -1603,7 +1609,7 @@ async def get_departments(
     try:
         # Build WHERE clause for search functionality
         where_clause = ""
-        params = {"limit": limit, "skip": skip}
+        params: Dict[str, Any] = {"limit": limit, "skip": skip}
 
         if search:
             where_clause = "WHERE (d.id ILIKE :search OR d.long_name ILIKE :search)"
@@ -1684,7 +1690,7 @@ async def get_departments(
         top_courses_result = db.execute(top_courses_query)
 
         # Build lookup dict: dept -> [course_codes]
-        top_courses_by_dept = {}
+        top_courses_by_dept: Dict[str, List[str]] = {}
         for row in top_courses_result:
             if row.dept not in top_courses_by_dept:
                 top_courses_by_dept[row.dept] = []
@@ -1752,7 +1758,7 @@ async def get_courses(
     limit: int = 30,
     skip: int = 0,
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     Get courses with comprehensive data from recent semesters
 
@@ -1910,7 +1916,7 @@ async def get_courses(
         rows = result.fetchall()
 
         # Batch fetch all section attributes in a single query
-        attrs_by_course = {}
+        attrs_by_course: Dict[Tuple[str, str], List[str]] = {}
         if rows:
             section_attrs_query = text("""
                 SELECT DISTINCT 
@@ -2011,7 +2017,7 @@ async def get_courses(
 @limiter.limit("60/minute")
 async def get_course_details(
     request: Request, course_id: str, db: Session = Depends(get_db_session)
-):
+) -> Dict[str, Any]:
     """
     Get detailed course information with comprehensive data
 
@@ -2133,9 +2139,9 @@ async def get_course_details(
         check_query = text(
             "SELECT COUNT(*) FROM professor_summaries_new WHERE course_code = :course_code"
         )
-        professors_count = db.execute(
-            check_query, {"course_code": course_id.upper()}
-        ).scalar()
+        professors_count = (
+            db.execute(check_query, {"course_code": course_id.upper()}).scalar() or 0
+        )
 
         if professors_count > 0:
             # Use full RMP + grade distribution query
@@ -2560,7 +2566,7 @@ async def get_course_details(
 @limiter.limit("60/minute")
 async def get_course_professors(
     request: Request, course_id: str, db: Session = Depends(get_db_session)
-):
+) -> List[Dict[str, Any]]:
     """
     Get all professors who teach a specific course
 
@@ -2653,8 +2659,8 @@ async def get_course_professors(
         """)
         courses_result = db.execute(all_courses_query, {"professor_ids": professor_ids})
 
-        courses_by_prof = {}
-        depts_by_prof = {}
+        courses_by_prof: Dict[str, List[Dict[str, Any]]] = {}
+        depts_by_prof: Dict[str, set[str]] = {}
         for row in courses_result:
             if row.professor_id not in courses_by_prof:
                 courses_by_prof[row.professor_id] = []
@@ -2705,7 +2711,7 @@ async def get_course_professors(
             {"professor_ids": professor_ids, "course_code": course_code},
         )
 
-        reviews_by_prof = {}
+        reviews_by_prof: Dict[str, List[Dict[str, Any]]] = {}
         for review in reviews_result:
             if review.professor_id not in reviews_by_prof:
                 reviews_by_prof[review.professor_id] = []
@@ -3019,7 +3025,7 @@ async def get_course_professor_reviews(
     limit: int = 50,
     skip: int = 0,
     db: Session = Depends(get_db_session),
-):
+) -> Dict[str, Any]:
     """
     Get all reviews for a specific course and professor combination
 
@@ -3355,7 +3361,7 @@ async def compare_courses(
     http_request: Request,
     request: CourseCompareRequest,
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     Bulk fetch course details for comparison
 
@@ -3654,7 +3660,7 @@ async def get_professors(
     skip: int = 0,
     min_rating: Optional[float] = None,
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     List all professors with basic statistics
 
@@ -3677,7 +3683,7 @@ async def get_professors(
     try:
         # Build WHERE conditions
         where_conditions = []
-        params = {"limit": limit, "skip": skip}
+        params: Dict[str, Any] = {"limit": limit, "skip": skip}
 
         if search:
             where_conditions.append(
@@ -3788,7 +3794,7 @@ async def find_professor(
     limit: int = 5,
     min_score: float = 20.0,
     db: Session = Depends(get_db_session),
-):
+) -> Dict[str, Any]:
     """Fuzzy lookup professor by name and return RateMyProf ID if available.
 
     Uses PostgreSQL similarity functions for fuzzy matching when available,
@@ -3853,7 +3859,11 @@ async def find_professor(
 
     # Build scoring query based on token matches
     token_conditions = []
-    params = {"limit": limit, "min_score": min_score, "total_tokens": len(tokens)}
+    params: Dict[str, Any] = {
+        "limit": limit,
+        "min_score": min_score,
+        "total_tokens": len(tokens),
+    }
 
     for idx, token in enumerate(tokens):
         token_key = f"token_{idx}"
@@ -4093,7 +4103,7 @@ async def find_professor(
 @limiter.limit("60/minute")
 async def get_professor_profile(
     request: Request, professor_id: str, db: Session = Depends(get_db_session)
-):
+) -> Dict[str, Any]:
     """
     Professor profile with comprehensive details
 
@@ -4533,7 +4543,7 @@ async def get_professor_reviews(
     min_rating: Optional[float] = None,
     max_rating: Optional[float] = None,
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     All reviews for professor across all courses
 
@@ -4568,7 +4578,11 @@ async def get_professor_reviews(
 
         # Build WHERE conditions
         where_conditions = ["r.professor_id = :professor_id"]
-        params = {"professor_id": professor_id, "limit": limit, "skip": skip}
+        params: Dict[str, Any] = {
+            "professor_id": professor_id,
+            "limit": limit,
+            "skip": skip,
+        }
 
         if course_filter:
             where_conditions.append("r.course_code = :course_filter")
@@ -4824,7 +4838,7 @@ async def search_professors(
     limit: int = 30,
     skip: int = 0,
     db: Session = Depends(get_db_session),
-):
+) -> Dict[str, Any]:
     """
     Advanced professor search with multiple criteria
 
@@ -4848,7 +4862,7 @@ async def search_professors(
     try:
         # Build WHERE conditions
         where_conditions = []
-        params = {"limit": limit, "skip": skip}
+        params: Dict[str, Any] = {"limit": limit, "skip": skip}
 
         if name:
             where_conditions.append(
@@ -5218,7 +5232,7 @@ async def compare_professors(
         examples=["prof123,prof456,prof789"],
     ),
     db: Session = Depends(get_db_session),
-):
+) -> List[Dict[str, Any]]:
     """
     Compare multiple professors by their IDs
 
@@ -5314,8 +5328,8 @@ async def compare_professors(
         """)
         courses_result = db.execute(courses_query, {"professor_ids": valid_ids})
 
-        courses_by_prof = {}
-        depts_by_prof = {}
+        courses_by_prof: Dict[str, List[Dict[str, Any]]] = {}
+        depts_by_prof: Dict[str, set[str]] = {}
         total_reviews_by_prof = {}
         for row in courses_result:
             if row.professor_id not in courses_by_prof:
@@ -5381,7 +5395,7 @@ async def compare_professors(
         """)
         reviews_result = db.execute(reviews_query, {"professor_ids": valid_ids})
 
-        reviews_by_prof = {}
+        reviews_by_prof: Dict[str, List[Dict[str, Any]]] = {}
         for review in reviews_result:
             if review.professor_id not in reviews_by_prof:
                 reviews_by_prof[review.professor_id] = []
@@ -5491,3 +5505,7 @@ async def compare_professors(
 # if __name__ == "__main__":
 #     import uvicorn
 #     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+# Force reload for UCC stats update
+app.include_router(discover_router)

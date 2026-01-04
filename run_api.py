@@ -14,7 +14,7 @@ src_path = Path(__file__).parent / "src"
 sys.path.insert(0, str(src_path))
 
 
-def main():
+def main() -> None:
     """Run the FastAPI server"""
     print("Starting AggieRMP API server...")
     print("Scalar API Documentation will be available at: http://localhost:8000/docs")

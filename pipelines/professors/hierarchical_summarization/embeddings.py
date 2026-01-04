@@ -19,7 +19,7 @@ from pipelines.professors.hierarchical_summarization.config import (
 class EmbeddingGenerator:
     """Generates and caches sentence embeddings"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         print(f"Loading embedding model: {EMBEDDING_MODEL}")
         import torch
 
@@ -45,13 +45,15 @@ class EmbeddingGenerator:
         if os.path.exists(cache_path):
             try:
                 with open(cache_path, "rb") as f:
-                    return pickle.load(f)
+                    from typing import cast
+
+                    return cast(np.ndarray, pickle.load(f))
             except Exception as e:
                 print(f"Error loading cache for {review_id}: {e}")
                 return None
         return None
 
-    def _save_embedding(self, review_id: str, embedding: np.ndarray):
+    def _save_embedding(self, review_id: str, embedding: np.ndarray) -> None:
         """Save embedding to cache"""
         cache_path = self._get_cache_path(review_id)
         try:
@@ -77,9 +79,10 @@ class EmbeddingGenerator:
         if len(texts) != len(review_ids):
             raise ValueError("texts and review_ids must have same length")
 
-        embeddings = np.zeros(
-            (len(texts), self.model.get_sentence_embedding_dimension())
-        )
+        dim = self.model.get_sentence_embedding_dimension()
+        if dim is None:
+            dim = 384  # Default fallback or raise error
+        embeddings = np.zeros((len(texts), int(dim)))
         texts_to_encode = []
         indices_to_encode = []
         cached_count = 0

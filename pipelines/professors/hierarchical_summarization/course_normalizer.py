@@ -66,7 +66,7 @@ class CourseNormalizer:
         if session:
             self._load_cross_listings_from_db(session)
 
-    def _load_cross_listings_from_db(self, session: Session):
+    def _load_cross_listings_from_db(self, session: Session) -> None:
         """Load cross-listings from the courses table"""
         try:
             # Get all courses with their canonical codes
@@ -368,7 +368,7 @@ class CourseNormalizer:
                         .first()
                     )
                     if dept_db:
-                        return dept_db.id.upper()
+                        return str(dept_db.id).upper()
                 except Exception:
                     pass
 
@@ -386,7 +386,7 @@ class CourseNormalizer:
                     dept = professor.department.upper().strip()
                     # If it looks like just letters, use it
                     if re.match(r"^[A-Z]+$", dept):
-                        return dept
+                        return str(dept)
                     # Otherwise, try to find department code in database
                     from aggiermp.database.base import DepartmentDB
 
@@ -399,7 +399,7 @@ class CourseNormalizer:
                         .first()
                     )
                     if dept_db:
-                        return dept_db.id.upper()
+                        return str(dept_db.id).upper()
             except Exception:
                 pass
 
@@ -419,7 +419,7 @@ class CourseNormalizer:
                 )
 
                 # Extract departments from course codes
-                dept_counts = {}
+                dept_counts: Dict[str, int] = {}
                 for (course_code,) in reviews:
                     if course_code:
                         # Try to extract department (letters before number)

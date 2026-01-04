@@ -6,15 +6,15 @@ Contains database models and operations for upserting professors, reviews, and s
 
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, cast
 
 from sqlalchemy import ARRAY, Column, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import declarative_base
 
 from aggiermp.database.base import ProfessorDB, upsert_professors, upsert_reviews
-from pipelines.professors.summarizer import ReviewSummarizer
+from pipelines.professors.old.summarizer import ReviewSummarizer
 
-Base = declarative_base()
+Base: Any = declarative_base()
 
 
 class SummaryDB(Base):
@@ -32,13 +32,13 @@ class SummaryDB(Base):
     total_reviews = Column(Integer, nullable=False)
     avg_rating = Column(Float, nullable=True)
     avg_difficulty = Column(Float, nullable=True)
-    common_tags = Column(ARRAY(String), nullable=True)
+    common_tags: Column[List[str]] = Column(ARRAY(String), nullable=True)
     tag_frequencies = Column(Text, nullable=True)  # JSON string of tag counts
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
 
-async def get_new_reviews_for_professor(session, professor_id):
+async def get_new_reviews_for_professor(session: Any, professor_id: str) -> List[Any]:
     """Get new reviews that have been added since the last review date"""
     professor = (
         session.query(ProfessorDB).filter(ProfessorDB.id == professor_id).first()
@@ -113,7 +113,7 @@ def create_overall_summary(
         common_tags=common_tags,
         tag_frequencies=str(tag_frequencies),
         updated_at=datetime.now(),
-    )
+    )  # type: ignore
 
     # Upsert logic
     existing = summarizer.session.query(SummaryDB).filter_by(id=summary_id).first()
@@ -277,9 +277,9 @@ def create_course_number_summaries(
 
 def process_professor(
     summarizer: ReviewSummarizer, professor_id: str, include_course_numbers: bool = True
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """Process both overall and course-specific summaries for a professor"""
-    results = {
+    results: Dict[str, Any] = {
         "professor_id": professor_id,
         "overall_summary_id": None,
         "course_summary_ids": [],
@@ -301,7 +301,7 @@ def process_professor(
         print(f"   Overall summary: {'OK' if overall_id else 'FAILED'}")
         if include_course_numbers:
             print(
-                f"   Course number summaries: {len(results['course_number_summary_ids'])}"
+                f"   Course number summaries: {len(results['course_number_summary_ids'] or [])}"
             )
 
     except Exception as e:
@@ -316,7 +316,7 @@ def process_professor(
 
 def process_all_professors(
     summarizer: ReviewSummarizer, include_course_numbers: bool = True
-) -> List[Dict[str, any]]:
+) -> List[Dict[str, Any]]:
     """Process summaries for all professors with reviews"""
     print("\nSTARTING BATCH PROCESSING OF ALL PROFESSORS")
     print("=" * 80)
@@ -325,11 +325,11 @@ def process_all_professors(
     professors = summarizer.session.query(ProfessorDB).all()
     summaries = summarizer.session.query(SummaryDB.professor_id).all()
     # remove duplicates
-    summaries = set([s[0] for s in summaries])
+    summaries_set = set(str(s[0]) for s in summaries)
     print(f"Found {len(summaries)} professors with existing summaries")
-    professor_ids = [professor.id for professor in professors][:4000]
+    professor_ids = [str(professor.id) for professor in professors][:4000]
 
-    professor_ids = set(professor_ids) - summaries
+    professor_ids = list(set(professor_ids) - summaries_set)
 
     print(f"Found {len(professor_ids)} professors to process")
 
@@ -393,7 +393,10 @@ def get_summary(
             raise ValueError("course_code required for course_specific summaries")
         summary_id = f"{professor_id}_{course_code}"
 
-    return summarizer.session.query(SummaryDB).filter_by(id=summary_id).first()
+    return cast(
+        Optional[SummaryDB],
+        summarizer.session.query(SummaryDB).filter_by(id=summary_id).first(),
+    )
 
 
 def get_all_summaries_for_professor(
@@ -413,7 +416,11 @@ def get_all_summaries_for_professor(
         summarizer.session.query(SummaryDB).filter_by(professor_id=professor_id).all()
     )
 
-    organized = {"overall": [], "course_specific": [], "course_number": []}
+    organized: Dict[str, List[SummaryDB]] = {
+        "overall": [],
+        "course_specific": [],
+        "course_number": [],
+    }
 
     for summary in all_summaries:
         organized[summary.summary_type].append(summary)

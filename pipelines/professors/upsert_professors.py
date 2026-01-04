@@ -19,9 +19,10 @@ if str(project_root) not in sys.path:
 
 from aggiermp.database.base import ProfessorDB, get_session, upsert_professors
 from pipelines.professors.scrapers import RMPReviewCollector
+from typing import Any, Dict
 
 
-def upsert_all_professors(university_id: str, session=None):
+def upsert_all_professors(university_id: str, session: Any = None) -> Dict[str, Any]:
     """
     Scrape and upsert all professors for a university.
 
@@ -84,7 +85,7 @@ def upsert_all_professors(university_id: str, session=None):
             session.close()
 
 
-def main():
+def main() -> None:
     """Main function - default to Texas A&M"""
     # Default to Texas A&M University ID
     # You can find this by searching on RMP or using the get_university_by_name function

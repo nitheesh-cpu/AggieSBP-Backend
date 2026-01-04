@@ -3,21 +3,24 @@ from fastapi.testclient import TestClient
 from aggiermp.api.main import app  # Import your FastAPI app instance
 
 
+from typing import Generator
+
+
 @pytest.fixture(scope="module")
-def client():
+def client() -> Generator[TestClient, None, None]:
     """Create a test client for the FastAPI application."""
     with TestClient(app) as client:
         yield client
 
 
-def test_root_endpoint(client):
+def test_root_endpoint(client: TestClient) -> None:
     """Test the root endpoint returns 200 and welcome message."""
     response = client.get("/")
     assert response.status_code == 200
     assert "Welcome to AggieSBP API" in response.text
 
 
-def test_health_check(client):
+def test_health_check(client: TestClient) -> None:
     """Test the health check endpoint."""
     response = client.get("/health")
     assert response.status_code == 200
@@ -27,7 +30,7 @@ def test_health_check(client):
     assert "api_version" in data
 
 
-def test_database_status(client):
+def test_database_status(client: TestClient) -> None:
     """Test the database status endpoint."""
     response = client.get("/db-status")
     assert response.status_code == 200
@@ -36,7 +39,7 @@ def test_database_status(client):
     assert "checked_in" in data["pool_status"]
 
 
-def test_get_terms(client):
+def test_get_terms(client: TestClient) -> None:
     """Test getting active terms."""
     response = client.get("/terms")
     assert response.status_code == 200
@@ -49,7 +52,7 @@ def test_get_terms(client):
         assert "termCode" in term
 
 
-def test_get_sections(client):
+def test_get_sections(client: TestClient) -> None:
     """Test getting sections with pagination."""
     # Test default
     response = client.get("/sections?limit=5")
@@ -65,7 +68,7 @@ def test_get_sections(client):
         assert "courseNumber" in section
 
 
-def test_endpoint_stats(client):
+def test_endpoint_stats(client: TestClient) -> None:
     """Test get_data_stats."""
     response = client.get("/data_stats")
     assert response.status_code == 200
@@ -75,7 +78,7 @@ def test_endpoint_stats(client):
     assert "professors_count" in data
 
 
-def test_ucc_discovery_endpoint(client):
+def test_ucc_discovery_endpoint(client: TestClient) -> None:
     """Test the UCC discovery endpoint."""
     # We need a valid term code for this to work.
     # Let's try to fetch one first, or use a known one like '202611' from previous context.

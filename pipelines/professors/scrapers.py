@@ -6,7 +6,8 @@ Contains classes for scraping professor and review data from Rate My Professor.
 
 import os
 import sys
-from typing import List
+from typing import List, Dict, Any
+from datetime import datetime
 
 import requests
 from sqlalchemy import select
@@ -21,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 class RMPReviewCollector:
     """Collects reviews from Rate My Professor for Texas A&M professors"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.url = "https://www.ratemyprofessors.com/graphql"
         self.session = requests.Session()
         self.cookies = self.get_cookies()
@@ -46,11 +47,13 @@ class RMPReviewCollector:
         self.request_delay = 1.0  # Seconds between requests
         self.max_retries = 3
 
-    def get_cookies(self):
+    def get_cookies(self) -> Dict[str, str]:
         self.session.get("https://www.ratemyprofessors.com/")
         return self.session.cookies.get_dict()
 
-    def get_all_professors(self, university_id, limit: int = 1000) -> List[Professor]:
+    def get_all_professors(
+        self, university_id: str, limit: int = 1000
+    ) -> List[Professor]:
         """Fetches all professors from Texas A&M University"""
         professors = []
         response = self.session.post(
@@ -148,7 +151,7 @@ class RMPReviewCollector:
             print(f"Collected {len(professors)} professors")
         return professors
 
-    def get_professor(self, professor_name, university_id) -> Professor:
+    def get_professor(self, professor_name: str, university_id: str) -> Professor:
         """Returns the professor details for a given professor name"""
         response = self.session.post(
             "https://www.ratemyprofessors.com/graphql",
@@ -181,7 +184,7 @@ class RMPReviewCollector:
             university_id=university_id,
         )
 
-    def get_university_id(self, search_str) -> University:
+    def get_university_id(self, search_str: str) -> University:
         """Returns the university ID for Texas A&M"""
         response = self.session.post(
             "https://www.ratemyprofessors.com/graphql",
@@ -207,7 +210,7 @@ class RMPReviewCollector:
         else:
             raise ValueError("No university found with that name")
 
-    def get_reviews(self, professor_id, session):
+    def get_reviews(self, professor_id: str, session: Any) -> List[Review]:
         num_ratings = session.execute(
             select(ProfessorDB.num_ratings).where(ProfessorDB.id == professor_id)
         ).scalar_one()
@@ -237,7 +240,7 @@ class RMPReviewCollector:
         ]
         return reviews
 
-    def get_all_reviews(self, professor_id):
+    def get_all_reviews(self, professor_id: str) -> List[Review]:
         """Returns all reviews for a given professor"""
         reviews = []
         response = self.session.post(
@@ -323,13 +326,19 @@ class RMPReviewCollector:
             )
         return reviews
 
-    def get_reviews_since_date(self, professor_id, last_review_date):
+    def get_reviews_since_date(
+        self, professor_id: str, last_review_date: datetime
+    ) -> List[Review]:
         """Returns all reviews for a given professor since a given date"""
         reviews = self.get_all_reviews(professor_id)
-        return [review for review in reviews if review.review_date > last_review_date]
+        return [
+            review
+            for review in reviews
+            if review.review_date and review.review_date > last_review_date
+        ]
 
     def get_new_reviews(
-        self, professor_id: str, existing_review_ids: list[str]
+        self, professor_id: str, existing_review_ids: List[str]
     ) -> List[Review]:
         """
         Fetches only new reviews for a professor by stopping when a known review ID is found.
@@ -342,7 +351,7 @@ class RMPReviewCollector:
             List of new Review objects
         """
         existing_ids = set(existing_review_ids)
-        new_reviews = []
+        new_reviews: List[Review] = []
 
         # Initial request
         response = self.session.post(

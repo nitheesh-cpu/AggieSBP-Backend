@@ -4,7 +4,8 @@ Configuration management for AggieRMP application.
 
 from pathlib import Path
 from typing import Optional
-from pydantic import BaseSettings, validator
+from pydantic import validator
+from pydantic_settings import BaseSettings  # type: ignore
 
 
 class Settings(BaseSettings):

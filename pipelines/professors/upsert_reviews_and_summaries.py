@@ -15,7 +15,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import List, Set, Tuple, Dict
+from typing import List, Set, Tuple, Dict, Any
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent.parent
@@ -45,7 +45,7 @@ def load_checkpoint() -> Set[str]:
     return set()
 
 
-def save_checkpoint(processed_professors: Set[str]):
+def save_checkpoint(processed_professors: Set[str]) -> None:
     """Save set of successfully processed professor IDs to checkpoint file"""
     try:
         with open(CHECKPOINT_FILE, "w") as f:
@@ -54,7 +54,7 @@ def save_checkpoint(processed_professors: Set[str]):
         print(f"Warning: Could not save checkpoint: {e}")
 
 
-def clear_checkpoint():
+def clear_checkpoint() -> None:
     """Clear the checkpoint file"""
     if CHECKPOINT_FILE.exists():
         CHECKPOINT_FILE.unlink()
@@ -86,7 +86,7 @@ def get_new_reviews_for_professor(
         return (professor_id, [])
 
 
-def batch_upsert_reviews(session, reviews_batch: List):
+def batch_upsert_reviews(session: Any, reviews_batch: List[Any]) -> None:
     """Batch upsert reviews for better performance"""
     if not reviews_batch:
         return
@@ -94,14 +94,14 @@ def batch_upsert_reviews(session, reviews_batch: List):
 
 
 def upsert_reviews_and_summaries(
-    professor_ids: List[str] = None,
-    session=None,
+    professor_ids: List[str] | None = None,
+    session: Any = None,
     skip_if_no_new_reviews: bool = True,
     resume: bool = True,
     clear_checkpoint_on_start: bool = False,
     max_workers: int = 10,  # Parallel review fetching
     batch_size: int = 50,  # Batch size for review fetching and summarization
-) -> dict:
+) -> Dict[str, Any]:
     """
     Get new reviews and generate summaries for professors.
     Optimized with parallel review fetching and batched processing.
@@ -150,7 +150,7 @@ def upsert_reviews_and_summaries(
         pipeline = HierarchicalSummarizationPipeline(session=session)
 
         # Track results
-        results = {
+        results: Dict[str, Any] = {
             "professors_processed": 0,
             "reviews_added": 0,
             "summaries_generated": 0,
@@ -358,7 +358,7 @@ def upsert_reviews_and_summaries(
             session.close()
 
 
-def main():
+def main() -> None:
     """Main function"""
     import argparse
 

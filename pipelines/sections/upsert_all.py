@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -67,7 +67,7 @@ def run_full_pipeline(
         Dictionary with pipeline results
     """
     start_time = time.time()
-    results = {
+    results: Dict[str, Any] = {
         "start_time": datetime.now().isoformat(),
         "terms_upserted": 0,
         "sections_upserted": 0,
@@ -164,7 +164,7 @@ def run_full_pipeline(
             if sections:
                 print(f"Fetching details for {len(sections)} sections...")
 
-                def progress_callback(completed, total):
+                def progress_callback(completed: int, total: int) -> None:
                     pct = 100 * completed / total
                     print(f"  Progress: {completed}/{total} ({pct:.1f}%)")
 
@@ -228,11 +228,11 @@ def run_full_pipeline(
         raise
 
     except Exception as e:
-        print(f"\nError: {e}")
         try:
             session.rollback()
-        except Exception as e:
-            print(f"Failed to rollback: {e}")
+        except Exception as rollback_error:
+            print(f"Failed to rollback: {rollback_error}")
+            results["errors"].append(str(rollback_error))
         results["errors"].append(str(e))
         return results
 
@@ -240,7 +240,7 @@ def run_full_pipeline(
         session.close()
 
 
-def main():
+def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(

@@ -13,7 +13,7 @@ import aiohttp
 import json
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Callable
 from datetime import datetime
 
 from .schemas import (
@@ -297,7 +297,7 @@ def get_section_statistics(sections: List[SectionSchema]) -> Dict[str, Any]:
 # ============================================================================
 
 
-def _recursive_parse_json(data):
+def _recursive_parse_json(data: Any) -> Any:
     """Recursively parse JSON strings within data."""
     if isinstance(data, str):
         try:
@@ -410,7 +410,7 @@ async def _fetch_all_details_for_section(
 async def fetch_section_details_batch(
     sections: List[SectionSchema],
     max_concurrent: int = 50,
-    progress_callback: Optional[callable] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> List[SectionDetailsSchema]:
     """
     Fetch detailed information for a batch of sections.
@@ -457,7 +457,7 @@ async def fetch_section_details_batch(
 def fetch_section_details_sync(
     sections: List[SectionSchema],
     max_concurrent: int = 50,
-    progress_callback: Optional[callable] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> List[SectionDetailsSchema]:
     """
     Synchronous wrapper for fetch_section_details_batch.

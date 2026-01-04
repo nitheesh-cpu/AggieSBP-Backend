@@ -13,7 +13,10 @@ sys.path.insert(0, str(src_path))
 from aggiermp.api.main import app
 
 
+from typing import Generator
+
+
 @pytest.fixture(scope="module")
-def client():
+def client() -> Generator[TestClient, None, None]:
     with TestClient(app) as c:
         yield c
