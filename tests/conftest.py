@@ -53,7 +53,7 @@ def seed_data(db_session: Session) -> None:
         db_session.execute(
             text("""
             INSERT INTO universities (id, name)
-            VALUES (1, 'Texas A&M University')
+            VALUES ('1', 'Texas A&M University')
         """)
         )
 
@@ -61,7 +61,7 @@ def seed_data(db_session: Session) -> None:
         db_session.execute(
             text("""
             INSERT INTO professors (id, first_name, last_name, avg_rating, num_ratings, university_id, created_at, updated_at)
-            VALUES ('P1', 'Test', 'Professor', 4.5, 10, 1, NOW(), NOW())
+            VALUES ('P1', 'Test', 'Professor', 4.5, 10, '1', NOW(), NOW())
         """)
         )
 
@@ -78,6 +78,38 @@ def seed_data(db_session: Session) -> None:
             text("""
             INSERT INTO section_instructors (id, section_id, term_code, crn, instructor_name, created_at, updated_at)
             VALUES ('202611_12345_P1', '202611_12345', '202611', '12345', 'Test Professor', NOW(), NOW())
+        """)
+        )
+
+        # Insert dummy Department (Required for Course FK)
+        db_session.execute(
+            text("""
+            INSERT INTO departments (id, short_name, long_name, title, created_at, updated_at)
+            VALUES ('CSCE', 'CSCE', 'Computer Science & Engineering', 'Department of Computer Science & Engineering', NOW(), NOW())
+        """)
+        )
+
+        # Insert dummy Course
+        db_session.execute(
+            text("""
+            INSERT INTO courses (id, subject_long_name, subject_short_name, subject_id, course_number, course_display_title, course_title, course_title_long, has_topics, has_restrictions, created_at, updated_at)
+            VALUES ('CSCE121', 'Computer Science & Engineering', 'CSCE', 'CSCE', '121', 'CSCE 121', 'INTRO TO COMP SCI', 'Introduction to Computer Science', FALSE, FALSE, NOW(), NOW())
+        """)
+        )
+
+        # Insert dummy Review
+        db_session.execute(
+            text("""
+            INSERT INTO reviews (id, professor_id, course_code, is_online_class, is_for_credit, created_by_user)
+            VALUES ('R1', 'P1', 'CSCE121', FALSE, TRUE, FALSE)
+        """)
+        )
+
+        # Insert dummy Section Attribute
+        db_session.execute(
+            text("""
+            INSERT INTO section_attributes (id, dept, course_number, section, year, semester, attribute_id, attribute_title, attribute_value, created_at, updated_at)
+            VALUES ('CSCE_121_500_2026_Fall_KCOM', 'CSCE', '121', '500', '2026', 'Fall', 'KCOM', 'Communication', 'Y', NOW(), NOW())
         """)
         )
 
