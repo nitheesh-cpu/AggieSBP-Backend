@@ -6,47 +6,49 @@ Contains database models and operations for upserting professors, reviews, and s
 
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, cast
 
-from sqlalchemy import ARRAY, Column, DateTime, Float, Integer, String, Text, create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import ARRAY, Column, DateTime, Float, Integer, String, Text
+from sqlalchemy.orm import declarative_base
 
-from aggiermp.database.base import ProfessorDB, ReviewDB, upsert_professors, upsert_reviews
-from pipelines.professors.schemas import ReviewData
-from pipelines.professors.summarizer import ReviewSummarizer
+from aggiermp.database.base import ProfessorDB, upsert_professors, upsert_reviews
+from pipelines.professors.old.summarizer import ReviewSummarizer
 
-Base = declarative_base()
+Base: Any = declarative_base()
 
 
 class SummaryDB(Base):
     """Database model for professor summaries"""
+
     __tablename__ = "professor_summaries"
 
     id = Column(String, primary_key=True)
     professor_id = Column(String, nullable=False)
     course_code = Column(String, nullable=True)  # None for overall summary
-    summary_type = Column(String, nullable=False)  # 'overall', 'course_specific', or 'course_number'
+    summary_type = Column(
+        String, nullable=False
+    )  # 'overall', 'course_specific', or 'course_number'
     summary_text = Column(Text, nullable=False)
     total_reviews = Column(Integer, nullable=False)
     avg_rating = Column(Float, nullable=True)
     avg_difficulty = Column(Float, nullable=True)
-    common_tags = Column(ARRAY(String), nullable=True)
+    common_tags: Column[List[str]] = Column(ARRAY(String), nullable=True)
     tag_frequencies = Column(Text, nullable=True)  # JSON string of tag counts
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
 
-async def get_new_reviews_for_professor(session, professor_id):
+async def get_new_reviews_for_professor(session: Any, professor_id: str) -> List[Any]:
     """Get new reviews that have been added since the last review date"""
     professor = (
         session.query(ProfessorDB).filter(ProfessorDB.id == professor_id).first()
     )
     if not professor:
         return []
-    
+
     last_review_date = professor.updated_at
     from pipelines.professors.scrapers import RMPReviewCollector
-    
+
     collector = RMPReviewCollector()
     reviews = collector.get_reviews_since_date(professor_id, last_review_date)
     if reviews:
@@ -57,21 +59,23 @@ async def get_new_reviews_for_professor(session, professor_id):
 async def update_professors(session, university_id):
     """Get all professors with new reviews"""
     from pipelines.professors.scrapers import RMPReviewCollector
-    
+
     collector = RMPReviewCollector()
     professors = collector.get_all_professors(university_id, 1000)
     updated_professors = upsert_professors(session, professors)
-    
+
     summarizer = ReviewSummarizer()
     for professor in updated_professors:
         await get_new_reviews_for_professor(session, professor.id)
         process_professor(summarizer, professor.id, include_course_numbers=True)
-    
+
     summarizer.close()
     return len(updated_professors)
 
 
-def create_overall_summary(summarizer: ReviewSummarizer, professor_id: str) -> Optional[str]:
+def create_overall_summary(
+    summarizer: ReviewSummarizer, professor_id: str
+) -> Optional[str]:
     """Create an overall summary for a professor across all courses"""
     reviews = summarizer.fetch_reviews_for_professor(professor_id)
 
@@ -80,7 +84,7 @@ def create_overall_summary(summarizer: ReviewSummarizer, professor_id: str) -> O
 
     # Prepare text and generate summary
     combined_text = summarizer.prepare_text_for_summarization(reviews, overall=True)
-    if type(combined_text) == list:
+    if isinstance(combined_text, list):
         course_result = summarizer.generate_hybrid_summary(
             combined_text, is_course_specific=False
         )
@@ -109,7 +113,7 @@ def create_overall_summary(summarizer: ReviewSummarizer, professor_id: str) -> O
         common_tags=common_tags,
         tag_frequencies=str(tag_frequencies),
         updated_at=datetime.now(),
-    )
+    )  # type: ignore
 
     # Upsert logic
     existing = summarizer.session.query(SummaryDB).filter_by(id=summary_id).first()
@@ -128,7 +132,9 @@ def create_overall_summary(summarizer: ReviewSummarizer, professor_id: str) -> O
     return summary_id
 
 
-def create_course_specific_summaries(summarizer: ReviewSummarizer, professor_id: str) -> List[str]:
+def create_course_specific_summaries(
+    summarizer: ReviewSummarizer, professor_id: str
+) -> List[str]:
     """Create course-specific summaries for a professor"""
     reviews = summarizer.fetch_reviews_for_professor(professor_id)
 
@@ -148,7 +154,7 @@ def create_course_specific_summaries(summarizer: ReviewSummarizer, professor_id:
         combined_text = summarizer.prepare_text_for_summarization(
             course_review_list, overall=False
         )
-        if type(combined_text) == list:
+        if isinstance(combined_text, list):
             course_result = summarizer.generate_hybrid_summary(
                 combined_text, is_course_specific=True
             )
@@ -196,7 +202,9 @@ def create_course_specific_summaries(summarizer: ReviewSummarizer, professor_id:
     return summary_ids
 
 
-def create_course_number_summaries(summarizer: ReviewSummarizer, professor_id: str) -> List[str]:
+def create_course_number_summaries(
+    summarizer: ReviewSummarizer, professor_id: str
+) -> List[str]:
     """Create course number summaries using professor's department context for proper formatting"""
     reviews = summarizer.fetch_reviews_for_professor(professor_id)
 
@@ -219,7 +227,7 @@ def create_course_number_summaries(summarizer: ReviewSummarizer, professor_id: s
         combined_text = summarizer.prepare_text_for_summarization(
             course_review_list, overall=False
         )
-        if type(combined_text) == list:
+        if isinstance(combined_text, list):
             course_result = summarizer.generate_hybrid_summary(
                 combined_text, is_course_specific=True
             )
@@ -268,12 +276,10 @@ def create_course_number_summaries(summarizer: ReviewSummarizer, professor_id: s
 
 
 def process_professor(
-    summarizer: ReviewSummarizer,
-    professor_id: str,
-    include_course_numbers: bool = True
-) -> Dict[str, any]:
+    summarizer: ReviewSummarizer, professor_id: str, include_course_numbers: bool = True
+) -> Dict[str, Any]:
     """Process both overall and course-specific summaries for a professor"""
-    results = {
+    results: Dict[str, Any] = {
         "professor_id": professor_id,
         "overall_summary_id": None,
         "course_summary_ids": [],
@@ -295,22 +301,22 @@ def process_professor(
         print(f"   Overall summary: {'OK' if overall_id else 'FAILED'}")
         if include_course_numbers:
             print(
-                f"   Course number summaries: {len(results['course_number_summary_ids'])}"
+                f"   Course number summaries: {len(results['course_number_summary_ids'] or [])}"
             )
 
     except Exception as e:
         results["error"] = str(e)
         print(f"ERROR processing professor {professor_id}: {e}")
         import traceback
+
         traceback.print_exc()
 
     return results
 
 
 def process_all_professors(
-    summarizer: ReviewSummarizer,
-    include_course_numbers: bool = True
-) -> List[Dict[str, any]]:
+    summarizer: ReviewSummarizer, include_course_numbers: bool = True
+) -> List[Dict[str, Any]]:
     """Process summaries for all professors with reviews"""
     print("\nSTARTING BATCH PROCESSING OF ALL PROFESSORS")
     print("=" * 80)
@@ -319,11 +325,11 @@ def process_all_professors(
     professors = summarizer.session.query(ProfessorDB).all()
     summaries = summarizer.session.query(SummaryDB.professor_id).all()
     # remove duplicates
-    summaries = set([s[0] for s in summaries])
+    summaries_set = set(str(s[0]) for s in summaries)
     print(f"Found {len(summaries)} professors with existing summaries")
-    professor_ids = [professor.id for professor in professors][:4000]
+    professor_ids = [str(professor.id) for professor in professors][:4000]
 
-    professor_ids = set(professor_ids) - summaries
+    professor_ids = list(set(professor_ids) - summaries_set)
 
     print(f"Found {len(professor_ids)} professors to process")
 
@@ -353,7 +359,7 @@ def process_all_professors(
     print("Final Stats:")
     print(f"   Successful: {successful}/{len(professor_ids)}")
     print(f"   Failed: {failed}/{len(professor_ids)}")
-    print(f"   Success Rate: {successful/len(professor_ids)*100:.1f}%")
+    print(f"   Success Rate: {successful / len(professor_ids) * 100:.1f}%")
 
     return results
 
@@ -387,7 +393,10 @@ def get_summary(
             raise ValueError("course_code required for course_specific summaries")
         summary_id = f"{professor_id}_{course_code}"
 
-    return summarizer.session.query(SummaryDB).filter_by(id=summary_id).first()
+    return cast(
+        Optional[SummaryDB],
+        summarizer.session.query(SummaryDB).filter_by(id=summary_id).first(),
+    )
 
 
 def get_all_summaries_for_professor(
@@ -407,7 +416,11 @@ def get_all_summaries_for_professor(
         summarizer.session.query(SummaryDB).filter_by(professor_id=professor_id).all()
     )
 
-    organized = {"overall": [], "course_specific": [], "course_number": []}
+    organized: Dict[str, List[SummaryDB]] = {
+        "overall": [],
+        "course_specific": [],
+        "course_number": [],
+    }
 
     for summary in all_summaries:
         organized[summary.summary_type].append(summary)
@@ -418,11 +431,10 @@ def get_all_summaries_for_professor(
 if __name__ == "__main__":
     from aggiermp.database.base import get_session
     import asyncio
-    
+
     session = get_session()
     try:
         count = asyncio.run(update_professors(session, "U2Nob29zLTEwMDM="))
         print(f"Updated professors count: {count}")
     finally:
         session.close()
-

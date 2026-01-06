@@ -1,12 +1,12 @@
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import List, Optional, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from ..main import get_session
+from ...database.base import get_session
 from pydantic import BaseModel
 import math
 
-router = APIRouter(prefix="/discover", tags=["Discovery"])
+router: APIRouter = APIRouter(prefix="/discover")
 
 # Constants
 UCC_ATTRIBUTES = [
@@ -20,8 +20,9 @@ UCC_ATTRIBUTES = [
     "Core Mathematics (KMTH)",
     "Core Social & Beh Sci (KSOC)",
     "Univ Req-Cult Discourse (KUCD)",
-    "Univ Req-Int'l&Cult Div (KICD)"
+    "Univ Req-Int'l&Cult Div (KICD)",
 ]
+
 
 # Response Models
 class ProfessorInfo(BaseModel):
@@ -37,22 +38,26 @@ class ProfessorInfo(BaseModel):
     percentAB: Optional[float] = None
     gpaStudentCount: Optional[int] = None
 
+
 class UccCourseDiscovery(BaseModel):
     dept: str
     courseNumber: str
     courseTitle: str
-    credits: str
+    credits: Optional[str]
     professor: ProfessorInfo
     # Computed scores
     easinessScore: Optional[float] = None
     confidenceScore: Optional[float] = None
+
 
 class UccCategoryGroup(BaseModel):
     category: str
     courses: List[UccCourseDiscovery]
 
 
-def calculate_easiness_score(avg_gpa: float, avg_difficulty: float, avg_rating: float) -> float:
+def calculate_easiness_score(
+    avg_gpa: float, avg_difficulty: float, avg_rating: float
+) -> float:
     """
     Calculate composite easiness score.
     Formula: (GPA/4)*0.5 + ((5-difficulty)/4)*0.3 + (rating/5)*0.2
@@ -61,7 +66,7 @@ def calculate_easiness_score(avg_gpa: float, avg_difficulty: float, avg_rating: 
     gpa_norm = (avg_gpa / 4.0) if avg_gpa else 0.0
     diff_norm = ((5 - avg_difficulty) / 4.0) if avg_difficulty else 0.0
     rating_norm = (avg_rating / 5.0) if avg_rating else 0.0
-    
+
     return (gpa_norm * 0.5) + (diff_norm * 0.3) + (rating_norm * 0.2)
 
 
@@ -78,11 +83,14 @@ def calculate_confidence_score(total_reviews: int, gpa_student_count: int) -> fl
     return min(1.0, math.log10(total_data_points + 1) / 3.0)
 
 
-@router.get("/{term_code}/ucc", response_model=List[UccCategoryGroup])
+@router.get(
+    "/{term_code}/ucc",
+    response_model=List[UccCategoryGroup],
+    summary="/discover/{term_code}/ucc",
+)
 async def discover_ucc_courses(
-    term_code: str,
-    db: Session = Depends(get_session)
-):
+    term_code: str, db: Session = Depends(get_session)
+) -> List[UccCategoryGroup]:
     """
     Get all University Core Curriculum (UCC) classes for a specific term,
     grouped by category and ordered by easiness score.
@@ -135,65 +143,76 @@ async def discover_ucc_courses(
             WHERE s.term_code = :term_code
               AND sad.attribute_desc = ANY(:ucc_attributes)
         """)
-        
-        result = db.execute(query, {
-            "term_code": term_code,
-            "ucc_attributes": UCC_ATTRIBUTES
-        })
-        
+
+        result = db.execute(
+            query, {"term_code": term_code, "ucc_attributes": UCC_ATTRIBUTES}
+        )
+
         # Group by category
-        grouped_courses = {}
+        grouped_courses: Dict[str, List[Dict[str, Any]]] = {}
         for row in result:
             category = row.attribute_desc
             if category not in grouped_courses:
                 grouped_courses[category] = []
-            
+
             # extract tags (top 5)
             tags = row.common_tags[:5] if row.common_tags else []
-            
+
             # Calculate scores
             avg_gpa = float(row.avg_gpa) if row.avg_gpa else None
             avg_difficulty = float(row.avg_difficulty) if row.avg_difficulty else 0.0
             avg_rating = float(row.avg_rating) if row.avg_rating else 0.0
             total_reviews = row.total_reviews or 0
             gpa_student_count = row.gpa_student_count or 0
-            
-            easiness = calculate_easiness_score(avg_gpa or 0, avg_difficulty, avg_rating)
+
+            easiness = calculate_easiness_score(
+                avg_gpa or 0, avg_difficulty, avg_rating
+            )
             confidence = calculate_confidence_score(total_reviews, gpa_student_count)
-                
-            grouped_courses[category].append({
-                "dept": row.dept,
-                "courseNumber": row.course_number,
-                "courseTitle": row.course_title,
-                "credits": row.credit_hours,
-                "easinessScore": round(easiness * 100, 1),  # Convert to 0-100 scale
-                "confidenceScore": round(confidence * 100, 1),  # Convert to 0-100 scale
-                "professor": {
-                    "id": row.professor_id,
-                    "firstName": row.first_name,
-                    "lastName": row.last_name,
-                    "avgRating": round(avg_rating, 2),
-                    "avgDifficulty": round(avg_difficulty, 2),
-                    "totalRatings": total_reviews,
-                    "tags": tags,
-                    "avgGpa": round(avg_gpa, 2) if avg_gpa else None,
-                    "percentAB": round(float(row.percent_ab), 1) if row.percent_ab else None,
-                    "gpaStudentCount": gpa_student_count
+
+            grouped_courses[category].append(
+                {
+                    "dept": row.dept,
+                    "courseNumber": row.course_number,
+                    "courseTitle": row.course_title,
+                    "credits": row.credit_hours,
+                    "easinessScore": round(easiness * 100, 1),  # Convert to 0-100 scale
+                    "confidenceScore": round(
+                        confidence * 100, 1
+                    ),  # Convert to 0-100 scale
+                    "professor": {
+                        "id": row.professor_id,
+                        "firstName": row.first_name,
+                        "lastName": row.last_name,
+                        "avgRating": round(avg_rating, 2),
+                        "avgDifficulty": round(avg_difficulty, 2),
+                        "totalRatings": total_reviews,
+                        "tags": tags,
+                        "avgGpa": round(avg_gpa, 2) if avg_gpa else None,
+                        "percentAB": round(float(row.percent_ab), 1)
+                        if row.percent_ab
+                        else None,
+                        "gpaStudentCount": gpa_student_count,
+                    },
                 }
-            })
-        
+            )
+
         # Sort each category by easiness score (descending)
         for category in grouped_courses:
-            grouped_courses[category].sort(key=lambda x: x["easinessScore"], reverse=True)
-            
+            grouped_courses[category].sort(
+                key=lambda x: x["easinessScore"], reverse=True
+            )
+
         # Convert to response model
-        response = []
+        response: List[UccCategoryGroup] = []
         for category, courses in grouped_courses.items():
-            response.append({
-                "category": category,
-                "courses": courses
-            })
-            
+            response.append(
+                UccCategoryGroup(
+                    category=category,
+                    courses=[UccCourseDiscovery(**c) for c in courses],
+                )
+            )
+
         return response
 
     except Exception as e:

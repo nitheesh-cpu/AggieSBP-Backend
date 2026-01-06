@@ -20,7 +20,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Any, Dict, cast
 
 # Add parent directory to path to import modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -45,8 +45,11 @@ course_scraping_path = Path(__file__).parent / "course_catalog_scraping.py"
 spec = importlib.util.spec_from_file_location(
     "course_catalog_scraping", course_scraping_path
 )
-course_catalog_scraping = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(course_catalog_scraping)
+if spec and spec.loader:
+    course_catalog_scraping = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(course_catalog_scraping)
+else:
+    raise ImportError("Could not load course_catalog_scraping module")
 get_all_departments = course_catalog_scraping.get_all_departments
 get_courses_from_department = course_catalog_scraping.get_courses_from_department
 
@@ -58,7 +61,7 @@ from pipelines.courses.schemas import CourseSchema, DepartmentSchema
 load_dotenv()
 
 # Create new Base for new tables
-BaseNew = declarative_base()
+BaseNew: Any = declarative_base()
 
 
 class DepartmentNewDB(BaseNew):
@@ -72,7 +75,7 @@ class DepartmentNewDB(BaseNew):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<DepartmentNew(id='{self.id}', title='{self.title}', long_name='{self.long_name}')>"
 
 
@@ -105,16 +108,20 @@ class CourseNewDB(BaseNew):
 
     # Prerequisites (stored as JSON strings or arrays)
     prerequisites = Column(Text, nullable=True)  # Text description
-    prerequisite_courses = Column(ARRAY(String), nullable=True)  # Flat list
+    prerequisite_courses: Column[List[str]] = Column(
+        ARRAY(String), nullable=True
+    )  # Flat list
     prerequisite_groups = Column(Text, nullable=True)  # JSON string for nested lists
 
     # Corequisites
     corequisites = Column(Text, nullable=True)  # Text description
-    corequisite_courses = Column(ARRAY(String), nullable=True)  # Flat list
+    corequisite_courses: Column[List[str]] = Column(
+        ARRAY(String), nullable=True
+    )  # Flat list
     corequisite_groups = Column(Text, nullable=True)  # JSON string for nested lists
 
     # Cross-listings
-    cross_listings = Column(ARRAY(String), nullable=True)
+    cross_listings: Column[List[str]] = Column(ARRAY(String), nullable=True)
 
     # Legacy fields for compatibility (can be derived from above)
     course_topic = Column(String, nullable=True)
@@ -128,18 +135,18 @@ class CourseNewDB(BaseNew):
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<CourseNew(id='{self.id}', code='{self.code}', name='{self.name}')>"
 
 
-def drop_new_tables():
+def drop_new_tables() -> None:
     """Drop the new tables if they exist."""
     engine = create_db_engine()
     BaseNew.metadata.drop_all(engine)
     print("✓ Dropped existing tables: departments, courses")
 
 
-def create_new_tables():
+def create_new_tables() -> None:
     """Create the new optimized tables if they don't exist."""
     engine = create_db_engine()
     BaseNew.metadata.create_all(engine)
@@ -194,7 +201,7 @@ def convert_course_to_schema(
     )
 
 
-def upsert_departments(departments: list[DepartmentSchema]):
+def upsert_departments(departments: list[DepartmentSchema]) -> int:
     """Upsert departments to departments table."""
     session = get_session()
 
@@ -259,7 +266,9 @@ def upsert_departments(departments: list[DepartmentSchema]):
         session.close()
 
 
-def convert_course_to_dict(course: CourseSchema, existing_ids: set) -> dict:
+def convert_course_to_dict(
+    course: CourseSchema, existing_ids: set
+) -> Tuple[Dict[str, Any], str]:
     """Convert CourseSchema to database dict format."""
     # Convert CourseSchema to database format
     course_dict = {
@@ -322,7 +331,7 @@ def convert_course_to_dict(course: CourseSchema, existing_ids: set) -> dict:
         return course_dict, "insert"
 
 
-def bulk_upsert_courses(all_courses: List[CourseSchema], batch_size: int = 1000):
+def bulk_upsert_courses(all_courses: List[CourseSchema], batch_size: int = 1000) -> int:
     """Bulk upsert all courses to courses table using PostgreSQL ON CONFLICT."""
     session = get_session()
 
@@ -405,7 +414,7 @@ def bulk_upsert_courses(all_courses: List[CourseSchema], batch_size: int = 1000)
         session.close()
 
 
-def upsert_courses(courses: list[CourseSchema], department_code: str):
+def upsert_courses(courses: list[CourseSchema], department_code: str) -> int:
     """Upsert courses to courses table (legacy function - kept for compatibility)."""
     session = get_session()
 
@@ -536,7 +545,9 @@ async def scrape_all_courses_parallel(
     # Create semaphore to limit concurrent requests
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def scrape_with_semaphore(dept: dict, executor: ThreadPoolExecutor):
+    async def scrape_with_semaphore(
+        dept: dict, executor: ThreadPoolExecutor
+    ) -> Tuple[str, str, List[dict]]:
         async with semaphore:
             return await scrape_department_courses(dept, executor)
 
@@ -560,10 +571,10 @@ async def scrape_all_courses_parallel(
     if failed_count > 0:
         print(f"  ⚠ {failed_count} departments failed to scrape")
 
-    return successful_results
+    return cast(List[Tuple[str, str, List[dict]]], successful_results)
 
 
-def main():
+def main() -> None:
     """Main function to scrape and upsert all departments and courses."""
     import time
 
@@ -633,9 +644,9 @@ def main():
     print("=" * 60)
     print(f"Total departments: {dept_count}")
     print(f"Total courses: {total_courses}")
-    print(f"Duration: {duration:.2f} seconds ({duration/60:.2f} minutes)")
+    print(f"Duration: {duration:.2f} seconds ({duration / 60:.2f} minutes)")
     if duration > 0:
-        print(f"Speed: {len(all_courses)/duration:.1f} courses/second")
+        print(f"Speed: {len(all_courses) / duration:.1f} courses/second")
     print("\n✓ Data has been upserted to:")
     print("  - departments")
     print("  - courses")

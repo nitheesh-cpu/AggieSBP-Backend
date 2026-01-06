@@ -11,12 +11,14 @@ src_path = Path(__file__).parent.parent.parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
 from aggiermp.database.base import get_session, ReviewDB
-from pipelines.professors.hierarchical_summarization import HierarchicalSummarizationPipeline
+from pipelines.professors.hierarchical_summarization import (
+    HierarchicalSummarizationPipeline,
+)
 
 
-def main():
+def main() -> None:
     """Example: Process reviews for a professor"""
-    
+
     # Get reviews from database
     session = get_session()
     try:
@@ -24,13 +26,11 @@ def main():
         pipeline = HierarchicalSummarizationPipeline(session=session)
         # Example: Get reviews for a specific professor
         professor_id = "VGVhY2hlci02MDkxMDE="  # Replace with actual professor ID
-        
+
         reviews = (
-            session.query(ReviewDB)
-            .filter(ReviewDB.professor_id == professor_id)
-            .all()
+            session.query(ReviewDB).filter(ReviewDB.professor_id == professor_id).all()
         )
-        
+
         # Convert to dict format
         raw_reviews = [
             {
@@ -41,27 +41,29 @@ def main():
             }
             for review in reviews
         ]
-        
+
         print(f"Found {len(raw_reviews)} reviews for professor {professor_id}")
-        
+
         # Process through pipeline
-        professor_summary = pipeline.process_professor_reviews(raw_reviews, professor_id)
-        
+        professor_summary = pipeline.process_professor_reviews(
+            raw_reviews, professor_id
+        )
+
         # Print results
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("PROFESSOR SUMMARY")
-        print("="*60)
+        print("=" * 60)
         print(f"Professor ID: {professor_summary.professor_id}")
         print(f"Overall Sentiment: {professor_summary.overall_sentiment}")
         print(f"Confidence: {professor_summary.confidence:.2f}")
-        print(f"\nStrengths:")
+        print("\nStrengths:")
         for strength in professor_summary.strengths:
             print(f"  - {strength}")
-        print(f"\nComplaints:")
+        print("\nComplaints:")
         for complaint in professor_summary.complaints:
             print(f"  - {complaint}")
         print(f"\nConsistency: {professor_summary.consistency}")
-        
+
         print(f"\nCourse Summaries ({len(professor_summary.course_summaries)}):")
         for course_summary in professor_summary.course_summaries:
             print(f"\n  Course: {course_summary.course}")
@@ -75,7 +77,7 @@ def main():
                 print(f"  Grading: {course_summary.grading[:100]}...")
             if course_summary.workload:
                 print(f"  Workload: {course_summary.workload[:100]}...")
-    
+
     finally:
         session.close()
 
@@ -84,6 +86,5 @@ if __name__ == "__main__":
     # Set environment variables for performance
     os.environ["OMP_NUM_THREADS"] = "4"
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
-    
-    main()
 
+    main()

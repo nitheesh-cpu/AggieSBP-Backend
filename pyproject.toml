@@ -54,9 +54,6 @@ Homepage = "https://github.com/yourusername/aggiermp"
 Repository = "https://github.com/yourusername/aggiermp"
 Issues = "https://github.com/yourusername/aggiermp/issues"
 
-[project.scripts]
-aggiermp = "aggiermp.main:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/aggiermp"]
 
@@ -69,13 +66,22 @@ profile = "black"
 src_paths = ["src", "tests"]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+mypy_path = "src"
+exclude = ["scripts/", "pipelines/professors/old/"]
+explicit_package_bases = true
+namespace_packages = true
+follow_untyped_imports = true
 
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff.lint.per-file-ignores]
+"pipelines/*" = ["E402"]
+"tests/*" = ["E402"]

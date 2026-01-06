@@ -13,14 +13,17 @@ import aiohttp
 import json
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Callable
 from datetime import datetime
 
 from .schemas import (
-    SectionSchema, TermSchema,
-    SectionAttributeDetailedSchema, SectionPrereqSchema,
-    SectionRestrictionSchema, SectionBookstoreLinkSchema,
-    SectionDetailsSchema
+    SectionSchema,
+    TermSchema,
+    SectionAttributeDetailedSchema,
+    SectionPrereqSchema,
+    SectionRestrictionSchema,
+    SectionBookstoreLinkSchema,
+    SectionDetailsSchema,
 )
 
 # API endpoints
@@ -68,15 +71,17 @@ RESTRICTION_TYPE_MAP = {
 REQUEST_TIMEOUT = 30
 
 
-def get_all_terms(current_only: bool = True, semester_filter: Optional[List[str]] = None) -> List[TermSchema]:
+def get_all_terms(
+    current_only: bool = True, semester_filter: Optional[List[str]] = None
+) -> List[TermSchema]:
     """
     Fetch all available terms from Howdy API.
-    
+
     Args:
         current_only: If True, only return current/upcoming semesters
         semester_filter: Optional list of semester descriptions to filter by
                         (e.g., ["Spring 2026", "Fall 2025"])
-    
+
     Returns:
         List of TermSchema objects
     """
@@ -84,11 +89,11 @@ def get_all_terms(current_only: bool = True, semester_filter: Optional[List[str]
         response = requests.get(ALL_TERMS_URL, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         terms_data = response.json()
-        
+
         terms = []
         for term_data in terms_data:
             term = TermSchema.from_api(term_data)
-            
+
             # Apply filter if specified
             if semester_filter:
                 if any(sem in term.term_desc for sem in semester_filter):
@@ -105,9 +110,9 @@ def get_all_terms(current_only: bool = True, semester_filter: Optional[List[str]
                     pass
             else:
                 terms.append(term)
-        
+
         return terms
-        
+
     except requests.RequestException as e:
         print(f"Error fetching terms: {e}")
         return []
@@ -116,22 +121,20 @@ def get_all_terms(current_only: bool = True, semester_filter: Optional[List[str]
 def get_sections_for_term(term_code: str) -> List[SectionSchema]:
     """
     Fetch all sections for a specific term.
-    
+
     Args:
         term_code: Term code (e.g., "202611" for Spring 2026)
-    
+
     Returns:
         List of SectionSchema objects
     """
     try:
         response = requests.post(
-            CLASS_LIST_URL,
-            json={"termCode": term_code},
-            timeout=REQUEST_TIMEOUT
+            CLASS_LIST_URL, json={"termCode": term_code}, timeout=REQUEST_TIMEOUT
         )
         response.raise_for_status()
         sections_data = response.json()
-        
+
         sections = []
         for section_data in sections_data:
             try:
@@ -141,9 +144,9 @@ def get_sections_for_term(term_code: str) -> List[SectionSchema]:
                 crn = section_data.get("SWV_CLASS_SEARCH_CRN", "unknown")
                 print(f"Error parsing section CRN {crn}: {e}")
                 continue
-        
+
         return sections
-        
+
     except requests.RequestException as e:
         print(f"Error fetching sections for term {term_code}: {e}")
         return []
@@ -152,16 +155,16 @@ def get_sections_for_term(term_code: str) -> List[SectionSchema]:
 def get_all_sections(
     term_codes: Optional[List[str]] = None,
     semester_filter: Optional[List[str]] = None,
-    max_workers: int = 4
+    max_workers: int = 4,
 ) -> Dict[str, List[SectionSchema]]:
     """
     Fetch all sections for multiple terms in parallel.
-    
+
     Args:
         term_codes: Optional list of term codes to fetch. If None, fetches current terms.
         semester_filter: Optional filter for semester descriptions
         max_workers: Number of parallel workers
-    
+
     Returns:
         Dict mapping term_code to list of SectionSchema objects
     """
@@ -169,22 +172,22 @@ def get_all_sections(
     if term_codes is None:
         terms = get_all_terms(current_only=True, semester_filter=semester_filter)
         term_codes = [term.term_code for term in terms]
-    
+
     if not term_codes:
         print("No terms to fetch")
         return {}
-    
+
     print(f"Fetching sections for {len(term_codes)} term(s): {term_codes}")
-    
+
     results = {}
-    
+
     # Fetch sections in parallel
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_term = {
             executor.submit(get_sections_for_term, term_code): term_code
             for term_code in term_codes
         }
-        
+
         for future in as_completed(future_to_term):
             term_code = future_to_term[future]
             try:
@@ -194,24 +197,21 @@ def get_all_sections(
             except Exception as e:
                 print(f"  Term {term_code}: Error - {e}")
                 results[term_code] = []
-    
+
     total = sum(len(s) for s in results.values())
     print(f"Total: {total} sections across {len(results)} terms")
-    
+
     return results
 
 
-def get_sections_by_department(
-    term_code: str,
-    dept: str
-) -> List[SectionSchema]:
+def get_sections_by_department(term_code: str, dept: str) -> List[SectionSchema]:
     """
     Get sections for a specific department in a term.
-    
+
     Args:
         term_code: Term code
         dept: Department code (e.g., "CSCE")
-    
+
     Returns:
         List of SectionSchema objects for the department
     """
@@ -220,24 +220,23 @@ def get_sections_by_department(
 
 
 def get_sections_by_course(
-    term_code: str,
-    dept: str,
-    course_number: str
+    term_code: str, dept: str, course_number: str
 ) -> List[SectionSchema]:
     """
     Get sections for a specific course in a term.
-    
+
     Args:
         term_code: Term code
         dept: Department code (e.g., "CSCE")
         course_number: Course number (e.g., "121")
-    
+
     Returns:
         List of SectionSchema objects for the course
     """
     all_sections = get_sections_for_term(term_code)
     return [
-        s for s in all_sections
+        s
+        for s in all_sections
         if s.dept.upper() == dept.upper() and s.course_number == course_number
     ]
 
@@ -245,10 +244,10 @@ def get_sections_by_course(
 def get_section_statistics(sections: List[SectionSchema]) -> Dict[str, Any]:
     """
     Calculate statistics for a list of sections.
-    
+
     Args:
         sections: List of SectionSchema objects
-    
+
     Returns:
         Dictionary with statistics
     """
@@ -265,19 +264,19 @@ def get_section_statistics(sections: List[SectionSchema]) -> Dict[str, Any]:
             "schedule_types": set(),
             "instruction_types": set(),
         }
-    
+
     open_sections = [s for s in sections if s.is_open]
     closed_sections = [s for s in sections if not s.is_open]
-    
+
     total_seats = sum(s.max_enrollment or 0 for s in sections)
     enrolled = sum(s.current_enrollment or 0 for s in sections)
     available = sum(s.seats_available or 0 for s in sections)
-    
+
     departments = set(s.dept for s in sections)
     courses = set(f"{s.dept} {s.course_number}" for s in sections)
     schedule_types = set(s.schedule_type for s in sections if s.schedule_type)
     instruction_types = set(s.instruction_type for s in sections if s.instruction_type)
-    
+
     return {
         "total_sections": len(sections),
         "open_sections": len(open_sections),
@@ -297,7 +296,8 @@ def get_section_statistics(sections: List[SectionSchema]) -> Dict[str, Any]:
 # Async Section Details Fetching
 # ============================================================================
 
-def _recursive_parse_json(data):
+
+def _recursive_parse_json(data: Any) -> Any:
     """Recursively parse JSON strings within data."""
     if isinstance(data, str):
         try:
@@ -318,7 +318,7 @@ async def _fetch_section_detail_endpoint(
     endpoint_url: str,
     term_code: str,
     crn: str,
-    semaphore: asyncio.Semaphore
+    semaphore: asyncio.Semaphore,
 ) -> Tuple[str, Any]:
     """Fetch a single detail endpoint for a section."""
     async with semaphore:
@@ -331,14 +331,14 @@ async def _fetch_section_detail_endpoint(
                     "course": None,
                     "crn": crn,
                 },
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 if response.status != 200:
                     return endpoint_name, None
                 text = await response.text()
                 data = _recursive_parse_json(text)
                 return endpoint_name, data
-        except Exception as e:
+        except Exception:
             return endpoint_name, None
 
 
@@ -347,26 +347,26 @@ async def _fetch_all_details_for_section(
     section_id: str,
     term_code: str,
     crn: str,
-    semaphore: asyncio.Semaphore
+    semaphore: asyncio.Semaphore,
 ) -> SectionDetailsSchema:
     """Fetch all detail endpoints for a single section and parse into schemas."""
     tasks = [
         _fetch_section_detail_endpoint(session, name, url, term_code, crn, semaphore)
         for name, url in SECTION_DETAIL_ENDPOINTS.items()
     ]
-    
+
     results = await asyncio.gather(*tasks)
-    
+
     # Parse results into schemas
     attributes = []
     restrictions = []
     prereqs = None
     bookstore_link = None
-    
+
     for name, data in results:
         if data is None:
             continue
-        
+
         if name == "attributes":
             # Parse attributes
             if isinstance(data, list):
@@ -375,17 +375,17 @@ async def _fetch_all_details_for_section(
                         attr_data, section_id, term_code, crn
                     )
                     attributes.append(attr)
-        
+
         elif name == "prereqs":
             # Parse prereqs
             prereqs = SectionPrereqSchema.from_api(data, section_id, term_code, crn)
-        
+
         elif name == "bookstore_links":
             # Parse bookstore link
             bookstore_link = SectionBookstoreLinkSchema.from_api(
                 data, section_id, term_code, crn
             )
-        
+
         elif name in RESTRICTION_TYPE_MAP:
             # Parse restrictions
             restriction_type = RESTRICTION_TYPE_MAP[name]
@@ -395,7 +395,7 @@ async def _fetch_all_details_for_section(
                         restr_data, restriction_type, idx, section_id, term_code, crn
                     )
                     restrictions.append(restr)
-    
+
     return SectionDetailsSchema(
         section_id=section_id,
         term_code=term_code,
@@ -403,74 +403,70 @@ async def _fetch_all_details_for_section(
         attributes=attributes,
         prereqs=prereqs,
         restrictions=restrictions,
-        bookstore_link=bookstore_link
+        bookstore_link=bookstore_link,
     )
 
 
 async def fetch_section_details_batch(
     sections: List[SectionSchema],
     max_concurrent: int = 50,
-    progress_callback: Optional[callable] = None
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> List[SectionDetailsSchema]:
     """
     Fetch detailed information for a batch of sections.
-    
+
     Args:
         sections: List of SectionSchema objects to fetch details for
         max_concurrent: Maximum concurrent requests
         progress_callback: Optional callback(completed, total) for progress updates
-    
+
     Returns:
         List of SectionDetailsSchema objects
     """
     if not sections:
         return []
-    
+
     semaphore = asyncio.Semaphore(max_concurrent)
     results = []
-    
+
     async with aiohttp.ClientSession() as session:
         batch_size = 100
         total = len(sections)
-        
+
         for i in range(0, total, batch_size):
-            batch = sections[i:i + batch_size]
-            
+            batch = sections[i : i + batch_size]
+
             tasks = [
                 _fetch_all_details_for_section(
-                    session,
-                    section.id,
-                    section.term_code,
-                    section.crn,
-                    semaphore
+                    session, section.id, section.term_code, section.crn, semaphore
                 )
                 for section in batch
             ]
-            
+
             batch_results = await asyncio.gather(*tasks)
             results.extend(batch_results)
-            
+
             # Progress callback
             completed = min(i + batch_size, total)
             if progress_callback:
                 progress_callback(completed, total)
-    
+
     return results
 
 
 def fetch_section_details_sync(
     sections: List[SectionSchema],
     max_concurrent: int = 50,
-    progress_callback: Optional[callable] = None
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> List[SectionDetailsSchema]:
     """
     Synchronous wrapper for fetch_section_details_batch.
-    
+
     Args:
         sections: List of SectionSchema objects to fetch details for
         max_concurrent: Maximum concurrent requests
         progress_callback: Optional callback(completed, total) for progress updates
-    
+
     Returns:
         List of SectionDetailsSchema objects
     """
@@ -486,20 +482,21 @@ if __name__ == "__main__":
     print(f"Found {len(terms)} current/upcoming terms:")
     for term in terms:
         print(f"  {term.term_desc} ({term.term_code})")
-    
+
     if terms:
         # Fetch sections for the first term
         term = terms[0]
         print(f"\nFetching sections for {term.term_desc}...")
         sections = get_sections_for_term(term.term_code)
-        
+
         stats = get_section_statistics(sections)
-        print(f"\nStatistics:")
+        print("\nStatistics:")
         print(f"  Total sections: {stats['total_sections']}")
         print(f"  Open: {stats['open_sections']}, Closed: {stats['closed_sections']}")
-        print(f"  Enrolled: {stats['enrolled']} / {stats['total_seats']} ({stats['fill_rate']:.1%})")
+        print(
+            f"  Enrolled: {stats['enrolled']} / {stats['total_seats']} ({stats['fill_rate']:.1%})"
+        )
         print(f"  Departments: {stats['departments']}")
         print(f"  Unique courses: {stats['unique_courses']}")
         print(f"  Schedule types: {stats['schedule_types']}")
         print(f"  Instruction types: {stats['instruction_types']}")
-

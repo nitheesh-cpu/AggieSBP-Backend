@@ -39,16 +39,40 @@ CLUSTER_TYPES = [
     "workload",
     "personality",
     "policies",
-    "other"
+    "other",
 ]
 
 # Keywords for cluster type identification
 CLUSTER_KEYWORDS = {
-    "teaching": ["teach", "lecture", "explain", "clear", "confusing", "understand", "present"],
+    "teaching": [
+        "teach",
+        "lecture",
+        "explain",
+        "clear",
+        "confusing",
+        "understand",
+        "present",
+    ],
     "exams": ["exam", "test", "quiz", "midterm", "final", "assessment"],
     "grading": ["grade", "point", "curve", "fair", "harsh", "strict", "lenient"],
-    "workload": ["work", "homework", "assignment", "project", "busy", "time", "heavy", "light"],
-    "personality": ["nice", "friendly", "helpful", "approachable", "rude", "mean", "strict"],
-    "policies": ["attendance", "late", "policy", "rule", "allow", "permit", "require"]
+    "workload": [
+        "work",
+        "homework",
+        "assignment",
+        "project",
+        "busy",
+        "time",
+        "heavy",
+        "light",
+    ],
+    "personality": [
+        "nice",
+        "friendly",
+        "helpful",
+        "approachable",
+        "rude",
+        "mean",
+        "strict",
+    ],
+    "policies": ["attendance", "late", "policy", "rule", "allow", "permit", "require"],
 }
-

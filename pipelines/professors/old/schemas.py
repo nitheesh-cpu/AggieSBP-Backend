@@ -12,6 +12,7 @@ from typing import List, Optional
 @dataclass
 class ReviewData:
     """Data class for review information used in summarization"""
+
     id: str
     professor_id: str
     course_code: Optional[str]
@@ -26,6 +27,7 @@ class ReviewData:
 @dataclass
 class ReviewCollectionStats:
     """Statistics for review collection process"""
+
     total_professors: int = 0
     total_reviews_collected: int = 0
     successful_professors: int = 0
@@ -33,4 +35,3 @@ class ReviewCollectionStats:
     skipped_professors: int = 0
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
-

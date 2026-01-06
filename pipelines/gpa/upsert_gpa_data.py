@@ -212,13 +212,16 @@ def bulk_insert_records(records: List[Dict[str, Any]]) -> int:
         session.close()
 
 
-def chunks(lst: List, n: int):
+from typing import Any, Dict, List, Tuple, Iterator
+
+
+def chunks(lst: List[Any], n: int) -> Iterator[List[Any]]:
     """Yield successive n-sized chunks from lst."""
     for i in range(0, len(lst), n):
         yield lst[i : i + n]
 
 
-async def main_async():
+async def main_async() -> None:
     """
     Main async function - fetch missing data then bulk insert.
     """
@@ -234,10 +237,12 @@ async def main_async():
     import aiohttp
 
     async with aiohttp.ClientSession() as session:
-        newest_year, newest_semester = await get_newest_semester(session)
-        if newest_year and newest_semester:
+        result = await get_newest_semester(session)
+        if result:
+            newest_year, newest_semester = result
             print(f"[OK] Newest semester found: {newest_semester} {newest_year}")
         else:
+            newest_year, newest_semester = None, None
             print(
                 "[WARNING] Could not determine newest semester, will fetch all missing data"
             )
@@ -304,7 +309,11 @@ async def main_async():
         chunk_num += 1
         chunk_size = len(chunk)
 
-        print(f"  > Inserting batch {chunk_num}/{total_batches} ({chunk_size} records)...", end=" ", flush=True)
+        print(
+            f"  > Inserting batch {chunk_num}/{total_batches} ({chunk_size} records)...",
+            end=" ",
+            flush=True,
+        )
 
         inserted = bulk_insert_records(chunk)
         total_inserted += inserted
@@ -317,7 +326,11 @@ async def main_async():
     # Final summary
     end_time = datetime.now()
     duration = end_time - start_time
-    courses_per_sec = len(courses_to_fetch) / duration.total_seconds() if duration.total_seconds() > 0 else 0
+    courses_per_sec = (
+        len(courses_to_fetch) / duration.total_seconds()
+        if duration.total_seconds() > 0
+        else 0
+    )
 
     print("\n" + "=" * 60)
     print("GPA UPSERT COMPLETE")
@@ -331,7 +344,7 @@ async def main_async():
         print(f"\n[OK] SUCCESS! {total_inserted} GPA records added to database!")
 
 
-def main():
+def main() -> None:
     """Main function wrapper"""
     try:
         asyncio.run(main_async())
