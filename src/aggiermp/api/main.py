@@ -1402,7 +1402,7 @@ async def get_course_professors_by_term(
     description="Get all professors teaching a course with their summaries and other course summaries.",
 )
 @limiter.limit("60/minute")
-@cached(ttl=TTL_15MIN)
+@cached(ttl=TTL_WEEK)
 async def get_course_professors_details(
     request: Request,
     term_code: str,
