@@ -87,7 +87,6 @@ def calculate_confidence_score(total_reviews: int, gpa_student_count: int) -> fl
 
 @router.get(
     "/{term_code}/ucc",
-    response_model=List[UccCategoryGroup],
     summary="/discover/{term_code}/ucc",
 )
 @cached(TTL_WEEK)
