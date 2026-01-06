@@ -3,7 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from ...database.base import get_session
+from ...core.cache import cached, TTL_WEEK
 from pydantic import BaseModel
+from fastapi import Request
 import math
 
 router: APIRouter = APIRouter(prefix="/discover")
@@ -88,8 +90,9 @@ def calculate_confidence_score(total_reviews: int, gpa_student_count: int) -> fl
     response_model=List[UccCategoryGroup],
     summary="/discover/{term_code}/ucc",
 )
+@cached(TTL_WEEK)
 async def discover_ucc_courses(
-    term_code: str, db: Session = Depends(get_session)
+    request: Request, term_code: str, db: Session = Depends(get_session)
 ) -> List[UccCategoryGroup]:
     """
     Get all University Core Curriculum (UCC) classes for a specific term,
