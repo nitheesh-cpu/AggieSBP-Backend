@@ -197,11 +197,13 @@ async def discover_ucc_courses(
                 }
             )
 
-        # Sort each category by easiness score (descending)
+        # Sort each category by easiness score (descending) and limit to top 50
         for category in grouped_courses:
             grouped_courses[category].sort(
                 key=lambda x: x["easinessScore"], reverse=True
             )
+            # Limit to top 50 courses per category
+            grouped_courses[category] = grouped_courses[category][:50]
 
         # Convert to response model
         response: List[UccCategoryGroup] = []

@@ -20,6 +20,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from ..database.base import check_database_health, get_session
 from ..core.cache import (
@@ -242,6 +243,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add GZip middleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # Redis lifecycle events
