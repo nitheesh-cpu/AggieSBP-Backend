@@ -19,7 +19,7 @@ if str(project_root) not in sys.path:
 
 from sqlalchemy.dialects.postgresql import insert
 
-from sqlalchemy import text
+from sqlalchemy import text, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.engine import CursorResult
 from typing import cast
@@ -60,15 +60,6 @@ def upsert_terms(
     if session is None:
         session = get_session()
         close_session = True
-
-    # Check transaction state first
-    try:
-        session.execute(text("SELECT 1"))
-    except Exception:
-        try:
-            session.rollback()
-        except Exception:
-            pass
 
     results: Dict[str, Any] = {"terms_upserted": 0, "errors": []}
 
@@ -163,15 +154,6 @@ def upsert_sections(
     if session is None:
         session = get_session()
         close_session = True
-
-    # Check transaction state first
-    try:
-        session.execute(text("SELECT 1"))
-    except Exception:
-        try:
-            session.rollback()
-        except Exception:
-            pass
 
     results: Dict[str, Any] = {
         "sections_upserted": 0,
@@ -268,106 +250,116 @@ def upsert_sections(
                     }
                 )
 
-        # Upsert sections in batches
-        if section_records:
-            batch_size = 500
-            for i in range(0, len(section_records), batch_size):
-                batch = section_records[i : i + batch_size]
-                try:
-                    stmt = insert(SectionDB).values(batch)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["id"],
-                        set_={
-                            "dept_desc": stmt.excluded.dept_desc,
-                            "course_title": stmt.excluded.course_title,
-                            "credit_hours": stmt.excluded.credit_hours,
-                            "hours_low": stmt.excluded.hours_low,
-                            "hours_high": stmt.excluded.hours_high,
-                            "campus": stmt.excluded.campus,
-                            "part_of_term": stmt.excluded.part_of_term,
-                            "session_type": stmt.excluded.session_type,
-                            "schedule_type": stmt.excluded.schedule_type,
-                            "instruction_type": stmt.excluded.instruction_type,
-                            "is_open": stmt.excluded.is_open,
-                            "has_syllabus": stmt.excluded.has_syllabus,
-                            "syllabus_url": stmt.excluded.syllabus_url,
-                            "attributes_text": stmt.excluded.attributes_text,
-                            "updated_at": stmt.excluded.updated_at,
-                        },
-                    )
-                    session.execute(stmt)
-                    results["sections_upserted"] += len(batch)
-                except Exception as e:
-                    session.rollback()
-                    results["errors"].append(
-                        f"Error upserting sections batch {i // batch_size}: {e}"
-                    )
-                    continue
+        # Upsert sections in batches (larger batch size for performance)
+        BATCH_SIZE = 5000
 
-            session.commit()
+        if section_records:
+            for i in range(0, len(section_records), BATCH_SIZE):
+                batch = section_records[i : i + BATCH_SIZE]
+                stmt = insert(SectionDB).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "dept_desc": stmt.excluded.dept_desc,
+                        "course_title": stmt.excluded.course_title,
+                        "credit_hours": stmt.excluded.credit_hours,
+                        "hours_low": stmt.excluded.hours_low,
+                        "hours_high": stmt.excluded.hours_high,
+                        "campus": stmt.excluded.campus,
+                        "part_of_term": stmt.excluded.part_of_term,
+                        "session_type": stmt.excluded.session_type,
+                        "schedule_type": stmt.excluded.schedule_type,
+                        "instruction_type": stmt.excluded.instruction_type,
+                        "is_open": stmt.excluded.is_open,
+                        "has_syllabus": stmt.excluded.has_syllabus,
+                        "syllabus_url": stmt.excluded.syllabus_url,
+                        "attributes_text": stmt.excluded.attributes_text,
+                        "updated_at": stmt.excluded.updated_at,
+                    },
+                    # Only update if something actually changed
+                    where=or_(
+                        SectionDB.dept_desc != stmt.excluded.dept_desc,
+                        SectionDB.course_title != stmt.excluded.course_title,
+                        SectionDB.credit_hours != stmt.excluded.credit_hours,
+                        SectionDB.is_open != stmt.excluded.is_open,
+                        SectionDB.has_syllabus != stmt.excluded.has_syllabus,
+                        SectionDB.syllabus_url != stmt.excluded.syllabus_url,
+                        SectionDB.attributes_text != stmt.excluded.attributes_text,
+                        SectionDB.campus != stmt.excluded.campus,
+                        SectionDB.schedule_type != stmt.excluded.schedule_type,
+                        SectionDB.instruction_type != stmt.excluded.instruction_type,
+                    ),
+                )
+                session.execute(stmt)
+                results["sections_upserted"] += len(batch)
 
         # Upsert instructors in batches
         if instructor_records:
-            batch_size = 1000
-            for i in range(0, len(instructor_records), batch_size):
-                batch = instructor_records[i : i + batch_size]
-                try:
-                    stmt = insert(SectionInstructorDB).values(batch)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["id"],
-                        set_={
-                            "instructor_name": stmt.excluded.instructor_name,
-                            "instructor_pidm": stmt.excluded.instructor_pidm,
-                            "has_cv": stmt.excluded.has_cv,
-                            "cv_url": stmt.excluded.cv_url,
-                            "is_primary": stmt.excluded.is_primary,
-                            "updated_at": stmt.excluded.updated_at,
-                        },
-                    )
-                    session.execute(stmt)
-                    results["instructors_upserted"] += len(batch)
-                except Exception as e:
-                    session.rollback()
-                    results["errors"].append(
-                        f"Error upserting instructors batch {i // batch_size}: {e}"
-                    )
-                    continue
-
-            session.commit()
+            for i in range(0, len(instructor_records), BATCH_SIZE):
+                batch = instructor_records[i : i + BATCH_SIZE]
+                stmt = insert(SectionInstructorDB).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "instructor_name": stmt.excluded.instructor_name,
+                        "instructor_pidm": stmt.excluded.instructor_pidm,
+                        "has_cv": stmt.excluded.has_cv,
+                        "cv_url": stmt.excluded.cv_url,
+                        "is_primary": stmt.excluded.is_primary,
+                        "updated_at": stmt.excluded.updated_at,
+                    },
+                    # Only update if something actually changed
+                    where=or_(
+                        SectionInstructorDB.instructor_name
+                        != stmt.excluded.instructor_name,
+                        SectionInstructorDB.instructor_pidm
+                        != stmt.excluded.instructor_pidm,
+                        SectionInstructorDB.has_cv != stmt.excluded.has_cv,
+                        SectionInstructorDB.cv_url != stmt.excluded.cv_url,
+                        SectionInstructorDB.is_primary != stmt.excluded.is_primary,
+                    ),
+                )
+                session.execute(stmt)
+                results["instructors_upserted"] += len(batch)
 
         # Upsert meetings in batches
         if meeting_records:
-            batch_size = 1000
-            for i in range(0, len(meeting_records), batch_size):
-                batch = meeting_records[i : i + batch_size]
-                try:
-                    stmt = insert(SectionMeetingDB).values(batch)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["id"],
-                        set_={
-                            "credit_hours_session": stmt.excluded.credit_hours_session,
-                            "days_of_week": stmt.excluded.days_of_week,
-                            "begin_time": stmt.excluded.begin_time,
-                            "end_time": stmt.excluded.end_time,
-                            "start_date": stmt.excluded.start_date,
-                            "end_date": stmt.excluded.end_date,
-                            "building_code": stmt.excluded.building_code,
-                            "room_code": stmt.excluded.room_code,
-                            "meeting_type": stmt.excluded.meeting_type,
-                            "updated_at": stmt.excluded.updated_at,
-                        },
-                    )
-                    session.execute(stmt)
-                    results["meetings_upserted"] += len(batch)
-                except Exception as e:
-                    session.rollback()
-                    results["errors"].append(
-                        f"Error upserting meetings batch {i // batch_size}: {e}"
-                    )
-                    continue
+            for i in range(0, len(meeting_records), BATCH_SIZE):
+                batch = meeting_records[i : i + BATCH_SIZE]
+                stmt = insert(SectionMeetingDB).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "credit_hours_session": stmt.excluded.credit_hours_session,
+                        "days_of_week": stmt.excluded.days_of_week,
+                        "begin_time": stmt.excluded.begin_time,
+                        "end_time": stmt.excluded.end_time,
+                        "start_date": stmt.excluded.start_date,
+                        "end_date": stmt.excluded.end_date,
+                        "building_code": stmt.excluded.building_code,
+                        "room_code": stmt.excluded.room_code,
+                        "meeting_type": stmt.excluded.meeting_type,
+                        "updated_at": stmt.excluded.updated_at,
+                    },
+                    # Only update if something actually changed
+                    where=or_(
+                        SectionMeetingDB.credit_hours_session
+                        != stmt.excluded.credit_hours_session,
+                        SectionMeetingDB.days_of_week != stmt.excluded.days_of_week,
+                        SectionMeetingDB.begin_time != stmt.excluded.begin_time,
+                        SectionMeetingDB.end_time != stmt.excluded.end_time,
+                        SectionMeetingDB.start_date != stmt.excluded.start_date,
+                        SectionMeetingDB.end_date != stmt.excluded.end_date,
+                        SectionMeetingDB.building_code != stmt.excluded.building_code,
+                        SectionMeetingDB.room_code != stmt.excluded.room_code,
+                        SectionMeetingDB.meeting_type != stmt.excluded.meeting_type,
+                    ),
+                )
+                session.execute(stmt)
+                results["meetings_upserted"] += len(batch)
 
-            session.commit()
-
+        # Single commit at the end for all entity types
+        session.commit()
         return results
 
     except Exception as e:
@@ -475,15 +467,6 @@ def upsert_section_details(
         session = get_session()
         close_session = True
 
-    # Check transaction state first
-    try:
-        session.execute(text("SELECT 1"))
-    except Exception:
-        try:
-            session.rollback()
-        except Exception:
-            pass
-
     results: Dict[str, Any] = {
         "attributes_upserted": 0,
         "prereqs_upserted": 0,
@@ -564,103 +547,97 @@ def upsert_section_details(
                     }
                 )
 
+        # Upsert all detail types with larger batch size for performance
+        BATCH_SIZE = 5000
+
         # Upsert attributes
         if attribute_records:
-            batch_size = 1000
-            for i in range(0, len(attribute_records), batch_size):
-                batch = attribute_records[i : i + batch_size]
-                try:
-                    stmt = insert(SectionAttributeDetailedDB).values(batch)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["id"],
-                        set_={
-                            "attribute_desc": stmt.excluded.attribute_desc,
-                        },
-                    )
-                    session.execute(stmt)
-                    results["attributes_upserted"] += len(batch)
-                except Exception as e:
-                    session.rollback()
-                    results["errors"].append(
-                        f"Error upserting attributes batch {i // batch_size}: {e}"
-                    )
-                    continue
-            session.commit()
+            for i in range(0, len(attribute_records), BATCH_SIZE):
+                batch = attribute_records[i : i + BATCH_SIZE]
+                stmt = insert(SectionAttributeDetailedDB).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "attribute_desc": stmt.excluded.attribute_desc,
+                    },
+                    # Only update if description changed
+                    where=(
+                        SectionAttributeDetailedDB.attribute_desc
+                        != stmt.excluded.attribute_desc
+                    ),
+                )
+                session.execute(stmt)
+                results["attributes_upserted"] += len(batch)
 
         # Upsert prereqs
         if prereq_records:
-            batch_size = 500
-            for i in range(0, len(prereq_records), batch_size):
-                batch = prereq_records[i : i + batch_size]
-                try:
-                    stmt = insert(SectionPrereqDB).values(batch)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["id"],
-                        set_={
-                            "prereqs_text": stmt.excluded.prereqs_text,
-                            "prereqs_json": stmt.excluded.prereqs_json,
-                            "updated_at": stmt.excluded.updated_at,
-                        },
-                    )
-                    session.execute(stmt)
-                    results["prereqs_upserted"] += len(batch)
-                except Exception as e:
-                    session.rollback()
-                    results["errors"].append(
-                        f"Error upserting prereqs batch {i // batch_size}: {e}"
-                    )
-                    continue
-            session.commit()
+            for i in range(0, len(prereq_records), BATCH_SIZE):
+                batch = prereq_records[i : i + BATCH_SIZE]
+                stmt = insert(SectionPrereqDB).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "prereqs_text": stmt.excluded.prereqs_text,
+                        "prereqs_json": stmt.excluded.prereqs_json,
+                        "updated_at": stmt.excluded.updated_at,
+                    },
+                    # Only update if prereqs changed
+                    where=or_(
+                        SectionPrereqDB.prereqs_text != stmt.excluded.prereqs_text,
+                        SectionPrereqDB.prereqs_json != stmt.excluded.prereqs_json,
+                    ),
+                )
+                session.execute(stmt)
+                results["prereqs_upserted"] += len(batch)
 
         # Upsert restrictions
         if restriction_records:
-            batch_size = 1000
-            for i in range(0, len(restriction_records), batch_size):
-                batch = restriction_records[i : i + batch_size]
-                try:
-                    stmt = insert(SectionRestrictionDB).values(batch)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["id"],
-                        set_={
-                            "restriction_code": stmt.excluded.restriction_code,
-                            "restriction_desc": stmt.excluded.restriction_desc,
-                            "include_exclude": stmt.excluded.include_exclude,
-                        },
-                    )
-                    session.execute(stmt)
-                    results["restrictions_upserted"] += len(batch)
-                except Exception as e:
-                    session.rollback()
-                    results["errors"].append(
-                        f"Error upserting restrictions batch {i // batch_size}: {e}"
-                    )
-                    continue
-            session.commit()
+            for i in range(0, len(restriction_records), BATCH_SIZE):
+                batch = restriction_records[i : i + BATCH_SIZE]
+                stmt = insert(SectionRestrictionDB).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "restriction_code": stmt.excluded.restriction_code,
+                        "restriction_desc": stmt.excluded.restriction_desc,
+                        "include_exclude": stmt.excluded.include_exclude,
+                    },
+                    # Only update if restriction changed
+                    where=or_(
+                        SectionRestrictionDB.restriction_code
+                        != stmt.excluded.restriction_code,
+                        SectionRestrictionDB.restriction_desc
+                        != stmt.excluded.restriction_desc,
+                        SectionRestrictionDB.include_exclude
+                        != stmt.excluded.include_exclude,
+                    ),
+                )
+                session.execute(stmt)
+                results["restrictions_upserted"] += len(batch)
 
         # Upsert bookstore links
         if bookstore_records:
-            batch_size = 500
-            for i in range(0, len(bookstore_records), batch_size):
-                batch = bookstore_records[i : i + batch_size]
-                try:
-                    stmt = insert(SectionBookstoreLinkDB).values(batch)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["id"],
-                        set_={
-                            "bookstore_url": stmt.excluded.bookstore_url,
-                            "link_data": stmt.excluded.link_data,
-                        },
-                    )
-                    session.execute(stmt)
-                    results["bookstore_links_upserted"] += len(batch)
-                except Exception as e:
-                    session.rollback()
-                    results["errors"].append(
-                        f"Error upserting bookstore links batch {i // batch_size}: {e}"
-                    )
-                    continue
-            session.commit()
+            for i in range(0, len(bookstore_records), BATCH_SIZE):
+                batch = bookstore_records[i : i + BATCH_SIZE]
+                stmt = insert(SectionBookstoreLinkDB).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "bookstore_url": stmt.excluded.bookstore_url,
+                        "link_data": stmt.excluded.link_data,
+                    },
+                    # Only update if link changed
+                    where=or_(
+                        SectionBookstoreLinkDB.bookstore_url
+                        != stmt.excluded.bookstore_url,
+                        SectionBookstoreLinkDB.link_data != stmt.excluded.link_data,
+                    ),
+                )
+                session.execute(stmt)
+                results["bookstore_links_upserted"] += len(batch)
 
+        # Single commit at the end for all detail types
+        session.commit()
         return results
 
     except Exception as e:

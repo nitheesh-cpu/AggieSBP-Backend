@@ -87,12 +87,15 @@ def run_full_pipeline(
         print("=" * 60)
         print("Step 1: Fetching terms...")
         print("=" * 60)
+        step_start = time.time()
         terms = get_all_terms(current_only=True, semester_filter=semester_filter)
 
         if terms:
             term_result = upsert_terms(terms, session)
             results["terms_upserted"] = term_result.get("terms_upserted", 0)
-            print(f"Upserted {results['terms_upserted']} terms")
+            print(
+                f"Upserted {results['terms_upserted']} terms ({time.time() - step_start:.1f}s)"
+            )
 
             # Determine which terms to process
             if term_codes:
@@ -123,8 +126,10 @@ def run_full_pipeline(
                 sections = []
                 for term_code, term_sections in sections_by_term.items():
                     sections.extend(term_sections)
+                fetch_time = time.time() - step_start
 
                 print(f"\nUpserting {len(sections)} sections...")
+                upsert_start = time.time()
                 section_result = upsert_sections(sections, session)
 
                 results["sections_upserted"] = section_result.get(
@@ -137,10 +142,14 @@ def run_full_pipeline(
                     "meetings_upserted", 0
                 )
                 results["errors"].extend(section_result.get("errors", []))
+                upsert_time = time.time() - upsert_start
 
                 print(f"  Sections: {results['sections_upserted']}")
                 print(f"  Instructors: {results['instructors_upserted']}")
                 print(f"  Meetings: {results['meetings_upserted']}")
+                print(
+                    f"  ⏱️  API fetch: {fetch_time:.1f}s | DB upsert: {upsert_time:.1f}s"
+                )
             else:
                 print("No sections found!")
 
@@ -149,6 +158,7 @@ def run_full_pipeline(
             print("\n" + "=" * 60)
             print("Step 3: Fetching section details...")
             print("=" * 60)
+            step_start = time.time()
 
             # If we haven't fetched sections yet, fetch them now
             if sections is None:
@@ -173,9 +183,12 @@ def run_full_pipeline(
                     max_concurrent=max_concurrent,
                     progress_callback=progress_callback,
                 )
+                fetch_time = time.time() - step_start
 
                 print("\nUpserting details...")
+                upsert_start = time.time()
                 details_result = upsert_section_details(details_list, session)
+                upsert_time = time.time() - upsert_start
 
                 results["attributes_upserted"] = details_result.get(
                     "attributes_upserted", 0
@@ -193,6 +206,9 @@ def run_full_pipeline(
                 print(f"  Prereqs: {results['prereqs_upserted']}")
                 print(f"  Restrictions: {results['restrictions_upserted']}")
                 print(f"  Bookstore links: {results['bookstore_links_upserted']}")
+                print(
+                    f"  ⏱️  API fetch: {fetch_time:.1f}s | DB upsert: {upsert_time:.1f}s"
+                )
 
         # Done
         elapsed = time.time() - start_time
