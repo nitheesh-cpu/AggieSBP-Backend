@@ -1356,6 +1356,226 @@ async def get_course_professors_by_term(
 
 
 @app.get(
+    "/sections/{term_code}/course/{course_code}/professors/details",
+    responses={
+        200: {
+            "description": "Professors with summaries and grades",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "professors": [
+                            {
+                                "id": "prof123",
+                                "name": "John Smith",
+                                "rating": 4.5,
+                                "totalReviews": 45,
+                                "courseSummary": {
+                                    "courseCode": "CSCE121",
+                                    "teaching": "...",
+                                    "exams": "...",
+                                    "grading": "...",
+                                    "workload": "...",
+                                    "reviewCount": 15,
+                                },
+                                "overallSummary": {
+                                    "teaching": "...",
+                                    "exams": "...",
+                                    "grading": "...",
+                                    "workload": "...",
+                                    "reviewCount": 45,
+                                },
+                                "otherCourseSummaries": [
+                                    {
+                                        "courseCode": "CSCE221",
+                                        "teaching": "...",
+                                        "reviewCount": 12,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            },
+        },
+    },
+    summary="/sections/{term_code}/course/{course_code}/professors/details",
+    description="Get all professors teaching a course with their summaries and other course summaries.",
+)
+@limiter.limit("60/minute")
+@cached(ttl=TTL_15MIN)
+async def get_course_professors_details(
+    request: Request,
+    term_code: str,
+    course_code: str,
+    db: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """
+    Get comprehensive professor data for a course in a term.
+
+    Returns for each professor:
+    - id, name, rating, totalReviews
+    - courseSummary: summary for the specific course
+    - overallSummary: aggregated summary across all courses
+    - otherCourseSummaries: summaries for other courses they teach
+    """
+    import re
+    from aggiermp.database.base import (
+        SectionDB,
+        SectionInstructorDB,
+        ProfessorDB,
+        ProfessorSummaryNewDB,
+    )
+
+    try:
+        # Parse course_code (e.g., "CSCE121" -> dept="CSCE", course_num="121")
+        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", course_code.upper())
+        if not match:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid course code format: {course_code}",
+            )
+
+        dept = match.group(1)
+        course_num = match.group(2)
+        target_course_code = course_code.upper()
+
+        # Step 1: Get all instructors teaching this course in this term
+        instructor_rows = (
+            db.query(
+                SectionInstructorDB.instructor_name,
+                SectionDB.section_number,
+            )
+            .join(SectionDB, SectionInstructorDB.section_id == SectionDB.id)
+            .filter(
+                SectionInstructorDB.term_code == term_code,
+                SectionDB.dept == dept,
+                SectionDB.course_number == course_num,
+            )
+            .distinct()
+            .all()
+        )
+
+        if not instructor_rows:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No professors found for {course_code} in term {term_code}",
+            )
+
+        # Build unique instructor names and their sections
+        instructor_sections: Dict[str, List[str]] = {}
+        for row in instructor_rows:
+            name = row.instructor_name
+            if name not in instructor_sections:
+                instructor_sections[name] = []
+            if row.section_number not in instructor_sections[name]:
+                instructor_sections[name].append(row.section_number)
+
+        # Step 2: Match instructor names to professor IDs and get summaries
+        result_professors = []
+
+        for instructor_name, sections in instructor_sections.items():
+            name_parts = instructor_name.strip().split()
+            if not name_parts:
+                continue
+
+            last_name = name_parts[-1] if name_parts else instructor_name
+            first_name = name_parts[0] if len(name_parts) > 1 else ""
+
+            # Query professor
+            prof_query = db.query(ProfessorDB).filter(
+                ProfessorDB.last_name.ilike(f"%{last_name}%")
+            )
+            if first_name:
+                prof_query = prof_query.filter(
+                    ProfessorDB.first_name.ilike(f"{first_name}%")
+                )
+            professor = prof_query.first()
+
+            # Get overall summary for totalReviews
+            overall_summary = None
+            if professor:
+                overall_summary = (
+                    db.query(ProfessorSummaryNewDB)
+                    .filter(
+                        ProfessorSummaryNewDB.professor_id == professor.id,
+                        ProfessorSummaryNewDB.course_code.is_(None),
+                    )
+                    .first()
+                )
+
+            prof_data: Dict[str, Any] = {
+                "id": professor.id if professor else None,
+                "name": instructor_name,
+                "rating": professor.avg_rating if professor else None,
+                "totalReviews": overall_summary.total_reviews if overall_summary else 0,
+                "courseSummary": None,
+                "overallSummary": None,
+                "otherCourseSummaries": [],
+            }
+
+            if professor:
+                # Get ALL course summaries for this professor
+                all_course_summaries = (
+                    db.query(ProfessorSummaryNewDB)
+                    .filter(
+                        ProfessorSummaryNewDB.professor_id == professor.id,
+                        ProfessorSummaryNewDB.course_code.isnot(None),
+                    )
+                    .all()
+                )
+
+                # Helper to format a course summary
+                def format_course_summary(s: Any) -> Dict[str, Any]:
+                    return {
+                        "courseCode": s.course_code,
+                        "teaching": s.teaching,
+                        "exams": s.exams,
+                        "grading": s.grading,
+                        "workload": s.workload,
+                        "personality": s.personality,
+                        "policies": s.policies,
+                        "other": s.other,
+                        "reviewCount": s.total_reviews,
+                    }
+
+                for cs in all_course_summaries:
+                    if cs.course_code == target_course_code:
+                        # This is the target course
+                        prof_data["courseSummary"] = format_course_summary(cs)
+                    else:
+                        # Other courses
+                        prof_data["otherCourseSummaries"].append(
+                            format_course_summary(cs)
+                        )
+
+                # Overall summary (aggregated across all courses)
+                if overall_summary:
+                    prof_data["overallSummary"] = {
+                        "sentiment": overall_summary.overall_sentiment,
+                        "strengths": overall_summary.strengths or [],
+                        "complaints": overall_summary.complaints or [],
+                        "consistency": overall_summary.consistency,
+                        "reviewCount": overall_summary.total_reviews,
+                    }
+
+            result_professors.append(prof_data)
+
+        # Sort by name
+        result_professors.sort(key=lambda x: x["name"])
+
+        return {
+            "professors": result_professors,
+            "totalProfessors": len(result_professors),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_course_professors_details: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.get(
     "/departments_info",
     responses={
         200: {

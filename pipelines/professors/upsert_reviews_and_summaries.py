@@ -264,28 +264,43 @@ def upsert_reviews_and_summaries(
                     ]
 
                     # Smart Skip: Check if we actually need to regenerate summary
-                    # If we are in force-update mode, but the total reviews match what's in DB,
-                    # and we found no *new* reviews, we can probably skip clustering.
+                    # Check both overall AND per-course counts are in sync
                     if not new_reviews_dict.get(professor_id):
                         from aggiermp.database.base import ProfessorSummaryNewDB
 
-                        existing_summary_row = (
-                            session.query(ProfessorSummaryNewDB.total_reviews)
-                            .filter(
-                                ProfessorSummaryNewDB.professor_id == professor_id,
-                                ProfessorSummaryNewDB.course_code.is_(None),
+                        # Get existing summaries for this professor
+                        existing_summaries = (
+                            session.query(
+                                ProfessorSummaryNewDB.course_code,
+                                ProfessorSummaryNewDB.total_reviews,
                             )
-                            .first()
+                            .filter(ProfessorSummaryNewDB.professor_id == professor_id)
+                            .all()
                         )
 
-                        if (
-                            existing_summary_row
-                            and existing_summary_row.total_reviews == len(raw_reviews)
-                        ):
+                        # Build dict of course -> summary count
+                        summary_counts = {
+                            row.course_code: row.total_reviews
+                            for row in existing_summaries
+                        }
+
+                        # Build dict of course -> actual review count
+                        actual_counts: Dict[str | None, int] = {}
+                        for review in raw_reviews:
+                            code = review.get("course_code")
+                            actual_counts[code] = actual_counts.get(code, 0) + 1
+                        actual_counts[None] = len(raw_reviews)  # Overall count
+
+                        # Check if all counts match
+                        counts_match = True
+                        for code, count in actual_counts.items():
+                            if summary_counts.get(code) != count:
+                                counts_match = False
+                                break
+
+                        if counts_match and len(summary_counts) > 0:
                             print("(up to date, skipping)", end=" ")
-                            results["professors_processed"] += (
-                                1  # Count as processed so we don't look stuck
-                            )
+                            results["professors_processed"] += 1
                             processed_professors.add(professor_id)
                             continue
 
