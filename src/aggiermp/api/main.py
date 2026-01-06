@@ -1424,7 +1424,9 @@ async def get_course_professors_details(
         SectionInstructorDB,
         ProfessorDB,
         ProfessorSummaryNewDB,
+        GpaDataDB,
     )
+    from sqlalchemy import func
 
     try:
         # Parse course_code (e.g., "CSCE121" -> dept="CSCE", course_num="121")
@@ -1511,6 +1513,7 @@ async def get_course_professors_details(
                 "courseSummary": None,
                 "overallSummary": None,
                 "otherCourseSummaries": [],
+                "grades": None,
             }
 
             if professor:
@@ -1556,6 +1559,40 @@ async def get_course_professors_details(
                         "complaints": overall_summary.complaints or [],
                         "consistency": overall_summary.consistency,
                         "reviewCount": overall_summary.total_reviews,
+                    }
+
+                # Get grade distribution for this course + professor
+                gpa_rows = (
+                    db.query(
+                        func.avg(GpaDataDB.gpa).label("avg_gpa"),
+                        func.sum(GpaDataDB.grade_a).label("total_a"),
+                        func.sum(GpaDataDB.grade_b).label("total_b"),
+                        func.sum(GpaDataDB.grade_c).label("total_c"),
+                        func.sum(GpaDataDB.grade_d).label("total_d"),
+                        func.sum(GpaDataDB.grade_f).label("total_f"),
+                        func.sum(GpaDataDB.total_students).label("total_students"),
+                    )
+                    .filter(
+                        GpaDataDB.dept == dept,
+                        GpaDataDB.course_number == course_num,
+                        GpaDataDB.professor.ilike(f"%{last_name}%"),
+                    )
+                    .first()
+                )
+
+                if gpa_rows and gpa_rows.total_students and gpa_rows.total_students > 0:
+                    prof_data["grades"] = {
+                        "avgGpa": round(gpa_rows.avg_gpa, 2)
+                        if gpa_rows.avg_gpa
+                        else None,
+                        "totalStudents": gpa_rows.total_students,
+                        "distribution": {
+                            "A": gpa_rows.total_a or 0,
+                            "B": gpa_rows.total_b or 0,
+                            "C": gpa_rows.total_c or 0,
+                            "D": gpa_rows.total_d or 0,
+                            "F": gpa_rows.total_f or 0,
+                        },
                     }
 
             result_professors.append(prof_data)
