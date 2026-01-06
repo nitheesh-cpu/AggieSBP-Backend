@@ -22,6 +22,16 @@ from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..database.base import check_database_health, get_session
+from ..core.cache import (
+    get_redis,
+    close_redis,
+    cached,
+    get_cache_stats,
+    clear_all_cache,
+    TTL_LONG,
+    TTL_15MIN,
+    TTL_WEEK,
+)
 from .routers.discover import router as discover_router
 
 # Rate limiter configuration
@@ -232,6 +242,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Redis lifecycle events
+@app.on_event("startup")
+async def startup_event() -> None:
+    """Initialize Redis connection on startup."""
+    redis_client = await get_redis()
+    if redis_client:
+        logger.info("Redis cache connected")
+    else:
+        logger.warning("Redis cache not available - running without cache")
+
+
+@app.on_event("shutdown")
+async def shutdown_event() -> None:
+    """Close Redis connection on shutdown."""
+    await close_redis()
+    logger.info("Redis cache disconnected")
 
 
 def get_db_session() -> Iterator[Session]:
@@ -463,6 +491,7 @@ async def scalar_html() -> HTMLResponse:
     description="Returns statistics about the data",
 )
 @limiter.limit("30/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_data_stats(
     request: Request, db: Session = Depends(get_db_session)
 ) -> Dict[str, Any]:
@@ -535,6 +564,7 @@ async def get_data_stats(
     description="Returns all terms with an end date after the current time, sorted by start date.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_LONG)  # 24h cache - terms rarely change
 async def get_terms(
     request: Request, db: Session = Depends(get_db_session)
 ) -> List[Dict[str, Any]]:
@@ -620,6 +650,7 @@ async def get_terms(
     description="Returns course sections with instructor and meeting data. Supports pagination with skip/limit. Use limit=-1 to get all sections.",
 )
 @limiter.limit("30/minute")
+@cached(ttl=TTL_15MIN)  # 15 min cache
 async def get_sections(
     request: Request,
     limit: int = Query(
@@ -814,6 +845,7 @@ async def get_sections(
     description="Returns all sections for a specific term code (e.g., 202611 for Spring 2026 College Station). Supports pagination.",
 )
 @limiter.limit("30/minute")
+@cached(ttl=TTL_15MIN)  # 15 min cache
 async def get_sections_by_term(
     request: Request,
     term_code: str,
@@ -1022,6 +1054,7 @@ async def get_sections_by_term(
     description="Returns all sections for a specific course in a specific term. Course code format: CSCE121, MATH151, etc.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_15MIN)  # 15 min cache
 async def get_sections_by_term_and_course(
     request: Request,
     term_code: str,
@@ -1233,6 +1266,7 @@ async def get_sections_by_term_and_course(
     description="Returns a list of unique professors teaching a specific course in a term, with the sections they teach.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_15MIN)  # 15 min cache
 async def get_course_professors_by_term(
     request: Request,
     term_code: str,
@@ -1351,6 +1385,7 @@ async def get_course_professors_by_term(
     description="Returns university-wide statistics including department counts, courses, professors, and GPA averages.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_departments_info(
     request: Request, db: Session = Depends(get_db_session)
 ) -> Dict[str, Any]:
@@ -1582,6 +1617,7 @@ async def get_departments_info(
     description="Returns list of departments with course counts, professor counts, and GPA averages. Supports search and pagination.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_departments(
     request: Request,
     search: Optional[str] = None,
@@ -1751,6 +1787,7 @@ async def get_departments(
     description="Returns list of courses with GPA data, enrollment, and professor ratings. Supports department filtering, search, and pagination.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_courses(
     request: Request,
     department: Optional[str] = None,
@@ -2015,6 +2052,7 @@ async def get_courses(
     description="Returns detailed information for a specific course including professors, grade distributions, prerequisites, and related courses.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_course_details(
     request: Request, course_id: str, db: Session = Depends(get_db_session)
 ) -> Dict[str, Any]:
@@ -2564,6 +2602,7 @@ async def get_course_details(
     description="Returns all professors teaching a specific course with ratings, reviews, and student feedback.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_course_professors(
     request: Request, course_id: str, db: Session = Depends(get_db_session)
 ) -> List[Dict[str, Any]]:
@@ -3018,6 +3057,7 @@ async def get_course_professors(
     description="Returns student reviews for a specific course-professor combination with ratings and detailed feedback.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_course_professor_reviews(
     request: Request,
     course_id: str,
@@ -3357,6 +3397,7 @@ async def get_course_professor_reviews(
     description="Compare multiple courses side-by-side with GPA data, ratings, enrollment, and professor information.",
 )
 @limiter.limit("30/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def compare_courses(
     http_request: Request,
     request: CourseCompareRequest,
@@ -3652,6 +3693,7 @@ async def compare_courses(
     description="Returns list of professors with ratings, review counts, departments, and courses taught. Supports search, department filtering, and pagination.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_professors(
     request: Request,
     search: Optional[str] = None,
@@ -3788,6 +3830,7 @@ async def get_professors(
     description="Advanced fuzzy search for professors by name with intelligent handling of multi-part surnames and complex names. Uses PostgreSQL trigram similarity when available, falls back to token-based matching. Returns professors with RateMyProf IDs and relevance scores.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def find_professor(
     request: Request,
     name: str = Query(..., description="Professor name to search (e.g. 'Smith, John')"),
@@ -4101,6 +4144,7 @@ async def find_professor(
     description="Returns detailed professor profile with ratings, courses taught, recent reviews, tag frequencies, and overall summary.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_professor_profile(
     request: Request, professor_id: str, db: Session = Depends(get_db_session)
 ) -> Dict[str, Any]:
@@ -4533,6 +4577,7 @@ async def get_professor_profile(
     description="Returns all reviews for a professor with detailed ratings, review text, grades, and filtering options. Supports course filtering, sorting, and pagination.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def get_professor_reviews(
     request: Request,
     professor_id: str,
@@ -4829,6 +4874,7 @@ async def get_professor_reviews(
     description="Advanced professor search with multiple criteria including name, department, rating, and courses taught. Returns detailed professor profiles.",
 )
 @limiter.limit("60/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def search_professors(
     request: Request,
     name: Optional[str] = None,
@@ -5224,6 +5270,7 @@ async def search_professors(
     description="Compare up to 10 professors side-by-side with ratings, courses taught, reviews, and tag frequencies. Query format: ?ids=prof1,prof2,prof3",
 )
 @limiter.limit("30/minute")
+@cached(ttl=TTL_WEEK)  # 1 week cache
 async def compare_professors(
     request: Request,
     ids: str = Query(
@@ -5505,6 +5552,54 @@ async def compare_professors(
 # if __name__ == "__main__":
 #     import uvicorn
 #     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+# Cache management endpoints
+@app.get(
+    "/cache/status",
+    responses={
+        200: {
+            "description": "Cache status and statistics",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "connected",
+                        "cached_endpoints": 15,
+                        "used_memory": "1.5M",
+                    }
+                }
+            },
+        }
+    },
+    summary="/cache/status",
+    description="Returns Redis cache status and statistics.",
+    tags=["Admin"],
+)
+async def cache_status() -> Dict[str, Any]:
+    """Get cache status and statistics."""
+    return await get_cache_stats()
+
+
+@app.delete(
+    "/cache/clear",
+    responses={
+        200: {
+            "description": "Cache cleared successfully",
+            "content": {
+                "application/json": {
+                    "example": {"message": "Cache cleared", "keys_deleted": 15}
+                }
+            },
+        }
+    },
+    summary="/cache/clear",
+    description="Clear all cached API responses. Use with caution.",
+    tags=["Admin"],
+)
+async def cache_clear() -> Dict[str, Any]:
+    """Clear all cached API responses."""
+    deleted = await clear_all_cache()
+    return {"message": "Cache cleared", "keys_deleted": deleted}
 
 
 # Force reload for UCC stats update

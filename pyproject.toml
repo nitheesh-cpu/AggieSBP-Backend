@@ -37,6 +37,7 @@ dependencies = [
     "aiohttp>=3.12.11",
     "scalar-fastapi>=1.0.0",
     "gunicorn[uvicorn]>=23.0.0",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
