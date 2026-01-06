@@ -276,19 +276,6 @@ def upsert_sections(
                         "attributes_text": stmt.excluded.attributes_text,
                         "updated_at": stmt.excluded.updated_at,
                     },
-                    # Only update if something actually changed
-                    where=or_(
-                        SectionDB.dept_desc != stmt.excluded.dept_desc,
-                        SectionDB.course_title != stmt.excluded.course_title,
-                        SectionDB.credit_hours != stmt.excluded.credit_hours,
-                        SectionDB.is_open != stmt.excluded.is_open,
-                        SectionDB.has_syllabus != stmt.excluded.has_syllabus,
-                        SectionDB.syllabus_url != stmt.excluded.syllabus_url,
-                        SectionDB.attributes_text != stmt.excluded.attributes_text,
-                        SectionDB.campus != stmt.excluded.campus,
-                        SectionDB.schedule_type != stmt.excluded.schedule_type,
-                        SectionDB.instruction_type != stmt.excluded.instruction_type,
-                    ),
                 )
                 session.execute(stmt)
                 results["sections_upserted"] += len(batch)
@@ -308,16 +295,6 @@ def upsert_sections(
                         "is_primary": stmt.excluded.is_primary,
                         "updated_at": stmt.excluded.updated_at,
                     },
-                    # Only update if something actually changed
-                    where=or_(
-                        SectionInstructorDB.instructor_name
-                        != stmt.excluded.instructor_name,
-                        SectionInstructorDB.instructor_pidm
-                        != stmt.excluded.instructor_pidm,
-                        SectionInstructorDB.has_cv != stmt.excluded.has_cv,
-                        SectionInstructorDB.cv_url != stmt.excluded.cv_url,
-                        SectionInstructorDB.is_primary != stmt.excluded.is_primary,
-                    ),
                 )
                 session.execute(stmt)
                 results["instructors_upserted"] += len(batch)
