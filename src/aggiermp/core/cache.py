@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 
 import redis.asyncio as redis  # type: ignore[import-not-found]
 from fastapi import Request
+from pydantic import BaseModel
 
 # Redis connection settings
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -69,6 +70,19 @@ def _generate_cache_key(request: Request) -> str:
     key_hash = hashlib.md5(key_data.encode()).hexdigest()[:16]
 
     return f"api:{path}:{key_hash}"
+
+
+def _serialize_for_cache(obj: Any) -> Any:
+    """
+    Recursively convert Pydantic models to dicts for JSON serialization.
+    """
+    if isinstance(obj, BaseModel):
+        return obj.model_dump()
+    elif isinstance(obj, list):
+        return [_serialize_for_cache(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: _serialize_for_cache(v) for k, v in obj.items()}
+    return obj
 
 
 def cached(ttl: int = TTL_STANDARD) -> Callable:
@@ -126,10 +140,11 @@ def cached(ttl: int = TTL_STANDARD) -> Callable:
                 # Cache miss - execute function
                 result = await func(*args, **kwargs)
 
-                # Store in cache (only if result is JSON-serializable)
+                # Store in cache - convert Pydantic models to dicts first
                 try:
+                    serializable = _serialize_for_cache(result)
                     await redis_client.setex(
-                        cache_key, ttl, json.dumps(result, default=str)
+                        cache_key, ttl, json.dumps(serializable, default=str)
                     )
                 except (TypeError, ValueError):
                     # Result not JSON serializable, skip caching
