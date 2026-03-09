@@ -14,6 +14,68 @@ A comprehensive data collection and analysis system for Texas A&M University pro
 - **Data Analysis** — AI-powered summarization and insights generation
 - **API Endpoints** — RESTful API for accessing collected data
 
+## 🏗️ Architecture Flow
+
+```mermaid
+graph TD
+    %% -- Styling --
+    classDef external fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef storage fill:#fff,stroke:#333,stroke-dasharray: 5 5;
+    classDef client fill:#bbf,stroke:#333,stroke-width:2px;
+
+    %% -- Entities --
+    User["TAMU Student (Browser)"]:::client
+
+    subgraph ExternalSources ["External Data Sources"]
+        direction LR
+        TAMU["TAMU Catalog"]:::external
+        RMP["RateMyProf"]:::external
+        Anex["Anex.us (GPA)"]:::external
+    end
+
+    subgraph ClientLayer ["Client Side (Frontend)"]
+        NextJS["Next.js Web App (Vercel)"]
+        
+        subgraph Extension ["Chrome Extension"]
+            ContentScript["Content Script (Injected)"]
+            Popup["Extension Popup (UI)"]
+        end
+    end
+
+    subgraph ServiceLayer ["Application & Auth Layer"]
+        FastAPI["AggieSB+ API (FastAPI/Python)"]
+    end
+
+    subgraph WorkerLayer ["Data Pipelines (Scheduled)"]
+        Scrapers["Scraper Workers (TAMU, RMP, GPA)"]
+    end
+
+    subgraph StorageLayer ["Storage Layer"]
+        PostgreSQL[(PostgreSQL Main DB)]:::storage
+        Redis[(Redis Cache)]:::storage
+    end
+
+    %% -- Connections --
+
+    %% User to Clients
+    User -->|Interacts with| NextJS
+    User -->|Uses| Popup
+    ContentScript -.->|Injects UI into| User
+
+    %% Clients to Backend
+    NextJS <-->|REST| FastAPI
+    Popup <-->|Fetch Stats| FastAPI
+    ContentScript <-->|Fetch Prof Metrics| FastAPI
+
+    %% Backend logic
+    FastAPI <-->|SQL Queries| PostgreSQL
+    FastAPI <-->|Cache Lookups| Redis
+
+    %% Pipeline Flow
+    Scrapers -.->|Scrape / Download| ExternalSources
+    Scrapers -->|ETL / Upsert| PostgreSQL
+```
+
 ## 📁 Project Structure
 
 ```
