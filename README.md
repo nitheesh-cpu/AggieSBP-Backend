@@ -19,10 +19,11 @@ A comprehensive data collection and analysis system for Texas A&M University pro
 ```mermaid
 graph TD
     %% -- Styling --
-    classDef external fill:#f9f,stroke:#333,stroke-width:2px;
-    classDef storage fill:#fff,stroke:#333,stroke-dasharray: 5 5;
-    classDef client fill:#bbf,stroke:#333,stroke-width:2px;
-
+    classDef external fill:#f9f,stroke:#333,stroke-width:2px,color:#fff;
+    classDef storage fill:#555,stroke:#333,stroke-dasharray: 5 5,color:#fff;
+    classDef client fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff;
+    classDef default fill:#333,color:#fff,stroke:#111;
+    
     %% -- Entities --
     User["TAMU Student (Browser)"]:::client
 
