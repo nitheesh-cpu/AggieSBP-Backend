@@ -119,8 +119,16 @@ class HierarchicalSummarizationPipeline:
             processed_reviews, embeddings
         )
 
+        # Calculate actual review counts per course (before clustering drops noise)
+        review_counts_by_course: Dict[str, int] = {}
+        for review in processed_reviews:
+            course = review.course_code or "UNKNOWN"
+            review_counts_by_course[course] = review_counts_by_course.get(course, 0) + 1
+
         # Step 4: Generate course summaries
-        course_summaries = self._generate_course_summaries(course_clusters)
+        course_summaries = self._generate_course_summaries(
+            course_clusters, review_counts_by_course
+        )
 
         # Step 5: Generate professor summary
         professor_summary = self._generate_professor_summary(
@@ -133,7 +141,9 @@ class HierarchicalSummarizationPipeline:
         return professor_summary
 
     def _generate_course_summaries(
-        self, course_clusters: Dict[str, Dict[int, List[ProcessedReview]]]
+        self,
+        course_clusters: Dict[str, Dict[int, List[ProcessedReview]]],
+        review_counts_by_course: Dict[str, int],
     ) -> List[CourseSummary]:
         """Generate structured summaries for each course"""
         course_summaries = []
@@ -150,10 +160,13 @@ class HierarchicalSummarizationPipeline:
                 clusters, cluster_types
             )
 
+            # Use actual review count for this course (not just clustered reviews)
+            actual_review_count = review_counts_by_course.get(course_code, 0)
+
             # Build structured course summary
             course_summary = CourseSummary(
                 course=course_code,
-                total_reviews=sum(len(reviews) for reviews in clusters.values()),
+                total_reviews=actual_review_count,
             )
 
             # Organize summaries by type

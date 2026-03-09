@@ -50,18 +50,24 @@ class ReviewClusterer:
 
         # Group reviews by cluster
         clusters: Dict[int, List[ProcessedReview]] = {}
-        noise_count = 0
+        noise_reviews: List[ProcessedReview] = []
 
         for review, label in zip(reviews, cluster_labels):
             if label == -1:  # Noise
-                noise_count += 1
+                noise_reviews.append(review)
                 continue
 
             if label not in clusters:
                 clusters[label] = []
             clusters[label].append(review)
 
-        print(f"Found {len(clusters)} clusters, {noise_count} noise points")
+        print(f"Found {len(clusters)} clusters, {len(noise_reviews)} noise points")
+
+        # Fallback: if no clusters found, put all reviews (including noise) into cluster 0
+        # This ensures we still generate summaries for small review sets
+        if not clusters and noise_reviews:
+            clusters[0] = noise_reviews
+            print(f"  -> Fallback: using all {len(noise_reviews)} reviews as single cluster")
 
         return clusters
 
