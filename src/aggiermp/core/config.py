@@ -61,6 +61,20 @@ class Settings(BaseSettings):
     google_oauth_client_id: Optional[str] = None
     google_oauth_client_secret: Optional[str] = None
 
+    # CORS: comma-separated extra origins (e.g. preview URLs). Production website
+    # should still be set via SUPERTOKENS_WEBSITE_DOMAIN; previews need to be
+    # allowed explicitly or via cors_allow_vercel_previews regex below.
+    cors_origins_extra: str = Field(
+        default="",
+        alias="cors_origins_extra",
+        description="Comma-separated list of additional allowed origins",
+    )
+    # When True, any origin matching https://*.vercel.app is allowed (preview deploys).
+    cors_allow_vercel_previews: bool = Field(
+        default=True,
+        alias="cors_allow_vercel_previews",
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

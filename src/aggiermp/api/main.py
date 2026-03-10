@@ -287,14 +287,39 @@ app.add_middleware(TimeoutMiddleware, timeout=REQUEST_TIMEOUT_SECONDS)
 # Add SuperTokens middleware
 app.add_middleware(get_middleware())
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[settings.supertokens_website_domain],  # Update to allow specific origin for credentials
+# CORS middleware — must include every frontend origin that uses credentials
+# (production, localhost, Vercel previews, etc.). Browsers only allow one
+# Access-Control-Allow-Origin value matching the request Origin.
+def _build_cors_origins() -> list[str]:
+    origins: list[str] = []
+    primary = (settings.supertokens_website_domain or "").strip()
+    if primary:
+        origins.append(primary.rstrip("/"))
+    extra = getattr(settings, "cors_origins_extra", "") or ""
+    for part in extra.split(","):
+        o = part.strip().rstrip("/")
+        if o and o not in origins:
+            origins.append(o)
+    for loc in ("http://localhost:3000", "http://127.0.0.1:3000"):
+        if loc not in origins:
+            origins.append(loc)
+    # Never use ["*"] with allow_credentials=True — browsers will block it.
+    return origins if origins else ["http://localhost:3000"]
+
+
+_cors_origins = _build_cors_origins()
+_cors_kwargs = dict(
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["Content-Type"] + get_all_cors_headers(),
 )
+# Vercel preview deployments use unique subdomains; regex allows them without
+# listing each preview URL in env.
+if getattr(settings, "cors_allow_vercel_previews", False):
+    _cors_kwargs["allow_origin_regex"] = r"https://.*\.vercel\.app"
+
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 # Add GZip middleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
