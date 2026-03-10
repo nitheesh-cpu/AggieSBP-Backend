@@ -12,6 +12,7 @@ from pydantic import ConfigDict
 
 from ...database.base import get_session, UserSubscriptionDB
 from ...models.schema import UserSchedule, UserTrackedSection, UserSubscription
+from ...core.notifications import NotificationService
 
 router: APIRouter = APIRouter(prefix="/users", tags=["users"])
 
@@ -265,3 +266,33 @@ async def get_tracked_section(section_id: str, session, db):
         return UserTrackedSection(**row._mapping)
     # Fallback if not found immediately after check (race condition weirdness)
     raise HTTPException(status_code=404, detail="Tracked section not found")
+
+
+@router.post("/test-notification")
+async def send_test_notification(
+    session: SessionContainer = Depends(verify_session()),
+    db: Session = Depends(get_session),
+):
+    """
+    Send a simple test push notification to the current user's active subscriptions.
+    """
+    user_id = session.get_user_id()
+
+    message = {
+        "title": "AggieSB+ Test Alert",
+        "body": "If you see this, push notifications are working on this device.",
+        "url": "/",
+    }
+
+    try:
+        sent = NotificationService.send_push_to_user(user_id, message, db)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send notification: {str(e)}")
+
+    if not sent:
+        raise HTTPException(
+            status_code=400,
+            detail="No active push subscriptions found for this user. Make sure notifications are enabled.",
+        )
+
+    return {"status": "success", "message": "Test notification sent"}

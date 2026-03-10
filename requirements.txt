@@ -49,7 +49,7 @@ setuptools==80.9.0
 slowapi==0.1.9
 soupsieve==2.8.1
 sqlalchemy==2.0.45
-supertokens_python==0.19.1
+supertokens_python
 starlette==0.50.0
 sympy==1.14.0
 threadpoolctl==3.6.0
