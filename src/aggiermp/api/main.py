@@ -61,7 +61,13 @@ init(
     ),
     framework='fastapi',
     recipe_list=[
-        session.init(),
+        # Header-based session for cross-origin (Vercel frontend → API domain).
+        # Cookies are not sent to a different site; without this, verify_session
+        # gets no session and returns 401 → frontend redirects to login.
+        session.init(
+            get_token_transfer_method=lambda _req, _for_create, _uc: "header",
+            anti_csrf="NONE",  # not needed when using Bearer token only
+        ),
         emailpassword.init(),
         thirdparty.init(
             sign_in_and_up_feature=thirdparty.SignInAndUpFeature(
