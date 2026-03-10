@@ -33,6 +33,10 @@ class CreateTrackingRequest(BaseModel):
     section_id: str
     term_code: str
 
+
+class PushSubscriptionDeleteRequest(BaseModel):
+    endpoint: str
+
 @router.post("/push-subscription")
 async def save_push_subscription(
     request: PushSubscriptionRequest,
@@ -86,6 +90,46 @@ async def save_push_subscription(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.delete("/push-subscription")
+async def delete_push_subscription(
+    request: PushSubscriptionDeleteRequest,
+    session: SessionContainer = Depends(verify_session()),
+    db: Session = Depends(get_session),
+):
+    """Remove a web push subscription for the current user (single device)."""
+    user_id = session.get_user_id()
+
+    try:
+        query = text(
+            """
+            DELETE FROM user_subscriptions
+            WHERE user_id = :user_id AND endpoint = :endpoint
+        """
+        )
+        result = db.execute(
+            query, {"user_id": user_id, "endpoint": request.endpoint}
+        )
+        db.commit()
+
+        if result.rowcount == 0:
+            # Not fatal; just means no matching subscription in DB
+            return {
+                "status": "not_found",
+                "message": "No matching subscription for this device",
+            }
+
+        return {
+            "status": "success",
+            "message": "Push subscription removed for this device",
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Database error: {str(e)}"
+        )
 
 
 @router.post("/schedules", response_model=UserSchedule)
