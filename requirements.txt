@@ -36,6 +36,7 @@ psycopg2==2.9.11
 pydantic==2.12.5
 pydantic-core==2.41.5
 python-dotenv==1.2.1
+pydantic-settings
 pyyaml==6.0.3
 regex==2025.11.3
 requests==2.32.5
@@ -48,6 +49,7 @@ setuptools==80.9.0
 slowapi==0.1.9
 soupsieve==2.8.1
 sqlalchemy==2.0.45
+supertokens_python==0.19.1
 starlette==0.50.0
 sympy==1.14.0
 threadpoolctl==3.6.0
@@ -61,3 +63,5 @@ typing-inspection==0.4.2
 urllib3==2.6.2
 uvicorn==0.40.0
 yarl==1.22.0
+novu==1.13.0
+redis==5.0.0

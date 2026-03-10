@@ -34,6 +34,55 @@ from ..core.cache import (
     TTL_WEEK,
 )
 from .routers.discover import router as discover_router
+from .routers.users import router as users_router
+from ..core.config import settings
+from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
+from supertokens_python.recipe import (
+    session,
+    emailpassword,
+    thirdparty,
+    dashboard,
+)
+from supertokens_python.recipe.thirdparty import ProviderInput, ProviderConfig, ProviderClientConfig
+from supertokens_python.framework.fastapi import get_middleware
+
+# Initialize SuperTokens
+init(
+    app_info=InputAppInfo(
+        app_name=settings.supertokens_app_name,
+        api_domain=settings.supertokens_api_domain,
+        website_domain=settings.supertokens_website_domain,
+        api_base_path="/auth",
+        website_base_path="/auth"
+    ),
+    supertokens_config=SupertokensConfig(
+        connection_uri=settings.supertokens_connection_uri,
+        api_key=settings.supertokens_api_key
+    ),
+    framework='fastapi',
+    recipe_list=[
+        session.init(),
+        emailpassword.init(),
+        thirdparty.init(
+            sign_in_and_up_feature=thirdparty.SignInAndUpFeature(
+                providers=[
+                    ProviderInput(
+                        config=ProviderConfig(
+                            third_party_id="google",
+                            name="Google",
+                            clients=[
+                                ProviderClientConfig(
+                                    client_id=str(settings.google_oauth_client_id),
+                                    client_secret=str(settings.google_oauth_client_secret),
+                                )
+                            ]
+                        )
+                    )
+                ] if settings.google_oauth_client_id else []
+            )
+        )
+    ]
+)
 
 # Rate limiter configuration
 limiter = Limiter(key_func=get_remote_address)
@@ -235,13 +284,16 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # ty
 # Add timeout middleware (must be added before other middleware)
 app.add_middleware(TimeoutMiddleware, timeout=REQUEST_TIMEOUT_SECONDS)
 
+# Add SuperTokens middleware
+app.add_middleware(get_middleware())
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=[settings.supertokens_website_domain],  # Update to allow specific origin for credentials
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Content-Type"] + get_all_cors_headers(),
 )
 
 # Add GZip middleware
@@ -5865,3 +5917,4 @@ async def cache_clear() -> Dict[str, Any]:
 
 # Force reload for UCC stats update
 app.include_router(discover_router)
+app.include_router(users_router)
