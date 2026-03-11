@@ -197,15 +197,17 @@ async def track_section(
     user_id = session.get_user_id()
     
     try:
-        # Optimized: atomic insert with conflict handling
+        # Optimized: atomic insert with conflict handling (id required by table)
+        new_id = str(uuid.uuid4())
         query = text("""
-            INSERT INTO user_tracked_sections (user_id, section_id, term_code, status)
-            VALUES (:user_id, :section_id, :term_code, 'active')
+            INSERT INTO user_tracked_sections (id, user_id, section_id, term_code, status)
+            VALUES (:id, :user_id, :section_id, :term_code, 'active')
             ON CONFLICT (user_id, section_id) DO NOTHING
             RETURNING id, user_id, section_id, term_code, status, created_at
         """)
         
         result = db.execute(query, {
+            "id": new_id,
             "user_id": user_id,
             "section_id": request.section_id,
             "term_code": request.term_code

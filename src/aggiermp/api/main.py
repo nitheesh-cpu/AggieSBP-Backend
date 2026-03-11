@@ -313,6 +313,52 @@ def _build_cors_origins() -> list[str]:
     return origins if origins else ["http://localhost:3000"]
 
 
+def _normalize_days_of_week(value: Any) -> list[str]:
+    """
+    Normalize meeting days into a list of day tokens.
+
+    DB `section_meetings.days_of_week` can be stored as either:
+    - an array (already iterable as list[str])
+    - a compact string like "MWF" or "TTh"
+    - a comma/space separated string like "M,W,F" or "Tue Thu"
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, tuple):
+        return [str(v).strip() for v in value if str(v).strip()]
+
+    s = str(value).strip()
+    if not s:
+        return []
+
+    # Normalize common separators to spaces
+    s = s.replace(",", " ").replace("/", " ").replace("  ", " ")
+
+    # If it's already tokens like "Mon Wed Fri"
+    parts = [p for p in s.split() if p]
+    if len(parts) > 1:
+        return parts
+
+    # Compact formats: "MWF", "TR", "TTh", "MTWRF"
+    # Strategy: scan left-to-right, recognize "Th" as a single token.
+    out: list[str] = []
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        # Handle "Th" (Thursday) in compact strings
+        if ch in ("T", "t") and i + 1 < len(s) and s[i + 1] in ("h", "H"):
+            out.append("Th")
+            i += 2
+            continue
+        # Single-letter tokens: M T W R F S U (and lowercase)
+        if ch.isalpha():
+            out.append(ch.upper())
+        i += 1
+    return out
+
+
 _cors_origins = _build_cors_origins()
 _cors_kwargs = dict(
     allow_origins=_cors_origins,
@@ -848,7 +894,7 @@ async def get_sections(
                 meetings_by_section[row.section_id] = []
             meetings_by_section[row.section_id].append(
                 {
-                    "daysOfWeek": row.days_of_week or [],
+                    "daysOfWeek": _normalize_days_of_week(row.days_of_week),
                     "beginTime": row.begin_time,
                     "endTime": row.end_time,
                     "startDate": row.start_date,
@@ -1047,7 +1093,7 @@ async def get_sections_by_term(
                 meetings_by_section[row.section_id] = []
             meetings_by_section[row.section_id].append(
                 {
-                    "daysOfWeek": row.days_of_week or [],
+                    "daysOfWeek": _normalize_days_of_week(row.days_of_week),
                     "beginTime": row.begin_time,
                     "endTime": row.end_time,
                     "startDate": row.start_date,
@@ -1269,7 +1315,7 @@ async def get_sections_by_term_and_course(
                 meetings_by_section[row.section_id] = []
             meetings_by_section[row.section_id].append(
                 {
-                    "daysOfWeek": row.days_of_week or [],
+                    "daysOfWeek": _normalize_days_of_week(row.days_of_week),
                     "beginTime": row.begin_time,
                     "endTime": row.end_time,
                     "startDate": row.start_date,
