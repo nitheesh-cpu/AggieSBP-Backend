@@ -116,9 +116,11 @@ _WATCH_QUERY = text("""
         s.term_code
     FROM user_tracked_sections uts
     JOIN sections s ON (
-        s.id = uts.section_id
+        -- section_id format: TERMCODE-CRN-DEPT-COURSENUM-SECNUM
+        -- sections.id format: TERMCODE_CRN
+        s.id = split_part(uts.section_id, '-', 1) || '_' || split_part(uts.section_id, '-', 2)
+        OR s.id = uts.section_id
         OR s.id = uts.term_code || '_' || uts.section_id
-        OR s.crn = uts.section_id
     )
     WHERE uts.status = 'active'
 """)
