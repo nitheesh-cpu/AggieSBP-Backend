@@ -115,7 +115,11 @@ _WATCH_QUERY = text("""
         s.crn,
         s.term_code
     FROM user_tracked_sections uts
-    JOIN sections s ON s.id = uts.section_id
+    JOIN sections s ON (
+        s.id = uts.section_id
+        OR s.id = uts.term_code || '_' || uts.section_id
+        OR s.crn = uts.section_id
+    )
     WHERE uts.status = 'active'
 """)
 
@@ -186,6 +190,19 @@ def run_watcher() -> Dict[str, Any]:
     try:
         _ensure_migration(db)
         logger.info("Querying active watches...")
+
+        # ── DIAGNOSTIC: dump raw tracked rows + verify JOIN ─────────────
+        raw_tracked = db.execute(text(
+            "SELECT id, user_id, section_id, term_code, status FROM user_tracked_sections WHERE status = 'active'"
+        )).fetchall()
+        logger.info("RAW tracked rows (%d): %s", len(raw_tracked),
+                    [(r.section_id, r.status) for r in raw_tracked])
+
+        if raw_tracked:
+            sid_sample = raw_tracked[0].section_id
+            match = db.execute(text("SELECT id, is_open FROM sections WHERE id = :sid"),
+                               {"sid": sid_sample}).fetchone()
+            logger.info("Sections lookup for section_id=%r → %s", sid_sample, match)
 
         # ── 1. Fetch all active watches with section status ──────────────
         rows = db.execute(_WATCH_QUERY).fetchall()
