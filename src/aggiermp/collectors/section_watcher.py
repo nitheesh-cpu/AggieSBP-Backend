@@ -68,18 +68,33 @@ def _get_session():  # type: ignore[return]
 # ---------------------------------------------------------------------------
 # Ensure the last_notified_open_at column exists
 # ---------------------------------------------------------------------------
-_MIGRATION_SQL = """
-ALTER TABLE user_tracked_sections
-    ADD COLUMN IF NOT EXISTS last_notified_open_at TIMESTAMPTZ;
-"""
+_CHECK_COLUMN_SQL = text("""
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_name = 'user_tracked_sections'
+      AND column_name = 'last_notified_open_at'
+""")
 
 
 def _ensure_migration(db: Any) -> None:
+    """Add last_notified_open_at column if it doesn't already exist."""
     try:
-        db.execute(text(_MIGRATION_SQL))
+        row = db.execute(_CHECK_COLUMN_SQL).fetchone()
+        if row:
+            logger.debug("Column last_notified_open_at already exists, skipping migration.")
+            return
+
+        logger.info("Adding last_notified_open_at column to user_tracked_sections...")
+        # Use a short lock timeout so we fail fast instead of hanging forever
+        db.execute(text("SET lock_timeout = '5s'"))
+        db.execute(text(
+            "ALTER TABLE user_tracked_sections "
+            "ADD COLUMN IF NOT EXISTS last_notified_open_at TIMESTAMPTZ"
+        ))
         db.commit()
+        logger.info("Migration complete.")
     except Exception as exc:
-        logger.warning("Migration skipped (may already exist): %s", exc)
+        logger.warning("Migration skipped: %s", exc)
         db.rollback()
 
 
@@ -170,6 +185,7 @@ def run_watcher() -> Dict[str, Any]:
     db = _get_session()
     try:
         _ensure_migration(db)
+        logger.info("Querying active watches...")
 
         # ── 1. Fetch all active watches with section status ──────────────
         rows = db.execute(_WATCH_QUERY).fetchall()
