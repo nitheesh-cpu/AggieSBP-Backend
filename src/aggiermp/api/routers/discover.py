@@ -85,6 +85,41 @@ def calculate_confidence_score(total_reviews: int, gpa_student_count: int) -> fl
     return min(1.0, math.log10(total_data_points + 1) / 3.0)
 
 
+
+class TermDepartment(BaseModel):
+    code: str
+    name: str
+
+
+@router.get(
+    "/{term_code}/departments",
+    summary="/discover/{term_code}/departments",
+)
+@cached(TTL_WEEK)
+async def discover_term_departments(
+    request: Request, term_code: str, db: Session = Depends(get_session)
+) -> List[TermDepartment]:
+    """
+    Get all distinct departments that have sections in a given term.
+    Returns the dept code and description so they exactly match the discover endpoint filter.
+    """
+    try:
+        query = text("""
+            SELECT DISTINCT dept, dept_desc
+            FROM sections
+            WHERE term_code = :term_code
+              AND dept IS NOT NULL
+            ORDER BY dept
+        """)
+        result = db.execute(query, {"term_code": term_code})
+        return [
+            TermDepartment(code=row.dept, name=row.dept_desc or row.dept)
+            for row in result
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
 @router.get(
     "/{term_code}/ucc",
     summary="/discover/{term_code}/ucc",
@@ -218,6 +253,142 @@ async def discover_ucc_courses(
             )
 
         return response
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.get(
+    "/{term_code}/{dept_code}",
+    summary="/discover/{term_code}/{dept_code}",
+)
+async def discover_dept_courses(
+    request: Request,
+    term_code: str,
+    dept_code: str,
+    campus: Optional[str] = None,
+    include_graduate: bool = False,
+    db: Session = Depends(get_session),
+) -> List[UccCourseDiscovery]:
+    """
+    Get all courses for a specific department and term, ordered by easiness score.
+
+    Query params:
+    - campus: filter by campus name (partial match, e.g. "College Station")
+    - include_graduate: include 600+ level courses (default: False)
+    """
+    try:
+        # Build dynamic WHERE clauses
+        extra_filters = []
+        params: Dict[str, Any] = {"term_code": term_code, "dept_code": dept_code}
+
+        # Always hide 491 (research/independent study)
+        extra_filters.append("s.course_number != '491'")
+
+        # Graduate courses are 600+
+        if not include_graduate:
+            extra_filters.append("s.course_number::text < '600'")
+
+        # Campus filter (partial case-insensitive match)
+        if campus:
+            extra_filters.append("s.campus ILIKE :campus")
+            params["campus"] = f"%{campus}%"
+
+        where_extra = ""
+        if extra_filters:
+            where_extra = " AND " + " AND ".join(extra_filters)
+
+        query = text(f"""
+            WITH gpa_agg AS (
+                SELECT 
+                    dept,
+                    course_number,
+                    professor,
+                    AVG(gpa) as avg_gpa,
+                    SUM(grade_a + grade_b)::float / NULLIF(SUM(total_students), 0) * 100 as percent_ab,
+                    SUM(total_students) as total_students
+                FROM gpa_data
+                GROUP BY dept, course_number, professor
+            )
+            SELECT DISTINCT
+                s.dept,
+                s.course_number,
+                s.course_title,
+                s.credit_hours,
+                p.id as professor_id,
+                p.first_name,
+                p.last_name,
+                COALESCE(psn.avg_rating, p.avg_rating, 0) as avg_rating,
+                COALESCE(psn.avg_difficulty, p.avg_difficulty, 0) as avg_difficulty,
+                COALESCE(psn.total_reviews, p.num_ratings, 0) as total_reviews,
+                psn.common_tags,
+                g.avg_gpa,
+                g.percent_ab,
+                g.total_students as gpa_student_count
+            FROM sections s
+            JOIN section_instructors si ON s.id = si.section_id
+            JOIN professors p ON (
+                si.instructor_name ILIKE p.first_name || '%' 
+                AND si.instructor_name ILIKE '%' || p.last_name
+            )
+            LEFT JOIN professor_summaries_new psn ON (
+                p.id = psn.professor_id 
+                AND psn.course_code = s.dept || s.course_number
+            )
+            LEFT JOIN gpa_agg g ON (
+                g.dept = s.dept
+                AND g.course_number = s.course_number
+                AND g.professor ILIKE p.last_name || '%'
+            )
+            WHERE s.term_code = :term_code
+              AND s.dept = :dept_code
+              {where_extra}
+        """)
+
+        result = db.execute(query, params)
+
+        courses: List[Dict[str, Any]] = []
+        for row in result:
+            tags = row.common_tags[:5] if row.common_tags else []
+
+            avg_gpa = float(row.avg_gpa) if row.avg_gpa else None
+            avg_difficulty = float(row.avg_difficulty) if row.avg_difficulty else 0.0
+            avg_rating = float(row.avg_rating) if row.avg_rating else 0.0
+            total_reviews = row.total_reviews or 0
+            gpa_student_count = row.gpa_student_count or 0
+
+            easiness = calculate_easiness_score(avg_gpa or 0, avg_difficulty, avg_rating)
+            confidence = calculate_confidence_score(total_reviews, gpa_student_count)
+
+            courses.append(
+                {
+                    "dept": row.dept,
+                    "courseNumber": row.course_number,
+                    "courseTitle": row.course_title,
+                    "credits": row.credit_hours,
+                    "easinessScore": round(easiness * 100, 1),
+                    "confidenceScore": round(confidence * 100, 1),
+                    "professor": {
+                        "id": row.professor_id,
+                        "firstName": row.first_name,
+                        "lastName": row.last_name,
+                        "avgRating": round(avg_rating, 2),
+                        "avgDifficulty": round(avg_difficulty, 2),
+                        "totalRatings": total_reviews,
+                        "tags": tags,
+                        "avgGpa": round(avg_gpa, 2) if avg_gpa else None,
+                        "percentAB": round(float(row.percent_ab), 1)
+                        if row.percent_ab
+                        else None,
+                        "gpaStudentCount": gpa_student_count,
+                    },
+                }
+            )
+
+        courses.sort(key=lambda x: x["easinessScore"], reverse=True)
+        courses = courses[:100]
+
+        return [UccCourseDiscovery(**c) for c in courses]
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

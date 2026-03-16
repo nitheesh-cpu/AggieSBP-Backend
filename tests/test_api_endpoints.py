@@ -89,3 +89,29 @@ def test_ucc_discovery_endpoint(client: TestClient) -> None:
         category_group = data[0]
         assert "category" in category_group
         assert "courses" in category_group
+
+
+def test_dept_discovery_endpoint(client: TestClient) -> None:
+    """Test the department discovery endpoint."""
+    term_code = "202611"
+    dept_code = "CSCE"
+
+    # Verify the term exists or fallback
+    terms_response = client.get("/terms")
+    if terms_response.status_code == 200 and len(terms_response.json()) > 0:
+        term_code = terms_response.json()[0]["termCode"]
+
+    response = client.get(f"/discover/{term_code}/{dept_code}")
+
+    # Expect 200 if the query is valid.
+    assert response.status_code == 200
+
+    data = response.json()
+    assert isinstance(data, list)
+    if len(data) > 0:
+        course = data[0]
+        assert "dept" in course
+        assert "courseNumber" in course
+        assert "easinessScore" in course
+        assert "professor" in course
+        assert "firstName" in course["professor"]
