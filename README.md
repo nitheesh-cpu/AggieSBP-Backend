@@ -5,6 +5,7 @@ A comprehensive data collection and analysis system for Texas A&M University pro
 [![courses upsert](https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M.svg)](https://cronitor.io)
 [![gpa upsert](https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo.svg)](https://cronitor.io)
 [![sections upsert](https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4.svg)](https://cronitor.io)
+![sections watcher](https://cronitor.io/badges/FnepfT/production/zqE7gN84msH6qtSME2AqAYzXWVs.svg)
 
 ## 🚀 Features
 
@@ -186,6 +187,7 @@ python src/aggiermp/main.py
 | Sections Upsert | ![sections upsert](https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4/detailed.svg)       |
 | GPA Upsert      | ![gpa upsert](https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo/detailed.svg)            |
 | Courses Upsert  | ![courses upsert](https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M/detailed.svg)        |
+| Sections Watcher| ![sections watcher](https://cronitor.io/badges/FnepfT/production/zqE7gN84msH6qtSME2AqAYzXWVs/detailed.svg)      |
 
 ## 📝 Contributing
 
