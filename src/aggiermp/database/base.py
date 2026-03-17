@@ -469,6 +469,22 @@ class ProfessorSummaryNewDB(Base):
             return f"<ProfessorSummaryNew(professor_id='{self.professor_id}', overall, confidence={self.confidence})>"
 
 
+class UserSubscriptionDB(Base):
+    """Web push subscriptions for authenticated users."""
+
+    __tablename__ = "user_subscriptions"
+
+    id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False, index=True)
+    endpoint = Column(Text, nullable=False)
+    p256dh = Column(String, nullable=False)
+    auth = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+
+    def __repr__(self) -> str:
+        return f"<UserSubscription(user_id='{self.user_id}')>"
+
+
 # Global engine instance for connection pooling
 _engine = None
 _session_factory = None

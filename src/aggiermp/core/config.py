@@ -1,10 +1,10 @@
-"""
+﻿"""
 Configuration management for AggieRMP application.
 """
 
 from pathlib import Path
-from typing import Optional
-from pydantic import validator
+from typing import Optional, Any
+from pydantic import Field, AnyUrl, model_validator
 from pydantic_settings import BaseSettings  # type: ignore
 
 
@@ -17,12 +17,17 @@ class Settings(BaseSettings):
     version: str = "1.0.0"
 
     # Database
+    # Support both internal naming (db_*) and environmental naming (postgres_*)
+    db_host: str = Field("localhost", alias="postgres_host")
+    db_port: int = Field(5432, alias="postgres_port")
+    db_name: str = Field("aggiermp", alias="postgres_database")
+    db_user: str = Field("postgres", alias="postgres_user")
+    db_password: str = Field("", alias="postgres_password")
+    
     database_url: Optional[str] = None
-    db_host: str = "localhost"
-    db_port: int = 5432
-    db_name: str = "aggiermp"
-    db_user: str = "postgres"
-    db_password: str = ""
+
+    # Redis configuration
+    redis_url: Optional[str] = Field(None, alias="redis_url")
 
     # Paths
     project_root: Path = Path(__file__).parent.parent.parent.parent
@@ -37,15 +42,50 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    @validator("database_url", pre=True)
-    def assemble_db_connection(cls, v: Optional[str], values: dict) -> str:
-        if isinstance(v, str):
-            return v
-        return f"postgresql://{values.get('db_user')}:{values.get('db_password')}@{values.get('db_host')}:{values.get('db_port')}/{values.get('db_name')}"
+    # SuperTokens
+    supertokens_connection_uri: str = "http://localhost:3567"
+    supertokens_api_key: Optional[str] = None
+    supertokens_app_name: str = "AggieRMP"
+    supertokens_api_domain: str = "http://localhost:8000"
+    supertokens_website_domain: str = "http://localhost:3000"
+
+    # Novu
+    novu_api_key: Optional[str] = Field(None, alias="novu_api_key")
+    novu_workflow_id: str = "class-alert"
+
+    # Web Push
+    vapid_private_key: Optional[str] = Field(None, alias="vapid_private_key")
+    vapid_contact_email: str = "mailto:support@AggieSBP.com"
+
+    # Google OAuth
+    google_oauth_client_id: Optional[str] = None
+    google_oauth_client_secret: Optional[str] = None
+
+    # CORS: comma-separated extra origins (e.g. preview URLs). Production website
+    # should still be set via SUPERTOKENS_WEBSITE_DOMAIN; previews need to be
+    # allowed explicitly or via cors_allow_vercel_previews regex below.
+    cors_origins_extra: str = Field(
+        default="",
+        alias="cors_origins_extra",
+        description="Comma-separated list of additional allowed origins",
+    )
+    # When True, any origin matching https://*.vercel.app is allowed (preview deploys).
+    cors_allow_vercel_previews: bool = Field(
+        default=True,
+        alias="cors_allow_vercel_previews",
+    )
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # Ignore extra fields like database_id, universities_collection_id etc.
+        extra = "ignore"
+
+    @model_validator(mode='after')
+    def assemble_db_connection(self) -> 'Settings':
+        if not self.database_url:
+            self.database_url = f"postgresql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+        return self
 
 
 # Global settings instance

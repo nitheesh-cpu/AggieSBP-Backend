@@ -34,6 +34,62 @@ from ..core.cache import (
     TTL_WEEK,
 )
 from .routers.discover import router as discover_router
+from .routers.users import router as users_router
+from ..core.config import settings
+from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
+from supertokens_python.recipe import (
+    session,
+    emailpassword,
+    thirdparty,
+    dashboard,
+)
+from supertokens_python.recipe.thirdparty import ProviderInput, ProviderConfig, ProviderClientConfig
+from supertokens_python.framework.fastapi import get_middleware
+
+# Initialize SuperTokens
+init(
+    app_info=InputAppInfo(
+        app_name=settings.supertokens_app_name,
+        api_domain=settings.supertokens_api_domain,
+        website_domain=settings.supertokens_website_domain,
+        api_base_path="/auth",
+        website_base_path="/auth"
+    ),
+    supertokens_config=SupertokensConfig(
+        connection_uri=settings.supertokens_connection_uri,
+        api_key=settings.supertokens_api_key
+    ),
+    framework='fastapi',
+    recipe_list=[
+        # Header-based session for cross-origin (Vercel frontend → API domain).
+        # Cookies are not sent to a different site; without this, verify_session
+        # gets no session and returns 401 → frontend redirects to login.
+        session.init(
+            get_token_transfer_method=lambda _req, _for_create, _uc: "header",
+            anti_csrf="NONE",  # not needed when using Bearer token only
+        ),
+        emailpassword.init(),
+        thirdparty.init(
+            sign_in_and_up_feature=thirdparty.SignInAndUpFeature(
+                providers=[
+                    ProviderInput(
+                        config=ProviderConfig(
+                            third_party_id="google",
+                            name="Google",
+                            clients=[
+                                ProviderClientConfig(
+                                    client_id=str(settings.google_oauth_client_id),
+                                    client_secret=str(settings.google_oauth_client_secret),
+                                )
+                            ]
+                        )
+                    )
+                ] if settings.google_oauth_client_id else []
+            )
+        ),
+        dashboard.init()
+    ]
+)
 
 # Rate limiter configuration
 limiter = Limiter(key_func=get_remote_address)
@@ -235,14 +291,37 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # ty
 # Add timeout middleware (must be added before other middleware)
 app.add_middleware(TimeoutMiddleware, timeout=REQUEST_TIMEOUT_SECONDS)
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+# SuperTokens must run inside CORS (order: outermost first — last added runs first)
+app.add_middleware(get_middleware())
+
+
+def _build_cors_origins() -> List[str]:
+    origins: List[str] = []
+    primary = (settings.supertokens_website_domain or "").strip()
+    if primary:
+        origins.append(primary.rstrip("/"))
+    extra = getattr(settings, "cors_origins_extra", "") or ""
+    for part in str(extra).split(","):
+        o = part.strip().rstrip("/")
+        if o and o not in origins:
+            origins.append(o)
+    for loc in ("http://localhost:3000", "http://127.0.0.1:3000"):
+        if loc not in origins:
+            origins.append(loc)
+    return origins if origins else ["http://localhost:3000"]
+
+
+_cors_origins = _build_cors_origins()
+_cors_kwargs: Dict[str, Any] = dict(
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Content-Type"] + get_all_cors_headers(),
 )
+if getattr(settings, "cors_allow_vercel_previews", False):
+    _cors_kwargs["allow_origin_regex"] = r"https://.*\.vercel\.app"
+
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 # Add GZip middleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -5864,4 +5943,5 @@ async def cache_clear() -> Dict[str, Any]:
 
 
 # Force reload for UCC stats update
+app.include_router(users_router)
 app.include_router(discover_router)

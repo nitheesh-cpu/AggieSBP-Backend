@@ -13,6 +13,8 @@ A comprehensive data collection and analysis system for Texas A&M University pro
 - **Database Management** — PostgreSQL-based storage with SQLAlchemy ORM
 - **Data Analysis** — AI-powered summarization and insights generation
 - **API Endpoints** — RESTful API for accessing collected data
+- **Auth (SuperTokens)** — Sign-in, sessions, and JWT for the web app and extension; protected routes use `verify_session`
+- **Seat alerts (Section Watcher)** — Users track sections via API; a scheduled **section watcher** reads `user_tracked_sections` and section open status, then sends **Web Push** when a seat opens
 
 ## 🏗️ Architecture Flow
 
@@ -43,17 +45,22 @@ graph TD
         end
     end
 
-    subgraph ServiceLayer ["Application & Auth Layer"]
+    subgraph AuthLayer ["Auth (SuperTokens)"]
+        SuperTokens["SuperTokens — sessions, email/password, JWT"]:::auth
+    end
+
+    subgraph ServiceLayer ["Application Layer"]
         FastAPI["AggieSB+ API (FastAPI/Python)"]
     end
 
     subgraph WorkerLayer ["Data Pipelines (Scheduled)"]
         Scrapers["Scraper Workers (TAMU, RMP, GPA)"]
+        SectionWatcher["Section Watcher — seat-open alerts + Web Push"]
     end
 
     subgraph StorageLayer ["Storage Layer"]
         PostgreSQL[(PostgreSQL Main DB)]:::storage
-        Redis[(Redis Cache)]:::storage
+        Redis[(Redis — cache + tracked CRNs)]:::storage
     end
 
     %% -- Connections --
@@ -63,18 +70,30 @@ graph TD
     User -->|Uses| Popup
     ContentScript -.->|Injects UI into| User
 
-    %% Clients to Backend
+    %% Auth: sign-in and protected API
+    User -->|Sign in / account| NextJS
+    NextJS <-->|Auth APIs| SuperTokens
+    FastAPI <-->|verify_session + recipe| SuperTokens
+
+    %% Clients to Backend (REST; tracking requires session)
     NextJS <-->|REST| FastAPI
     Popup <-->|Fetch Stats| FastAPI
     ContentScript <-->|Fetch Prof Metrics| FastAPI
+    NextJS -->|Track section alerts| FastAPI
+    ContentScript -->|Seat alerts (logged in)| FastAPI
 
     %% Backend logic
     FastAPI <-->|SQL Queries| PostgreSQL
-    FastAPI <-->|Cache Lookups| Redis
+    FastAPI <-->|Cache / tracking sets| Redis
 
     %% Pipeline Flow
     Scrapers -.->|Scrape / Download| ExternalSources
     Scrapers -->|ETL / Upsert| PostgreSQL
+
+    %% Section watcher: watches user_tracked_sections + sections.is_open → push
+    SectionWatcher -->|Active watches + section status| PostgreSQL
+    SectionWatcher -->|Optional Redis coordination| Redis
+    SectionWatcher -.->|Web Push when seat opens| User
 ```
 
 ## 📁 Project Structure
@@ -83,7 +102,7 @@ graph TD
 AggieRMP/
 ├── 📁 src/aggiermp/           # Main source code
 │   ├── 📁 api/                # API endpoints and routes
-│   ├── 📁 collectors/         # Data collection scripts
+│   ├── 📁 collectors/         # Data collection + section_watcher (seat alerts)
 │   ├── 📁 database/           # Database models and operations
 │   ├── 📁 models/             # Pydantic data models
 │   ├── 📁 core/               # Core utilities and configuration

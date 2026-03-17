@@ -1,5 +1,6 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
+from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
 
@@ -199,6 +200,45 @@ class Summary(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class UserSchedule(BaseModel):
+    """User saved schedule (API response)."""
+
+    id: Optional[UUID] = None
+    user_id: str
+    name: str
+    term_code: str
+    courses: List[Union[str, int]] = []
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class UserTrackedSection(BaseModel):
+    """User tracked section for seat alerts (API response)."""
+
+    id: Optional[UUID] = None
+    user_id: str
+    section_id: str
+    term_code: str
+    status: str = "active"
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class UserSubscription(BaseModel):
+    """Web push subscription (API response)."""
+
+    id: Optional[UUID] = None
+    user_id: str
+    endpoint: str
+    p256dh: str
+    auth: str
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 # Table name mapping for PostgreSQL
 TABLE_NAMES = {
     "universities": "universities",
@@ -209,6 +249,9 @@ TABLE_NAMES = {
     "reviews": "reviews",
     "review_tags": "review_tags",
     "summaries": "summaries",
+    "user_schedules": "user_schedules",
+    "user_tracked_sections": "user_tracked_sections",
+    "user_subscriptions": "user_subscriptions",
 }
 
 # Model mapping for type checking
@@ -221,4 +264,7 @@ MODEL_MAPPING = {
     "reviews": Review,
     "review_tags": ReviewTag,
     "summaries": Summary,
+    "user_schedules": UserSchedule,
+    "user_tracked_sections": UserTrackedSection,
+    "user_subscriptions": UserSubscription,
 }
