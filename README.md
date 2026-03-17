@@ -184,10 +184,10 @@ python src/aggiermp/main.py
 
 | Pipeline        | Status                                                                                                          |
 | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| Sections Upsert | ![sections upsert](https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4/detailed.svg)       |
-| GPA Upsert      | ![gpa upsert](https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo/detailed.svg)            |
-| Courses Upsert  | ![courses upsert](https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M/detailed.svg)        |
-| Sections Watcher| ![sections watcher](https://cronitor.io/badges/FnepfT/production/zqE7gN84msH6qtSME2AqAYzXWVs/detailed.svg)      |
+| Sections Upsert | <img width="50%" src="https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4/detailed.svg" alt="sections upsert" />       |
+| GPA Upsert      | <img width="50%" src="https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo/detailed.svg" alt="gpa upsert" />            |
+| Courses Upsert  | <img width="50%" src="https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M/detailed.svg" alt="courses upsert" />        |
+| Sections Watcher| <img width="50%" src="https://cronitor.io/badges/FnepfT/production/zqE7gN84msH6qtSME2AqAYzXWVs/detailed.svg" alt="sections watcher" />      |
 
 ## 📝 Contributing
 
