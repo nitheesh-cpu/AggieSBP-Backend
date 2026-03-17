@@ -80,7 +80,7 @@ graph TD
     Popup <-->|Fetch Stats| FastAPI
     ContentScript <-->|Fetch Prof Metrics| FastAPI
     NextJS -->|Track section alerts| FastAPI
-    ContentScript -->|Seat alerts (logged in)| FastAPI
+    ContentScript -->|Seat alerts| FastAPI
 
     %% Backend logic
     FastAPI <-->|SQL Queries| PostgreSQL
