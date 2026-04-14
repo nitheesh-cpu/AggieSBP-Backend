@@ -1,4 +1,4 @@
-﻿import json
+import json
 import logging
 from typing import Dict, Any, List
 from pywebpush import webpush, WebPushException

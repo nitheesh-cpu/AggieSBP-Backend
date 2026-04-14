@@ -17,8 +17,7 @@ import redis.asyncio as redis  # type: ignore[import-not-found]
 from fastapi import Request
 from pydantic import BaseModel
 
-# Redis connection settings
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+from ..core.config import settings
 
 # Default TTLs (in seconds)
 TTL_SHORT = 300  # 5 minutes - for stats
@@ -38,8 +37,11 @@ async def get_redis() -> Optional[redis.Redis]:
     global _redis_client
     if _redis_client is None:
         try:
+            # Use configured redis_url or fallback
+            redis_url = settings.redis_url or "redis://localhost:6379"
+            
             _redis_client = redis.from_url(
-                REDIS_URL,
+                redis_url,
                 encoding="utf-8",
                 decode_responses=True,
             )

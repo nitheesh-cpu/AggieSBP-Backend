@@ -308,18 +308,73 @@ def _build_cors_origins() -> List[str]:
     for loc in ("http://localhost:3000", "http://127.0.0.1:3000"):
         if loc not in origins:
             origins.append(loc)
+    # Never use ["*"] with allow_credentials=True — browsers will block it.
     return origins if origins else ["http://localhost:3000"]
 
 
+def _normalize_days_of_week(value: Any) -> list[str]:
+    """
+    Normalize meeting days into a list of day tokens.
+
+    DB `section_meetings.days_of_week` can be stored as either:
+    - an array (already iterable as list[str])
+    - a compact string like "MWF" or "TTh"
+    - a comma/space separated string like "M,W,F" or "Tue Thu"
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, tuple):
+        return [str(v).strip() for v in value if str(v).strip()]
+
+    s = str(value).strip()
+    if not s:
+        return []
+
+    # Normalize common separators to spaces
+    s = s.replace(",", " ").replace("/", " ").replace("  ", " ")
+
+    # If it's already tokens like "Mon Wed Fri"
+    parts = [p for p in s.split() if p]
+    if len(parts) > 1:
+        return parts
+
+    # Compact formats: "MWF", "TR", "TTh", "MTWRF"
+    # Strategy: scan left-to-right, recognize "Th" as a single token.
+    out: list[str] = []
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        # Handle "Th" (Thursday) in compact strings
+        if ch in ("T", "t") and i + 1 < len(s) and s[i + 1] in ("h", "H"):
+            out.append("Th")
+            i += 2
+            continue
+        # Single-letter tokens: M T W R F S U (and lowercase)
+        if ch.isalpha():
+            out.append(ch.upper())
+        i += 1
+    return out
+
+
 _cors_origins = _build_cors_origins()
-_cors_kwargs: Dict[str, Any] = dict(
+_cors_kwargs = dict(
     allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["Content-Type"] + get_all_cors_headers(),
 )
+# Vercel preview deployments use unique subdomains; regex allows them without
+# listing each preview URL in env.
 if getattr(settings, "cors_allow_vercel_previews", False):
-    _cors_kwargs["allow_origin_regex"] = r"https://.*\.vercel\.app"
+    _cors_kwargs["allow_origin_regex"] = (
+        r"^https://.*\.vercel\.app$|^http://localhost(:\d+)?$|^http://127\.0\.0\.1(:\d+)?$"
+    )
+else:
+    _cors_kwargs["allow_origin_regex"] = (
+        r"^http://localhost(:\d+)?$|^http://127\.0\.0\.1(:\d+)?$"
+    )
 
 app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
@@ -844,7 +899,7 @@ async def get_sections(
                 meetings_by_section[row.section_id] = []
             meetings_by_section[row.section_id].append(
                 {
-                    "daysOfWeek": row.days_of_week or [],
+                    "daysOfWeek": _normalize_days_of_week(row.days_of_week),
                     "beginTime": row.begin_time,
                     "endTime": row.end_time,
                     "startDate": row.start_date,
@@ -1043,7 +1098,7 @@ async def get_sections_by_term(
                 meetings_by_section[row.section_id] = []
             meetings_by_section[row.section_id].append(
                 {
-                    "daysOfWeek": row.days_of_week or [],
+                    "daysOfWeek": _normalize_days_of_week(row.days_of_week),
                     "beginTime": row.begin_time,
                     "endTime": row.end_time,
                     "startDate": row.start_date,
@@ -1265,7 +1320,7 @@ async def get_sections_by_term_and_course(
                 meetings_by_section[row.section_id] = []
             meetings_by_section[row.section_id].append(
                 {
-                    "daysOfWeek": row.days_of_week or [],
+                    "daysOfWeek": _normalize_days_of_week(row.days_of_week),
                     "beginTime": row.begin_time,
                     "endTime": row.end_time,
                     "startDate": row.start_date,
@@ -1498,6 +1553,7 @@ async def get_course_professors_details(
     - otherCourseSummaries: summaries for other courses they teach
     """
     import re
+    from difflib import SequenceMatcher
     from aggiermp.database.base import (
         SectionDB,
         SectionInstructorDB,
@@ -1505,7 +1561,7 @@ async def get_course_professors_details(
         ProfessorSummaryNewDB,
         GpaDataDB,
     )
-    from sqlalchemy import func
+    from sqlalchemy import func, or_
 
     try:
         # Parse course_code (e.g., "CSCE121" -> dept="CSCE", course_num="121")
@@ -1554,23 +1610,95 @@ async def get_course_professors_details(
         # Step 2: Match instructor names to professor IDs and get summaries
         result_professors = []
 
+        def normalize_name_part(value: str) -> str:
+            return re.sub(r"[^a-z]", "", value.lower())
+
+        def parse_name(full_name: str) -> tuple[str, List[str]]:
+            raw_parts = [p for p in full_name.strip().split() if p]
+            if not raw_parts:
+                return ("", [])
+            # Drop common suffixes and punctuation-only tokens.
+            suffixes = {"jr", "sr", "ii", "iii", "iv", "phd", "md"}
+            parts = [
+                normalize_name_part(p)
+                for p in raw_parts
+                if normalize_name_part(p) and normalize_name_part(p) not in suffixes
+            ]
+            if not parts:
+                return ("", [])
+            first = parts[0]
+            surname_tokens = parts[1:] if len(parts) > 1 else [parts[-1]]
+            return (first, surname_tokens)
+
         for instructor_name, sections in instructor_sections.items():
-            name_parts = instructor_name.strip().split()
-            if not name_parts:
+            first_name, surname_tokens = parse_name(instructor_name)
+            if not surname_tokens:
                 continue
 
-            last_name = name_parts[-1] if name_parts else instructor_name
-            first_name = name_parts[0] if len(name_parts) > 1 else ""
-
-            # Query professor
-            prof_query = db.query(ProfessorDB).filter(
-                ProfessorDB.last_name.ilike(f"%{last_name}%")
-            )
+            # Query broad candidate pool, then score in Python for robust matching.
+            surname_filters = [
+                ProfessorDB.last_name.ilike(f"{token[:1]}%")
+                for token in surname_tokens
+                if token
+            ]
+            prof_query = db.query(ProfessorDB)
+            if surname_filters:
+                prof_query = prof_query.filter(or_(*surname_filters))
             if first_name:
                 prof_query = prof_query.filter(
-                    ProfessorDB.first_name.ilike(f"{first_name}%")
+                    ProfessorDB.first_name.ilike(f"{first_name[:1]}%")
                 )
-            professor = prof_query.first()
+            candidates = prof_query.limit(200).all()
+
+            professor = None
+            best_score = 0.0
+            for candidate in candidates:
+                cand_first = normalize_name_part(candidate.first_name or "")
+                cand_last = normalize_name_part(candidate.last_name or "")
+                if not cand_last:
+                    continue
+
+                last_score = max(
+                    (
+                        SequenceMatcher(None, surname_token, cand_last).ratio()
+                        for surname_token in surname_tokens
+                    ),
+                    default=0.0,
+                )
+                first_score = (
+                    SequenceMatcher(None, first_name, cand_first).ratio()
+                    if first_name and cand_first
+                    else 0.0
+                )
+                bonus = 0.0
+                if first_name and cand_first and cand_first.startswith(first_name[:1]):
+                    bonus += 0.05
+                if any(
+                    cand_last.startswith(surname_token[:3])
+                    for surname_token in surname_tokens
+                    if len(surname_token) >= 3
+                ):
+                    bonus += 0.05
+
+                review_signal = min(float(candidate.num_ratings or 0), 50.0) / 50.0
+                score = (last_score * 0.72) + (first_score * 0.2) + bonus + (
+                    review_signal * 0.08
+                )
+                if score > best_score:
+                    best_score = score
+                    professor = candidate
+
+            # Fallback to stricter lookup when candidate pool is empty.
+            if not professor:
+                fallback_token = surname_tokens[-1]
+                fallback_query = db.query(ProfessorDB).filter(
+                    ProfessorDB.last_name.ilike(f"%{fallback_token}%")
+                )
+                if first_name:
+                    fallback_query = fallback_query.filter(
+                        ProfessorDB.first_name.ilike(f"{first_name}%")
+                    )
+                professor = fallback_query.first()
 
             # Get overall summary for totalReviews
             overall_summary = None
@@ -1618,6 +1746,7 @@ async def get_course_professors_details(
                         "policies": s.policies,
                         "other": s.other,
                         "reviewCount": s.total_reviews,
+                        "confidence": s.confidence,
                     }
 
                 for cs in all_course_summaries:
@@ -1625,10 +1754,14 @@ async def get_course_professors_details(
                         # This is the target course
                         prof_data["courseSummary"] = format_course_summary(cs)
                     else:
-                        # Other courses
-                        prof_data["otherCourseSummaries"].append(
-                            format_course_summary(cs)
-                        )
+                        prof_data["otherCourseSummaries"].append(format_course_summary(cs))
+
+                # Keep other-course list small + high-signal
+                prof_data["otherCourseSummaries"] = sorted(
+                    prof_data["otherCourseSummaries"],
+                    key=lambda x: x.get("reviewCount", 0),
+                    reverse=True,
+                )[:5]
 
                 # Overall summary (aggregated across all courses)
                 if overall_summary:
@@ -1638,9 +1771,19 @@ async def get_course_professors_details(
                         "complaints": overall_summary.complaints or [],
                         "consistency": overall_summary.consistency,
                         "reviewCount": overall_summary.total_reviews,
+                        "confidence": overall_summary.confidence,
                     }
 
                 # Get grade distribution for this course + professor
+                gpa_last_names: List[str] = []
+                if professor and professor.last_name:
+                    gpa_last_names.append(str(professor.last_name))
+                gpa_last_names.extend(surname_tokens)
+                gpa_last_names = [n for n in {name.strip() for name in gpa_last_names} if n]
+
+                gpa_last_name_filters = [
+                    GpaDataDB.professor.ilike(f"%{name}%") for name in gpa_last_names
+                ]
                 gpa_rows = (
                     db.query(
                         func.avg(GpaDataDB.gpa).label("avg_gpa"),
@@ -1654,7 +1797,9 @@ async def get_course_professors_details(
                     .filter(
                         GpaDataDB.dept == dept,
                         GpaDataDB.course_number == course_num,
-                        GpaDataDB.professor.ilike(f"%{last_name}%"),
+                        or_(*gpa_last_name_filters)
+                        if gpa_last_name_filters
+                        else GpaDataDB.professor.isnot(None),
                     )
                     .first()
                 )

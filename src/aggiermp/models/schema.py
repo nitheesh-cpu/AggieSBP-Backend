@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Union
-from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, ConfigDict
+from uuid import UUID
 from enum import Enum
 
 
@@ -201,21 +201,21 @@ class Summary(BaseModel):
 
 
 class UserSchedule(BaseModel):
-    """User saved schedule (API response)."""
-
+    """User Saved Schedule Model"""
+    
     id: Optional[UUID] = None
     user_id: str
     name: str
     term_code: str
-    courses: List[Union[str, int]] = []
+    courses: List[Union[str, int]] = [] # List of CRNs or Course IDs
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(populate_by_name=True)
 
 
 class UserTrackedSection(BaseModel):
-    """User tracked section for seat alerts (API response)."""
-
+    """User Tracked Section Model"""
+    
     id: Optional[UUID] = None
     user_id: str
     section_id: str
@@ -227,7 +227,7 @@ class UserTrackedSection(BaseModel):
 
 
 class UserSubscription(BaseModel):
-    """Web push subscription (API response)."""
+    """User Subscription Model"""
 
     id: Optional[UUID] = None
     user_id: str
@@ -266,5 +266,4 @@ MODEL_MAPPING = {
     "summaries": Summary,
     "user_schedules": UserSchedule,
     "user_tracked_sections": UserTrackedSection,
-    "user_subscriptions": UserSubscription,
 }

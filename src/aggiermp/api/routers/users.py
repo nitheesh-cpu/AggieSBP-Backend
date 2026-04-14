@@ -1,4 +1,4 @@
-﻿from typing import List, Optional, Union
+from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -21,6 +21,8 @@ class PushSubscriptionRequest(BaseModel):
     endpoint: str
     p256dh: str
     auth: str
+    device_name: Optional[str] = None
+    user_agent: Optional[str] = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -36,6 +38,16 @@ class CreateTrackingRequest(BaseModel):
 
 class PushSubscriptionDeleteRequest(BaseModel):
     endpoint: str
+
+
+class PushSubscriptionDevice(BaseModel):
+    id: str
+    endpoint: str
+    device_name: Optional[str] = None
+    user_agent: Optional[str] = None
+    created_at: Optional[str] = None
+    last_seen_at: Optional[str] = None
+
 
 @router.post("/push-subscription")
 async def save_push_subscription(
@@ -62,26 +74,38 @@ async def save_push_subscription(
             # Update existing subscription's keys (maybe they rotated)
             update_query = text("""
                 UPDATE user_subscriptions 
-                SET p256dh = :p256dh, auth = :auth
+                SET p256dh = :p256dh,
+                    auth = :auth,
+                    device_name = :device_name,
+                    user_agent = :user_agent,
+                    last_seen_at = NOW()
                 WHERE id = :id
             """)
             db.execute(update_query, {
                 "id": existing.id,
                 "p256dh": request.p256dh,
-                "auth": request.auth
+                "auth": request.auth,
+                "device_name": request.device_name,
+                "user_agent": request.user_agent,
             })
         else:
             # Insert new subscription
             insert_query = text("""
-                INSERT INTO user_subscriptions (id, user_id, endpoint, p256dh, auth)
-                VALUES (:id, :user_id, :endpoint, :p256dh, :auth)
+                INSERT INTO user_subscriptions (
+                    id, user_id, endpoint, p256dh, auth, device_name, user_agent, last_seen_at
+                )
+                VALUES (
+                    :id, :user_id, :endpoint, :p256dh, :auth, :device_name, :user_agent, NOW()
+                )
             """)
             db.execute(insert_query, {
                 "id": str(uuid.uuid4()),
                 "user_id": user_id,
                 "endpoint": request.endpoint,
                 "p256dh": request.p256dh,
-                "auth": request.auth
+                "auth": request.auth,
+                "device_name": request.device_name,
+                "user_agent": request.user_agent,
             })
             
         db.commit()
@@ -130,6 +154,42 @@ async def delete_push_subscription(
         raise HTTPException(
             status_code=500, detail=f"Database error: {str(e)}"
         )
+
+
+@router.get("/push-subscriptions", response_model=List[PushSubscriptionDevice])
+async def list_push_subscriptions(
+    session: SessionContainer = Depends(verify_session()),
+    db: Session = Depends(get_session),
+):
+    """List current user's registered push subscription endpoints."""
+    user_id = session.get_user_id()
+
+    try:
+        query = text(
+            """
+            SELECT id, endpoint, device_name, user_agent, created_at, last_seen_at
+            FROM user_subscriptions
+            WHERE user_id = :user_id
+            ORDER BY COALESCE(last_seen_at, created_at) DESC
+            """
+        )
+        result = db.execute(query, {"user_id": user_id})
+        rows = result.fetchall()
+
+        return [
+            PushSubscriptionDevice(
+                id=str(row.id),
+                endpoint=row.endpoint,
+                device_name=row.device_name,
+                user_agent=row.user_agent,
+                created_at=row.created_at.isoformat() if row.created_at else None,
+                last_seen_at=row.last_seen_at.isoformat() if row.last_seen_at else None,
+            )
+            for row in rows
+        ]
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @router.post("/schedules", response_model=UserSchedule)

@@ -470,19 +470,23 @@ class ProfessorSummaryNewDB(Base):
 
 
 class UserSubscriptionDB(Base):
-    """Web push subscriptions for authenticated users."""
+    """Database model for Web Push Subscriptions"""
 
     __tablename__ = "user_subscriptions"
 
-    id = Column(String, primary_key=True)
+    id = Column(String, primary_key=True)  # UUID
     user_id = Column(String, nullable=False, index=True)
     endpoint = Column(Text, nullable=False)
     p256dh = Column(String, nullable=False)
     auth = Column(String, nullable=False)
+    device_name = Column(String, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.now)
     created_at = Column(DateTime, nullable=False, default=datetime.now)
 
     def __repr__(self) -> str:
         return f"<UserSubscription(user_id='{self.user_id}')>"
+
 
 
 # Global engine instance for connection pooling
