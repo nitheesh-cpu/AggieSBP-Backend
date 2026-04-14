@@ -35,7 +35,6 @@ from ..core.cache import (
 )
 from .routers.discover import router as discover_router
 from .routers.users import router as users_router
-from .routers.ai_worker import router as ai_worker_router
 from ..core.config import settings
 from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
 from supertokens_python.recipe import (
