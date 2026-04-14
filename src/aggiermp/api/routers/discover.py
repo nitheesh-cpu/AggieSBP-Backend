@@ -114,6 +114,18 @@ class DiscoverFitCourseMatch(BaseModel):
     sample_crn: Optional[str] = None
 
 
+class UccFitCandidatesRequest(BaseModel):
+    categories: List[str]
+    campus: Optional[str] = None
+
+
+class DiscoverFitCandidateCourse(BaseModel):
+    dept: str
+    courseNumber: str
+    courseTitle: str
+    easinessScore: float = 0.0
+
+
 @router.get(
     "/{term_code}/departments",
     summary="/discover/{term_code}/departments",
@@ -138,6 +150,101 @@ async def discover_term_departments(
         return [
             TermDepartment(code=row.dept, name=row.dept_desc or row.dept)
             for row in result
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.post(
+    "/{term_code}/ucc-fit-candidates",
+    summary="/discover/{term_code}/ucc-fit-candidates",
+)
+async def discover_ucc_fit_candidates(
+    request: Request,
+    term_code: str,
+    payload: UccFitCandidatesRequest,
+    db: Session = Depends(get_session),
+) -> List[DiscoverFitCandidateCourse]:
+    """
+    Lightweight UCC candidate list for Fit My Schedule.
+    This intentionally avoids professor joins so it remains reliable and fast.
+    """
+    try:
+        categories = [c for c in payload.categories if c and c.strip()]
+        if not categories:
+            return []
+
+        query = text(
+            """
+            SELECT DISTINCT
+                s.dept,
+                s.course_number,
+                s.course_title
+            FROM sections s
+            JOIN section_attributes_detailed sad
+              ON sad.section_id = s.id
+            WHERE s.term_code = :term_code
+              AND sad.attribute_desc = ANY(:categories)
+              AND (:campus IS NULL OR s.campus = :campus)
+              AND s.dept IS NOT NULL
+              AND s.course_number IS NOT NULL
+            ORDER BY s.dept, s.course_number
+            """
+        )
+
+        rows = db.execute(
+            query,
+            {
+                "term_code": term_code,
+                "categories": categories,
+                "campus": payload.campus,
+            },
+        ).fetchall()
+
+        # Some terms are missing section_attributes_detailed rows.
+        # Fallback: infer UCC eligibility by course code from any term where
+        # attribute mappings exist, then apply to the selected term's sections.
+        if not rows:
+            fallback_query = text(
+                """
+                SELECT DISTINCT
+                    s.dept,
+                    s.course_number,
+                    s.course_title
+                FROM sections s
+                WHERE s.term_code = :term_code
+                  AND (:campus IS NULL OR s.campus = :campus)
+                  AND s.dept IS NOT NULL
+                  AND s.course_number IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1
+                      FROM sections sx
+                      JOIN section_attributes_detailed sad
+                        ON sad.section_id = sx.id
+                      WHERE sx.dept = s.dept
+                        AND sx.course_number = s.course_number
+                        AND sad.attribute_desc = ANY(:categories)
+                  )
+                ORDER BY s.dept, s.course_number
+                """
+            )
+            rows = db.execute(
+                fallback_query,
+                {
+                    "term_code": term_code,
+                    "categories": categories,
+                    "campus": payload.campus,
+                },
+            ).fetchall()
+
+        return [
+            DiscoverFitCandidateCourse(
+                dept=str(r.dept),
+                courseNumber=str(r.course_number),
+                courseTitle=str(r.course_title or f"{r.dept} {r.course_number}"),
+                easinessScore=0.0,
+            )
+            for r in rows
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
