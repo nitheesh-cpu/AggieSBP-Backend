@@ -33,6 +33,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from pywebpush import WebPushException, webpush
@@ -113,7 +114,8 @@ _WATCH_QUERY = text("""
         s.section_number,
         s.course_title,
         s.crn,
-        s.term_code
+        s.term_code,
+        term.term_desc   AS term_desc
     FROM user_tracked_sections uts
     JOIN sections s ON (
         -- section_id format: TERMCODE-CRN-DEPT-COURSENUM-SECNUM
@@ -122,6 +124,7 @@ _WATCH_QUERY = text("""
         OR s.id = uts.section_id
         OR s.id = uts.term_code || '_' || uts.section_id
     )
+    LEFT JOIN terms term ON term.term_code = s.term_code
     WHERE uts.status = 'active'
 """)
 
@@ -152,8 +155,21 @@ def _send_push(sub_row: Any, payload: str) -> tuple[str, bool]:
         return sub_row.endpoint, False
 
 
-# Seat-alert taps open College Scheduler (PWA SW routes all notification clicks there).
+# Seat-alert taps open College Scheduler (see _scheduler_cart_url).
 _COLLEGE_SCHEDULER_TERMS_URL = "https://tamu.collegescheduler.com/terms"
+_COLLEGE_SCHEDULER_ORIGIN = "https://tamu.collegescheduler.com"
+
+
+def _scheduler_cart_url(row: Any) -> str:
+    """Cart page for this term, e.g. /terms/Fall%202026%20-%20College%20Station/cart."""
+    desc = getattr(row, "term_desc", None)
+    if desc is None:
+        return _COLLEGE_SCHEDULER_TERMS_URL
+    desc = str(desc).strip()
+    if not desc:
+        return _COLLEGE_SCHEDULER_TERMS_URL
+    segment = quote(desc, safe="")
+    return f"{_COLLEGE_SCHEDULER_ORIGIN}/terms/{segment}/cart"
 
 
 def _build_payload(row: Any) -> str:
@@ -164,7 +180,7 @@ def _build_payload(row: Any) -> str:
                 f"{row.dept} {row.course_number}.{row.section_number} "
                 f"({row.course_title}) just opened up!"
             ),
-            "url": _COLLEGE_SCHEDULER_TERMS_URL,
+            "url": _scheduler_cart_url(row),
             "crn": row.crn,
             "sectionId": row.section_id,
         }
