@@ -37,6 +37,13 @@ class CreateTrackingRequest(BaseModel):
 class PushSubscriptionDeleteRequest(BaseModel):
     endpoint: str
 
+
+class PushSubscriptionDevice(BaseModel):
+    id: str
+    endpoint: str
+    created_at: Optional[str] = None
+
+
 @router.post("/push-subscription")
 async def save_push_subscription(
     request: PushSubscriptionRequest,
@@ -130,6 +137,39 @@ async def delete_push_subscription(
         raise HTTPException(
             status_code=500, detail=f"Database error: {str(e)}"
         )
+
+
+@router.get("/push-subscriptions", response_model=List[PushSubscriptionDevice])
+async def list_push_subscriptions(
+    session: SessionContainer = Depends(verify_session()),
+    db: Session = Depends(get_session),
+):
+    """List current user's registered push subscription endpoints."""
+    user_id = session.get_user_id()
+
+    try:
+        query = text(
+            """
+            SELECT id, endpoint, created_at
+            FROM user_subscriptions
+            WHERE user_id = :user_id
+            ORDER BY created_at DESC
+            """
+        )
+        result = db.execute(query, {"user_id": user_id})
+        rows = result.fetchall()
+
+        return [
+            PushSubscriptionDevice(
+                id=str(row.id),
+                endpoint=row.endpoint,
+                created_at=row.created_at.isoformat() if row.created_at else None,
+            )
+            for row in rows
+        ]
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @router.post("/schedules", response_model=UserSchedule)
