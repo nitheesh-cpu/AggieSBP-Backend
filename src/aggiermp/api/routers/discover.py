@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -101,7 +101,19 @@ class ScheduleBlockInput(BaseModel):
 class DiscoverFitRequest(BaseModel):
     course_keys: List[str]
     schedule_blocks: List[ScheduleBlockInput]
+    # Section site from Howdy (e.g. "College Station", "Galveston"); filters `sections.campus`.
     campus: Optional[str] = None
+    # If non-empty, only sections with at least one matching attribute_desc count as compatible.
+    section_attribute_descs: Optional[List[str]] = None
+    seat_filter: Literal["any", "open", "full"] = "any"
+
+
+class FitSectionAttributeOptionsRequest(BaseModel):
+    course_keys: List[str]
+
+
+class FitSectionCampusOptionsRequest(BaseModel):
+    course_keys: List[str]
 
 
 class DiscoverFitCourseMatch(BaseModel):
@@ -270,6 +282,16 @@ async def discover_fit_sections(
         if not payload.schedule_blocks:
             return []
 
+        attribute_descs = [
+            a.strip()
+            for a in (payload.section_attribute_descs or [])
+            if a and str(a).strip()
+        ]
+        skip_attribute_filter = len(attribute_descs) == 0
+
+        section_campus_filter = (payload.campus or "").strip()
+        apply_campus_filter = len(section_campus_filter) > 0
+
         schedule_json = json.dumps(
             [
                 {
@@ -301,7 +323,30 @@ async def discover_fit_sections(
                 FROM sections s
                 WHERE s.term_code = :term_code
                   AND (s.dept || '-' || s.course_number) = ANY(:course_keys)
-                  AND (:campus IS NULL OR s.campus = :campus)
+                  AND (
+                      CAST(:apply_campus_filter AS boolean) IS NOT TRUE
+                      OR LOWER(TRIM(COALESCE(s.campus, ''))) = LOWER(:section_campus_filter)
+                  )
+                  AND (
+                      CAST(:seat_filter AS text) = 'any'
+                      OR (
+                          CAST(:seat_filter AS text) = 'open'
+                          AND s.is_open IS TRUE
+                      )
+                      OR (
+                          CAST(:seat_filter AS text) = 'full'
+                          AND s.is_open IS NOT TRUE
+                      )
+                  )
+                  AND (
+                      CAST(:skip_attribute_filter AS boolean) IS TRUE
+                      OR EXISTS (
+                          SELECT 1
+                          FROM section_attributes_detailed sad_attr
+                          WHERE sad_attr.section_id = s.id
+                            AND sad_attr.attribute_desc = ANY(:attribute_descs)
+                      )
+                  )
             ),
             meeting_times AS (
                 SELECT
@@ -371,7 +416,11 @@ async def discover_fit_sections(
                 "term_code": term_code,
                 "course_keys": payload.course_keys,
                 "schedule_json": schedule_json,
-                "campus": payload.campus,
+                "apply_campus_filter": apply_campus_filter,
+                "section_campus_filter": section_campus_filter,
+                "seat_filter": payload.seat_filter,
+                "skip_attribute_filter": skip_attribute_filter,
+                "attribute_descs": attribute_descs if not skip_attribute_filter else [],
             },
         ).fetchall()
 
@@ -387,6 +436,86 @@ async def discover_fit_sections(
             )
             for r in rows
         ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.post(
+    "/{term_code}/fit-section-attribute-options",
+    summary="/discover/{term_code}/fit-section-attribute-options",
+)
+async def discover_fit_section_attribute_options(
+    request: Request,
+    term_code: str,
+    payload: FitSectionAttributeOptionsRequest,
+    db: Session = Depends(get_session),
+) -> List[str]:
+    """
+    Distinct section attribute descriptions for the given courses in a term.
+    Used to populate schedule-fit filters after an initial candidate list is loaded.
+    """
+    try:
+        keys = [k for k in payload.course_keys if k and str(k).strip()]
+        if not keys:
+            return []
+
+        query = text(
+            """
+            SELECT DISTINCT sad.attribute_desc
+            FROM section_attributes_detailed sad
+            JOIN sections s ON s.id = sad.section_id
+            WHERE s.term_code = :term_code
+              AND (s.dept || '-' || s.course_number) = ANY(:course_keys)
+              AND sad.attribute_desc IS NOT NULL
+              AND TRIM(sad.attribute_desc) <> ''
+            ORDER BY 1
+            LIMIT 500
+            """
+        )
+        rows = db.execute(
+            query,
+            {"term_code": term_code, "course_keys": keys},
+        ).fetchall()
+        return [str(r.attribute_desc) for r in rows if r.attribute_desc]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.post(
+    "/{term_code}/fit-section-campus-options",
+    summary="/discover/{term_code}/fit-section-campus-options",
+)
+async def discover_fit_section_campus_options(
+    request: Request,
+    term_code: str,
+    payload: FitSectionCampusOptionsRequest,
+    db: Session = Depends(get_session),
+) -> List[str]:
+    """
+    Distinct section.campus values for the given courses (e.g. College Station vs Galveston).
+    """
+    try:
+        keys = [k for k in payload.course_keys if k and str(k).strip()]
+        if not keys:
+            return []
+
+        query = text(
+            """
+            SELECT DISTINCT TRIM(s.campus) AS campus
+            FROM sections s
+            WHERE s.term_code = :term_code
+              AND (s.dept || '-' || s.course_number) = ANY(:course_keys)
+              AND s.campus IS NOT NULL
+              AND TRIM(s.campus) <> ''
+            ORDER BY 1
+            LIMIT 100
+            """
+        )
+        rows = db.execute(
+            query,
+            {"term_code": term_code, "course_keys": keys},
+        ).fetchall()
+        return [str(r.campus) for r in rows if r.campus]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 

@@ -152,6 +152,10 @@ def _send_push(sub_row: Any, payload: str) -> tuple[str, bool]:
         return sub_row.endpoint, False
 
 
+# Seat-alert taps open College Scheduler (PWA SW routes all notification clicks there).
+_COLLEGE_SCHEDULER_TERMS_URL = "https://tamu.collegescheduler.com/terms"
+
+
 def _build_payload(row: Any) -> str:
     return json.dumps(
         {
@@ -160,7 +164,7 @@ def _build_payload(row: Any) -> str:
                 f"{row.dept} {row.course_number}.{row.section_number} "
                 f"({row.course_title}) just opened up!"
             ),
-            "url": f"/sections/{row.term_code}",
+            "url": _COLLEGE_SCHEDULER_TERMS_URL,
             "crn": row.crn,
             "sectionId": row.section_id,
         }

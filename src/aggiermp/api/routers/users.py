@@ -387,7 +387,7 @@ async def send_test_notification(
     message = {
         "title": "AggieSB+ Test Alert",
         "body": "If you see this, push notifications are working on this device.",
-        "url": "/",
+        "url": "https://tamu.collegescheduler.com/terms",
     }
 
     try:
