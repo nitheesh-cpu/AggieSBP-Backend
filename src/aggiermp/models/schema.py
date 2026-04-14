@@ -249,6 +249,9 @@ TABLE_NAMES = {
     "reviews": "reviews",
     "review_tags": "review_tags",
     "summaries": "summaries",
+    "user_schedules": "user_schedules",
+    "user_tracked_sections": "user_tracked_sections",
+    "user_subscriptions": "user_subscriptions",
 }
 
 # Model mapping for type checking

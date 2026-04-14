@@ -86,7 +86,8 @@ init(
                     )
                 ] if settings.google_oauth_client_id else []
             )
-        )
+        ),
+        dashboard.init()
     ]
 )
 
@@ -290,19 +291,17 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # ty
 # Add timeout middleware (must be added before other middleware)
 app.add_middleware(TimeoutMiddleware, timeout=REQUEST_TIMEOUT_SECONDS)
 
-# Add SuperTokens middleware
+# SuperTokens must run inside CORS (order: outermost first — last added runs first)
 app.add_middleware(get_middleware())
 
-# CORS middleware — must include every frontend origin that uses credentials
-# (production, localhost, Vercel previews, etc.). Browsers only allow one
-# Access-Control-Allow-Origin value matching the request Origin.
-def _build_cors_origins() -> list[str]:
-    origins: list[str] = []
+
+def _build_cors_origins() -> List[str]:
+    origins: List[str] = []
     primary = (settings.supertokens_website_domain or "").strip()
     if primary:
         origins.append(primary.rstrip("/"))
     extra = getattr(settings, "cors_origins_extra", "") or ""
-    for part in extra.split(","):
+    for part in str(extra).split(","):
         o = part.strip().rstrip("/")
         if o and o not in origins:
             origins.append(o)

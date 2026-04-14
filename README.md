@@ -5,6 +5,7 @@ A comprehensive data collection and analysis system for Texas A&M University pro
 [![courses upsert](https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M.svg)](https://cronitor.io)
 [![gpa upsert](https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo.svg)](https://cronitor.io)
 [![sections upsert](https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4.svg)](https://cronitor.io)
+![sections watcher](https://cronitor.io/badges/FnepfT/production/zqE7gN84msH6qtSME2AqAYzXWVs.svg)
 
 ## 🚀 Features
 
@@ -13,16 +14,19 @@ A comprehensive data collection and analysis system for Texas A&M University pro
 - **Database Management** — PostgreSQL-based storage with SQLAlchemy ORM
 - **Data Analysis** — AI-powered summarization and insights generation
 - **API Endpoints** — RESTful API for accessing collected data
+- **Auth (SuperTokens)** — Sign-in, sessions, and JWT for the web app and extension; protected routes use `verify_session`
+- **Seat alerts (Section Watcher)** — Users track sections via API; a scheduled **section watcher** reads `user_tracked_sections` and section open status, then sends **Web Push** when a seat opens
 
 ## 🏗️ Architecture Flow
 
 ```mermaid
 graph TD
     %% -- Styling --
-    classDef external fill:#f9f,stroke:#333,stroke-width:2px;
-    classDef storage fill:#fff,stroke:#333,stroke-dasharray: 5 5;
-    classDef client fill:#bbf,stroke:#333,stroke-width:2px;
-
+    classDef external fill:#f9f,stroke:#333,stroke-width:2px,color:#fff;
+    classDef storage fill:#555,stroke:#333,stroke-dasharray: 5 5,color:#fff;
+    classDef client fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff;
+    classDef default fill:#333,color:#fff,stroke:#111;
+    
     %% -- Entities --
     User["TAMU Student (Browser)"]:::client
 
@@ -42,17 +46,22 @@ graph TD
         end
     end
 
-    subgraph ServiceLayer ["Application & Auth Layer"]
+    subgraph AuthLayer ["Auth (SuperTokens)"]
+        SuperTokens["SuperTokens — sessions, email/password, JWT"]:::auth
+    end
+
+    subgraph ServiceLayer ["Application Layer"]
         FastAPI["AggieSB+ API (FastAPI/Python)"]
     end
 
     subgraph WorkerLayer ["Data Pipelines (Scheduled)"]
         Scrapers["Scraper Workers (TAMU, RMP, GPA)"]
+        SectionWatcher["Section Watcher — seat-open alerts + Web Push"]
     end
 
     subgraph StorageLayer ["Storage Layer"]
         PostgreSQL[(PostgreSQL Main DB)]:::storage
-        Redis[(Redis Cache)]:::storage
+        Redis[(Redis — cache + tracked CRNs)]:::storage
     end
 
     %% -- Connections --
@@ -62,18 +71,30 @@ graph TD
     User -->|Uses| Popup
     ContentScript -.->|Injects UI into| User
 
-    %% Clients to Backend
+    %% Auth: sign-in and protected API
+    User -->|Sign in / account| NextJS
+    NextJS <-->|Auth APIs| SuperTokens
+    FastAPI <-->|verify_session + recipe| SuperTokens
+
+    %% Clients to Backend (REST; tracking requires session)
     NextJS <-->|REST| FastAPI
     Popup <-->|Fetch Stats| FastAPI
     ContentScript <-->|Fetch Prof Metrics| FastAPI
+    NextJS -->|Track section alerts| FastAPI
+    ContentScript -->|Seat alerts| FastAPI
 
     %% Backend logic
     FastAPI <-->|SQL Queries| PostgreSQL
-    FastAPI <-->|Cache Lookups| Redis
+    FastAPI <-->|Cache / tracking sets| Redis
 
     %% Pipeline Flow
     Scrapers -.->|Scrape / Download| ExternalSources
     Scrapers -->|ETL / Upsert| PostgreSQL
+
+    %% Section watcher: watches user_tracked_sections + sections.is_open → push
+    SectionWatcher -->|Active watches + section status| PostgreSQL
+    SectionWatcher -->|Optional Redis coordination| Redis
+    SectionWatcher -.->|Web Push when seat opens| User
 ```
 
 ## 📁 Project Structure
@@ -82,7 +103,7 @@ graph TD
 AggieRMP/
 ├── 📁 src/aggiermp/           # Main source code
 │   ├── 📁 api/                # API endpoints and routes
-│   ├── 📁 collectors/         # Data collection scripts
+│   ├── 📁 collectors/         # Data collection + section_watcher (seat alerts)
 │   ├── 📁 database/           # Database models and operations
 │   ├── 📁 models/             # Pydantic data models
 │   ├── 📁 core/               # Core utilities and configuration
@@ -163,9 +184,10 @@ python src/aggiermp/main.py
 
 | Pipeline        | Status                                                                                                          |
 | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| Sections Upsert | ![sections upsert](https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4/detailed.svg)       |
-| GPA Upsert      | ![gpa upsert](https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo/detailed.svg)            |
-| Courses Upsert  | ![courses upsert](https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M/detailed.svg)        |
+| Sections Upsert | <img width="50%" src="https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4/detailed.svg" alt="sections upsert" />       |
+| GPA Upsert      | <img width="50%" src="https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo/detailed.svg" alt="gpa upsert" />            |
+| Courses Upsert  | <img width="50%" src="https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M/detailed.svg" alt="courses upsert" />        |
+| Sections Watcher| <img width="50%" src="https://cronitor.io/badges/FnepfT/production/zqE7gN84msH6qtSME2AqAYzXWVs/detailed.svg" alt="sections watcher" />      |
 
 ## 📝 Contributing
 

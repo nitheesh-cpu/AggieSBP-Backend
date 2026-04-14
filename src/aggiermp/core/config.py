@@ -1,4 +1,4 @@
-"""
+﻿"""
 Configuration management for AggieRMP application.
 """
 
