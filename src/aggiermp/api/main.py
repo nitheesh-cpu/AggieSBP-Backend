@@ -6090,5 +6090,4 @@ async def cache_clear() -> Dict[str, Any]:
 
 # Force reload for UCC stats update
 app.include_router(users_router)
-app.include_router(ai_worker_router)
 app.include_router(discover_router)
