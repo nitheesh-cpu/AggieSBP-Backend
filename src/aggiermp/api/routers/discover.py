@@ -7,6 +7,7 @@ from ...core.cache import cached, TTL_WEEK
 from pydantic import BaseModel
 from fastapi import Request
 import math
+import json
 
 router: APIRouter = APIRouter(prefix="/discover")
 
@@ -91,6 +92,28 @@ class TermDepartment(BaseModel):
     name: str
 
 
+class ScheduleBlockInput(BaseModel):
+    days: List[str]
+    start: str
+    end: str
+
+
+class DiscoverFitRequest(BaseModel):
+    course_keys: List[str]
+    schedule_blocks: List[ScheduleBlockInput]
+    campus: Optional[str] = None
+
+
+class DiscoverFitCourseMatch(BaseModel):
+    course_key: str
+    dept: str
+    course_number: str
+    course_title: str
+    compatible_section_count: int
+    sample_section_id: Optional[str] = None
+    sample_crn: Optional[str] = None
+
+
 @router.get(
     "/{term_code}/departments",
     summary="/discover/{term_code}/departments",
@@ -115,6 +138,147 @@ async def discover_term_departments(
         return [
             TermDepartment(code=row.dept, name=row.dept_desc or row.dept)
             for row in result
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.post(
+    "/{term_code}/fit-sections",
+    summary="/discover/{term_code}/fit-sections",
+)
+async def discover_fit_sections(
+    request: Request,
+    term_code: str,
+    payload: DiscoverFitRequest,
+    db: Session = Depends(get_session),
+) -> List[DiscoverFitCourseMatch]:
+    """
+    Fast schedule-fit check for a batch of candidate courses.
+    Uses SQL-side conflict detection to avoid N+1 section requests.
+    """
+    try:
+        if not payload.course_keys:
+            return []
+        if not payload.schedule_blocks:
+            return []
+
+        schedule_json = json.dumps(
+            [
+                {
+                    "days": b.days,
+                    "start_t": b.start,
+                    "end_t": b.end,
+                }
+                for b in payload.schedule_blocks
+            ]
+        )
+
+        query = text(
+            """
+            WITH user_schedule AS (
+                SELECT
+                    unnest(days) AS day,
+                    start_t::time AS start_t,
+                    end_t::time AS end_t
+                FROM jsonb_to_recordset(CAST(:schedule_json AS jsonb))
+                    AS x(days text[], start_t text, end_t text)
+            ),
+            candidate_sections AS (
+                SELECT
+                    s.id,
+                    s.crn,
+                    s.dept,
+                    s.course_number,
+                    s.course_title
+                FROM sections s
+                WHERE s.term_code = :term_code
+                  AND (s.dept || '-' || s.course_number) = ANY(:course_keys)
+                  AND (:campus IS NULL OR s.campus = :campus)
+            ),
+            meeting_times AS (
+                SELECT
+                    cs.id AS section_id,
+                    cs.dept,
+                    cs.course_number,
+                    cs.course_title,
+                    cs.crn,
+                    sm.days_of_week,
+                    CASE
+                        WHEN sm.begin_time IS NULL OR TRIM(sm.begin_time) = '' THEN NULL
+                        WHEN TRIM(sm.begin_time) ~* '(AM|PM)$'
+                            THEN TO_TIMESTAMP(TRIM(sm.begin_time), 'HH12:MI AM')::time
+                        WHEN TRIM(sm.begin_time) ~ '^[0-9]{2}:[0-9]{2}$'
+                            THEN TRIM(sm.begin_time)::time
+                        ELSE NULL
+                    END AS section_start,
+                    CASE
+                        WHEN sm.end_time IS NULL OR TRIM(sm.end_time) = '' THEN NULL
+                        WHEN TRIM(sm.end_time) ~* '(AM|PM)$'
+                            THEN TO_TIMESTAMP(TRIM(sm.end_time), 'HH12:MI AM')::time
+                        WHEN TRIM(sm.end_time) ~ '^[0-9]{2}:[0-9]{2}$'
+                            THEN TRIM(sm.end_time)::time
+                        ELSE NULL
+                    END AS section_end
+                FROM candidate_sections cs
+                JOIN section_meetings sm ON sm.section_id = cs.id
+            ),
+            conflicting_sections AS (
+                SELECT DISTINCT mt.section_id
+                FROM meeting_times mt
+                JOIN user_schedule us
+                  ON us.day = ANY(mt.days_of_week)
+                WHERE mt.section_start IS NOT NULL
+                  AND mt.section_end IS NOT NULL
+                  AND mt.section_start < us.end_t
+                  AND mt.section_end > us.start_t
+            ),
+            compatible_sections AS (
+                SELECT DISTINCT
+                    cs.id,
+                    cs.crn,
+                    cs.dept,
+                    cs.course_number,
+                    cs.course_title
+                FROM candidate_sections cs
+                LEFT JOIN conflicting_sections cf ON cf.section_id = cs.id
+                WHERE cf.section_id IS NULL
+            )
+            SELECT
+                (dept || '-' || course_number) AS course_key,
+                dept,
+                course_number,
+                MIN(course_title) AS course_title,
+                COUNT(*)::int AS compatible_section_count,
+                MIN(id) AS sample_section_id,
+                MIN(crn) AS sample_crn
+            FROM compatible_sections
+            GROUP BY dept, course_number
+            ORDER BY dept, course_number
+            """
+        )
+
+        rows = db.execute(
+            query,
+            {
+                "term_code": term_code,
+                "course_keys": payload.course_keys,
+                "schedule_json": schedule_json,
+                "campus": payload.campus,
+            },
+        ).fetchall()
+
+        return [
+            DiscoverFitCourseMatch(
+                course_key=str(r.course_key),
+                dept=str(r.dept),
+                course_number=str(r.course_number),
+                course_title=str(r.course_title),
+                compatible_section_count=int(r.compatible_section_count or 0),
+                sample_section_id=str(r.sample_section_id) if r.sample_section_id else None,
+                sample_crn=str(r.sample_crn) if r.sample_crn else None,
+            )
+            for r in rows
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
