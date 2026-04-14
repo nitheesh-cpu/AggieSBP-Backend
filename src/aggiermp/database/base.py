@@ -479,6 +479,9 @@ class UserSubscriptionDB(Base):
     endpoint = Column(Text, nullable=False)
     p256dh = Column(String, nullable=False)
     auth = Column(String, nullable=False)
+    device_name = Column(String, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.now)
     created_at = Column(DateTime, nullable=False, default=datetime.now)
 
     def __repr__(self) -> str:
