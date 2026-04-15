@@ -305,7 +305,12 @@ def _build_cors_origins() -> List[str]:
         o = part.strip().rstrip("/")
         if o and o not in origins:
             origins.append(o)
-    for loc in ("http://localhost:3000", "http://127.0.0.1:3000"):
+    for loc in (
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://localhost:3000",
+        "https://127.0.0.1:3000",
+    ):
         if loc not in origins:
             origins.append(loc)
     # Never use ["*"] with allow_credentials=True — browsers will block it.
@@ -362,24 +367,31 @@ _cors_origins = _build_cors_origins()
 _cors_kwargs = dict(
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["Content-Type"] + get_all_cors_headers(),
+    allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH", "HEAD"],
+    allow_headers=["Content-Type", "Authorization"] + get_all_cors_headers(),
+)
+# Local dev: http(s) + localhost / 127.0.0.1 / IPv6 loopback, any port.
+_LOCAL_ORIGIN_REGEX = (
+    r"^http://localhost(:\d+)?$"
+    r"|^http://127\.0\.0\.1(:\d+)?$"
+    r"|^https://localhost(:\d+)?$"
+    r"|^https://127\.0\.0\.1(:\d+)?$"
+    r"|^http://\[::1\](:\d+)?$"
+    r"|^https://\[::1\](:\d+)?$"
 )
 # Vercel preview deployments use unique subdomains; regex allows them without
 # listing each preview URL in env.
 if getattr(settings, "cors_allow_vercel_previews", False):
     _cors_kwargs["allow_origin_regex"] = (
-        r"^https://.*\.vercel\.app$|^http://localhost(:\d+)?$|^http://127\.0\.0\.1(:\d+)?$"
+        r"^https://.*\.vercel\.app$|" + _LOCAL_ORIGIN_REGEX
     )
 else:
-    _cors_kwargs["allow_origin_regex"] = (
-        r"^http://localhost(:\d+)?$|^http://127\.0\.0\.1(:\d+)?$"
-    )
+    _cors_kwargs["allow_origin_regex"] = _LOCAL_ORIGIN_REGEX
 
-app.add_middleware(CORSMiddleware, **_cors_kwargs)
-
-# Add GZip middleware
+# GZip before CORS so CORSMiddleware is outermost: OPTIONS preflight must not
+# pass through GZipResponder (can confuse the browser with CORS failures).
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 
 # Redis lifecycle events

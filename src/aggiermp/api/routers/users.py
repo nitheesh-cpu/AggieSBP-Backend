@@ -7,6 +7,7 @@ import json
 
 from supertokens_python.recipe.session import SessionContainer
 from supertokens_python.recipe.session.framework.fastapi import verify_session
+from supertokens_python.asyncio import get_user as st_get_user
 import uuid
 from pydantic import ConfigDict
 
@@ -15,6 +16,86 @@ from ...models.schema import UserSchedule, UserTrackedSection, UserSubscription
 from ...core.notifications import NotificationService
 
 router: APIRouter = APIRouter(prefix="/users", tags=["users"])
+
+
+class SignInMethodPublic(BaseModel):
+    recipe: str
+    label: str
+    email: Optional[str] = None
+    provider: Optional[str] = None
+
+
+class AccountSummaryResponse(BaseModel):
+    user_id: str
+    emails: List[str]
+    primary_email: Optional[str] = None
+    sign_in_methods: List[SignInMethodPublic]
+
+
+def _third_party_label(third_party_id: str) -> str:
+    known = {
+        "google": "Google",
+        "github": "GitHub",
+        "apple": "Apple",
+        "facebook": "Facebook",
+    }
+    return known.get(third_party_id.lower(), third_party_id.replace("_", " ").title())
+
+
+@router.get("/me", response_model=AccountSummaryResponse)
+async def get_my_account(session: SessionContainer = Depends(verify_session())):
+    """
+    Current user's email(s) and linked sign-in methods (email/password vs Google, etc.).
+    """
+    user_id = session.get_user_id()
+    user = await st_get_user(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    methods: List[SignInMethodPublic] = []
+    for lm in user.login_methods:
+        if lm.recipe_id == "emailpassword":
+            methods.append(
+                SignInMethodPublic(
+                    recipe="emailpassword",
+                    label="Email & password",
+                    email=lm.email,
+                )
+            )
+        elif lm.recipe_id == "thirdparty" and lm.third_party is not None:
+            pid = lm.third_party.id
+            methods.append(
+                SignInMethodPublic(
+                    recipe="thirdparty",
+                    label=_third_party_label(pid),
+                    email=lm.email,
+                    provider=pid,
+                )
+            )
+        else:
+            methods.append(
+                SignInMethodPublic(
+                    recipe=str(lm.recipe_id),
+                    label=str(lm.recipe_id).replace("_", " ").title(),
+                    email=lm.email,
+                )
+            )
+
+    emails_list = list(user.emails) if user.emails else []
+    primary: Optional[str] = emails_list[0] if emails_list else None
+    if primary is None:
+        for m in methods:
+            if m.email:
+                primary = m.email
+                break
+
+    return AccountSummaryResponse(
+        user_id=user_id,
+        emails=emails_list,
+        primary_email=primary,
+        sign_in_methods=methods,
+    )
+
 
 # Request Models
 class PushSubscriptionRequest(BaseModel):
