@@ -39,7 +39,7 @@ def main() -> None:
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=10,
+        default=4,
         help="Number of parallel workers for review fetching",
     )
     parser.add_argument(
@@ -59,7 +59,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Set environment variables for performance
-    os.environ["OMP_NUM_THREADS"] = "4"
+    os.environ["OMP_NUM_THREADS"] = "2"
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
     # Default to Texas A&M University ID

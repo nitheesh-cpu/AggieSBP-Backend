@@ -4,6 +4,7 @@ Configuration management for AggieRMP application.
 
 from pathlib import Path
 from typing import Optional, Any
+from urllib.parse import quote_plus
 from pydantic import Field, AnyUrl, model_validator
 from pydantic_settings import BaseSettings  # type: ignore
 
@@ -61,6 +62,16 @@ class Settings(BaseSettings):
     google_oauth_client_id: Optional[str] = None
     google_oauth_client_secret: Optional[str] = None
 
+    # Per-user limits
+    max_tracked_sections_per_user: int = Field(20, alias="max_tracked_sections_per_user")
+
+    # Email (SMTP) for fallback notifications
+    smtp_host: Optional[str] = Field(None, alias="smtp_host")
+    smtp_port: int = Field(587, alias="smtp_port")
+    smtp_user: Optional[str] = Field(None, alias="smtp_user")
+    smtp_password: Optional[str] = Field(None, alias="smtp_password")
+    smtp_from_address: str = Field("noreply@aggiesbp.com", alias="smtp_from_address")
+
     # CORS: comma-separated extra origins (e.g. preview URLs). Production website
     # should still be set via SUPERTOKENS_WEBSITE_DOMAIN; previews need to be
     # allowed explicitly or via cors_allow_vercel_previews regex below.
@@ -84,7 +95,9 @@ class Settings(BaseSettings):
     @model_validator(mode='after')
     def assemble_db_connection(self) -> 'Settings':
         if not self.database_url:
-            self.database_url = f"postgresql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+            user = quote_plus(self.db_user)
+            password = quote_plus(self.db_password)
+            self.database_url = f"postgresql://{user}:{password}@{self.db_host}:{self.db_port}/{self.db_name}"
         return self
 
 

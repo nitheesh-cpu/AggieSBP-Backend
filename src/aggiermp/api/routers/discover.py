@@ -1,13 +1,22 @@
+import logging
+import math
+import json
 from typing import List, Optional, Dict, Any, Literal
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from ...database.base import get_session
 from ...core.cache import cached, TTL_WEEK
 from pydantic import BaseModel
-from fastapi import Request
-import math
-import json
+
+logger = logging.getLogger(__name__)
+
+
+def _db_error(e: Exception, context: str = "") -> HTTPException:
+    msg = f"DB error in {context}: {e}" if context else f"DB error: {e}"
+    logger.error(msg, exc_info=True)
+    return HTTPException(status_code=500, detail="An internal server error occurred.")
+
 
 router: APIRouter = APIRouter(prefix="/discover")
 
@@ -164,7 +173,7 @@ async def discover_term_departments(
             for row in result
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @router.post(
@@ -187,20 +196,33 @@ async def discover_ucc_fit_candidates(
             return []
 
         query = text(
-            """
-            SELECT DISTINCT
-                s.dept,
-                s.course_number,
-                s.course_title
-            FROM sections s
-            JOIN section_attributes_detailed sad
-              ON sad.section_id = s.id
-            WHERE s.term_code = :term_code
-              AND sad.attribute_desc = ANY(:categories)
-              AND (:campus IS NULL OR s.campus = :campus)
-              AND s.dept IS NOT NULL
-              AND s.course_number IS NOT NULL
-            ORDER BY s.dept, s.course_number
+            r"""
+            WITH candidate_sections AS (
+                SELECT s.dept, s.course_number, s.course_title
+                FROM sections s
+                WHERE s.term_code = :term_code
+                  AND s.attributes_text IS NOT NULL
+                  AND (:campus IS NULL OR s.campus = :campus)
+                  AND s.dept IS NOT NULL
+                  AND s.course_number IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1
+                      FROM regexp_split_to_table(s.attributes_text, '\|') AS attr
+                      WHERE TRIM(attr) = ANY(:categories)
+                  )
+            )
+            SELECT
+                cs.dept,
+                cs.course_number,
+                MAX(cs.course_title) AS course_title,
+                AVG(g.gpa)           AS avg_gpa
+            FROM candidate_sections cs
+            LEFT JOIN gpa_data g ON (
+                g.dept          = cs.dept
+                AND g.course_number = cs.course_number
+            )
+            GROUP BY cs.dept, cs.course_number
+            ORDER BY cs.dept, cs.course_number
             """
         )
 
@@ -213,53 +235,19 @@ async def discover_ucc_fit_candidates(
             },
         ).fetchall()
 
-        # Some terms are missing section_attributes_detailed rows.
-        # Fallback: infer UCC eligibility by course code from any term where
-        # attribute mappings exist, then apply to the selected term's sections.
-        if not rows:
-            fallback_query = text(
-                """
-                SELECT DISTINCT
-                    s.dept,
-                    s.course_number,
-                    s.course_title
-                FROM sections s
-                WHERE s.term_code = :term_code
-                  AND (:campus IS NULL OR s.campus = :campus)
-                  AND s.dept IS NOT NULL
-                  AND s.course_number IS NOT NULL
-                  AND EXISTS (
-                      SELECT 1
-                      FROM sections sx
-                      JOIN section_attributes_detailed sad
-                        ON sad.section_id = sx.id
-                      WHERE sx.dept = s.dept
-                        AND sx.course_number = s.course_number
-                        AND sad.attribute_desc = ANY(:categories)
-                  )
-                ORDER BY s.dept, s.course_number
-                """
-            )
-            rows = db.execute(
-                fallback_query,
-                {
-                    "term_code": term_code,
-                    "categories": categories,
-                    "campus": payload.campus,
-                },
-            ).fetchall()
-
         return [
             DiscoverFitCandidateCourse(
                 dept=str(r.dept),
                 courseNumber=str(r.course_number),
                 courseTitle=str(r.course_title or f"{r.dept} {r.course_number}"),
-                easinessScore=0.0,
+                easinessScore=round(
+                    calculate_easiness_score(float(r.avg_gpa) if r.avg_gpa else 0, 0, 0) * 100, 1
+                ),
             )
             for r in rows
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @router.post(
@@ -304,7 +292,7 @@ async def discover_fit_sections(
         )
 
         query = text(
-            """
+            r"""
             WITH user_schedule AS (
                 SELECT
                     unnest(days) AS day,
@@ -342,9 +330,8 @@ async def discover_fit_sections(
                       CAST(:skip_attribute_filter AS boolean) IS TRUE
                       OR EXISTS (
                           SELECT 1
-                          FROM section_attributes_detailed sad_attr
-                          WHERE sad_attr.section_id = s.id
-                            AND sad_attr.attribute_desc = ANY(:attribute_descs)
+                          FROM regexp_split_to_table(s.attributes_text, '\|') AS attr
+                          WHERE TRIM(attr) = ANY(:attribute_descs)
                       )
                   )
             ),
@@ -437,7 +424,7 @@ async def discover_fit_sections(
             for r in rows
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @router.post(
@@ -460,14 +447,14 @@ async def discover_fit_section_attribute_options(
             return []
 
         query = text(
-            """
-            SELECT DISTINCT sad.attribute_desc
-            FROM section_attributes_detailed sad
-            JOIN sections s ON s.id = sad.section_id
+            r"""
+            SELECT DISTINCT TRIM(attr) AS attribute_desc
+            FROM sections s,
+                 regexp_split_to_table(s.attributes_text, '\|') AS attr
             WHERE s.term_code = :term_code
               AND (s.dept || '-' || s.course_number) = ANY(:course_keys)
-              AND sad.attribute_desc IS NOT NULL
-              AND TRIM(sad.attribute_desc) <> ''
+              AND s.attributes_text IS NOT NULL
+              AND TRIM(attr) <> ''
             ORDER BY 1
             LIMIT 500
             """
@@ -478,7 +465,7 @@ async def discover_fit_section_attribute_options(
         ).fetchall()
         return [str(r.attribute_desc) for r in rows if r.attribute_desc]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @router.post(
@@ -517,7 +504,7 @@ async def discover_fit_section_campus_options(
         ).fetchall()
         return [str(r.campus) for r in rows if r.campus]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @router.get(
@@ -533,24 +520,53 @@ async def discover_ucc_courses(
     grouped by category and ordered by easiness score.
     """
     try:
-        query = text("""
-            WITH gpa_agg AS (
-                SELECT 
-                    dept,
-                    course_number,
-                    professor,
-                    AVG(gpa) as avg_gpa,
-                    SUM(grade_a + grade_b)::float / NULLIF(SUM(total_students), 0) * 100 as percent_ab,
-                    SUM(total_students) as total_students
-                FROM gpa_data
-                GROUP BY dept, course_number, professor
+        query = text(r"""
+            WITH ucc_sections AS (
+                SELECT s.id, s.dept, s.course_number, s.course_title, s.credit_hours,
+                       s.attributes_text
+                FROM sections s
+                WHERE s.term_code = :term_code
+                  AND s.attributes_text IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1
+                      FROM regexp_split_to_table(s.attributes_text, '\|') AS t(v)
+                      WHERE TRIM(t.v) = ANY(:ucc_attributes)
+                  )
+            ),
+            ucc_pairs AS (
+                SELECT DISTINCT
+                    TRIM(ucc_cat.v) AS attribute_desc,
+                    us.dept,
+                    us.course_number,
+                    us.course_title,
+                    us.credit_hours,
+                    si.instructor_name
+                FROM ucc_sections us
+                CROSS JOIN LATERAL regexp_split_to_table(us.attributes_text, '\|') AS ucc_cat(v)
+                LEFT JOIN section_instructors si ON us.id = si.section_id
+                WHERE TRIM(ucc_cat.v) = ANY(:ucc_attributes)
+            ),
+            ucc_depts AS (
+                SELECT DISTINCT dept FROM ucc_pairs
+            ),
+            gpa_agg AS (
+                SELECT
+                    g.dept,
+                    g.course_number,
+                    g.professor,
+                    AVG(g.gpa) as avg_gpa,
+                    SUM(g.grade_a + g.grade_b)::float / NULLIF(SUM(g.total_students), 0) * 100 as percent_ab,
+                    SUM(g.total_students) as total_students
+                FROM gpa_data g
+                JOIN ucc_depts ud ON g.dept = ud.dept
+                GROUP BY g.dept, g.course_number, g.professor
             )
             SELECT DISTINCT
-                sad.attribute_desc,
-                s.dept,
-                s.course_number,
-                s.course_title,
-                s.credit_hours,
+                up.attribute_desc,
+                up.dept,
+                up.course_number,
+                up.course_title,
+                up.credit_hours,
                 p.id as professor_id,
                 p.first_name,
                 p.last_name,
@@ -561,24 +577,23 @@ async def discover_ucc_courses(
                 g.avg_gpa,
                 g.percent_ab,
                 g.total_students as gpa_student_count
-            FROM sections s
-            JOIN section_attributes_detailed sad ON s.id = sad.section_id
-            JOIN section_instructors si ON s.id = si.section_id
-            JOIN professors p ON (
-                si.instructor_name ILIKE p.first_name || '%' 
-                AND si.instructor_name ILIKE '%' || p.last_name
+            FROM ucc_pairs up
+            LEFT JOIN professors p ON (
+                up.instructor_name IS NOT NULL
+                AND up.instructor_name ILIKE p.first_name || '%%'
+                AND up.instructor_name ILIKE '%%' || p.last_name
             )
             LEFT JOIN professor_summaries_new psn ON (
-                p.id = psn.professor_id 
-                AND psn.course_code = s.dept || s.course_number
+                p.id IS NOT NULL
+                AND p.id = psn.professor_id
+                AND psn.course_code = up.dept || up.course_number
             )
             LEFT JOIN gpa_agg g ON (
-                g.dept = s.dept
-                AND g.course_number = s.course_number
-                AND g.professor ILIKE p.last_name || '%'
+                p.id IS NOT NULL
+                AND g.dept = up.dept
+                AND g.course_number = up.course_number
+                AND g.professor ILIKE p.last_name || '%%'
             )
-            WHERE s.term_code = :term_code
-              AND sad.attribute_desc = ANY(:ucc_attributes)
         """)
 
         result = db.execute(
@@ -618,9 +633,9 @@ async def discover_ucc_courses(
                         confidence * 100, 1
                     ),  # Convert to 0-100 scale
                     "professor": {
-                        "id": row.professor_id,
-                        "firstName": row.first_name,
-                        "lastName": row.last_name,
+                        "id": row.professor_id or "TBA",
+                        "firstName": row.first_name or "TBA",
+                        "lastName": row.last_name or "",
                         "avgRating": round(avg_rating, 2),
                         "avgDifficulty": round(avg_difficulty, 2),
                         "totalRatings": total_reviews,
@@ -655,7 +670,7 @@ async def discover_ucc_courses(
         return response
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @router.get(
@@ -694,13 +709,11 @@ async def discover_dept_courses(
             extra_filters.append("s.campus ILIKE :campus")
             params["campus"] = f"%{campus}%"
 
-        where_extra = ""
-        if extra_filters:
-            where_extra = " AND " + " AND ".join(extra_filters)
-
-        query = text(f"""
+        # extra_filters contains only literal conditions built from validated inputs
+        # (no user data is interpolated — campus uses a bound param :campus)
+        query = text("""
             WITH gpa_agg AS (
-                SELECT 
+                SELECT
                     dept,
                     course_number,
                     professor,
@@ -708,6 +721,7 @@ async def discover_dept_courses(
                     SUM(grade_a + grade_b)::float / NULLIF(SUM(total_students), 0) * 100 as percent_ab,
                     SUM(total_students) as total_students
                 FROM gpa_data
+                WHERE dept = :dept_code
                 GROUP BY dept, course_number, professor
             )
             SELECT DISTINCT
@@ -726,24 +740,27 @@ async def discover_dept_courses(
                 g.percent_ab,
                 g.total_students as gpa_student_count
             FROM sections s
-            JOIN section_instructors si ON s.id = si.section_id
-            JOIN professors p ON (
-                si.instructor_name ILIKE p.first_name || '%' 
-                AND si.instructor_name ILIKE '%' || p.last_name
+            LEFT JOIN section_instructors si ON s.id = si.section_id
+            LEFT JOIN professors p ON (
+                si.instructor_name IS NOT NULL
+                AND si.instructor_name ILIKE p.first_name || '%%'
+                AND si.instructor_name ILIKE '%%' || p.last_name
             )
             LEFT JOIN professor_summaries_new psn ON (
-                p.id = psn.professor_id 
+                p.id IS NOT NULL
+                AND p.id = psn.professor_id
                 AND psn.course_code = s.dept || s.course_number
             )
             LEFT JOIN gpa_agg g ON (
-                g.dept = s.dept
+                p.id IS NOT NULL
+                AND g.dept = s.dept
                 AND g.course_number = s.course_number
-                AND g.professor ILIKE p.last_name || '%'
+                AND g.professor ILIKE p.last_name || '%%'
             )
             WHERE s.term_code = :term_code
               AND s.dept = :dept_code
-              {where_extra}
-        """)
+        """ + ((" AND " + " AND ".join(extra_filters)) if extra_filters else "")
+        )
 
         result = db.execute(query, params)
 
@@ -769,9 +786,9 @@ async def discover_dept_courses(
                     "easinessScore": round(easiness * 100, 1),
                     "confidenceScore": round(confidence * 100, 1),
                     "professor": {
-                        "id": row.professor_id,
-                        "firstName": row.first_name,
-                        "lastName": row.last_name,
+                        "id": row.professor_id or "TBA",
+                        "firstName": row.first_name or "TBA",
+                        "lastName": row.last_name or "",
                         "avgRating": round(avg_rating, 2),
                         "avgDifficulty": round(avg_difficulty, 2),
                         "totalRatings": total_reviews,
@@ -791,4 +808,4 @@ async def discover_dept_courses(
         return [UccCourseDiscovery(**c) for c in courses]
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)

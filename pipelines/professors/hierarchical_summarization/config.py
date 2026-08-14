@@ -12,7 +12,7 @@ SUMMARIZATION_MODEL = "facebook/bart-large-cnn"
 
 # Batch sizes
 EMBEDDING_BATCH_SIZE = 64
-SUMMARIZATION_BATCH_SIZE = 4
+SUMMARIZATION_BATCH_SIZE = 2
 
 # Clustering parameters
 HDBSCAN_MIN_CLUSTER_SIZE = 3
@@ -28,7 +28,7 @@ EMBEDDINGS_CACHE_DIR = os.path.join(CACHE_DIR, "embeddings")
 SUMMARIES_CACHE_DIR = os.path.join(CACHE_DIR, "summaries")
 
 # Performance settings
-OMP_NUM_THREADS = int(os.getenv("OMP_NUM_THREADS", "4"))
+OMP_NUM_THREADS = int(os.getenv("OMP_NUM_THREADS", "2"))
 TOKENIZERS_PARALLELISM = os.getenv("TOKENIZERS_PARALLELISM", "true")
 
 # Cluster types to identify

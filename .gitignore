@@ -70,3 +70,12 @@ htmlcov/
 scripts/
 data/
 RESTRUCTURE.md
+scratch/
+graphify-out/
+.opencode/
+.ruff_cache/
+gemini_error.json
+AGENTS.md
+gemini_test_run.py
+get_group_stats.py
+get_review_statistics.py

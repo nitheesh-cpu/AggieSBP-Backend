@@ -35,6 +35,7 @@ from ..core.cache import (
 )
 from .routers.discover import router as discover_router
 from .routers.users import router as users_router
+from .routers.professors import router as professors_router
 from ..core.config import settings
 from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
 from supertokens_python.recipe import (
@@ -78,13 +79,13 @@ init(
                             name="Google",
                             clients=[
                                 ProviderClientConfig(
-                                    client_id=str(settings.google_oauth_client_id),
-                                    client_secret=str(settings.google_oauth_client_secret),
+                                    client_id=settings.google_oauth_client_id,
+                                    client_secret=settings.google_oauth_client_secret,
                                 )
                             ]
                         )
                     )
-                ] if settings.google_oauth_client_id else []
+                ] if settings.google_oauth_client_id and settings.google_oauth_client_secret else []
             )
         ),
         dashboard.init()
@@ -260,6 +261,14 @@ class HealthCheck(BaseModel):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _db_error(e: Exception, context: str = "") -> HTTPException:
+    """Log the full exception and return a safe 500 that doesn't leak internals."""
+    msg = f"DB error in {context}: {e}" if context else f"DB error: {e}"
+    logger.error(msg, exc_info=True)
+    return HTTPException(status_code=500, detail="An internal server error occurred.")
+
+
 app = FastAPI(
     title="AggieSBP API",
     description="**Texas A&M University Course and Professor Rating API**<br>This API provides comprehensive data about Texas A&M University courses, professors, and student ratings.<br><br>**Features:**<br>- **Departments**: Browse and search university departments<br>- **Courses**: Detailed course information with GPA data and ratings<br>- **Professors**: Professor profiles with reviews and ratings<br>- **Reviews**: Student reviews and ratings for courses and professors- **Comparisons**: Compare multiple courses side by side<br><br>**Data Sources:**<br>- Rate My Professor reviews and ratings<br>- Official university GPA data<br>- Course enrollment statistics<br><br>All endpoints support filtering, pagination, and detailed search capabilities.<br>",
@@ -310,6 +319,8 @@ def _build_cors_origins() -> List[str]:
         "http://127.0.0.1:3000",
         "https://localhost:3000",
         "https://127.0.0.1:3000",
+        # Extension content script on Howdy needs to POST to local dev server
+        "https://howdy.tamu.edu",
     ):
         if loc not in origins:
             origins.append(loc)
@@ -366,6 +377,10 @@ def _normalize_days_of_week(value: Any) -> list[str]:
 _cors_origins = _build_cors_origins()
 _cors_kwargs = dict(
     allow_origins=_cors_origins,
+    # Also allow requests from the browser extension (origin = chrome-extension://<id>
+    # or moz-extension://<id>). The ID is unpredictable so we use regex.
+    # Starlette echoes back the matched origin rather than "*", so credentials work.
+    allow_origin_regex=r"(chrome-extension|moz-extension)://[a-z0-9]+",
     allow_credentials=True,
     allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH", "HEAD"],
     allow_headers=["Content-Type", "Authorization"] + get_all_cors_headers(),
@@ -687,7 +702,7 @@ async def get_data_stats(
 
     except Exception as e:
         logger.error(f"Error in get_data_stats: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -755,7 +770,7 @@ async def get_terms(
 
     except Exception as e:
         logger.error(f"Error in get_terms: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -816,13 +831,15 @@ async def get_sections(
     Supports pagination with skip and limit parameters.
     Use limit=-1 to retrieve all sections (use with caution for large datasets).
     """
-    try:
-        # Build the query with optional limit
-        limit_clause = "" if limit == -1 else f"LIMIT {limit}"
-        offset_clause = f"OFFSET {skip}" if skip > 0 else ""
+    # Guard: cap unlimited requests to prevent full-table dumps
+    if limit == -1:
+        limit = 5000
+    if limit <= 0:
+        limit = 500
 
-        sections_query = text(f"""
-            SELECT 
+    try:
+        sections_query = text("""
+            SELECT
                 s.id,
                 s.term_code,
                 s.crn,
@@ -845,10 +862,10 @@ async def get_sections(
                 s.attributes_text
             FROM sections s
             ORDER BY s.term_code DESC, s.dept, s.course_number, s.section_number
-            {limit_clause} {offset_clause}
+            LIMIT :limit OFFSET :skip
         """)
 
-        sections_result = db.execute(sections_query)
+        sections_result = db.execute(sections_query, {"limit": limit, "skip": skip})
         section_rows = sections_result.fetchall()
 
         if not section_rows:
@@ -956,7 +973,7 @@ async def get_sections(
 
     except Exception as e:
         logger.error(f"Error in get_sections: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -1012,13 +1029,14 @@ async def get_sections_by_term(
     Term codes follow the format: YYYYSS where YYYY is year and SS is semester code.
     Example: 202611 = Spring 2026 College Station
     """
-    try:
-        # Build the query with optional limit
-        limit_clause = "" if limit == -1 else f"LIMIT {limit}"
-        offset_clause = f"OFFSET {skip}" if skip > 0 else ""
+    if limit == -1:
+        limit = 5000
+    if limit <= 0:
+        limit = 500
 
-        sections_query = text(f"""
-            SELECT 
+    try:
+        sections_query = text("""
+            SELECT
                 s.id,
                 s.term_code,
                 s.crn,
@@ -1042,10 +1060,10 @@ async def get_sections_by_term(
             FROM sections s
             WHERE s.term_code = :term_code
             ORDER BY s.dept, s.course_number, s.section_number
-            {limit_clause} {offset_clause}
+            LIMIT :limit OFFSET :skip
         """)
 
-        sections_result = db.execute(sections_query, {"term_code": term_code})
+        sections_result = db.execute(sections_query, {"term_code": term_code, "limit": limit, "skip": skip})
         section_rows = sections_result.fetchall()
 
         if not section_rows:
@@ -1157,7 +1175,7 @@ async def get_sections_by_term(
         raise
     except Exception as e:
         logger.error(f"Error in get_sections_by_term: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -1379,7 +1397,7 @@ async def get_sections_by_term_and_course(
         raise
     except Exception as e:
         logger.error(f"Error in get_sections_by_term_and_course: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -1498,7 +1516,7 @@ async def get_course_professors_by_term(
         raise
     except Exception as e:
         logger.error(f"Error in get_course_professors_by_term: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -1845,7 +1863,7 @@ async def get_course_professors_details(
         raise
     except Exception as e:
         logger.error(f"Error in get_course_professors_details: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -2083,7 +2101,7 @@ async def get_departments_info(
 
     except Exception as e:
         logger.error(f"Error in departments_info: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -2249,7 +2267,7 @@ async def get_departments(
         return departments
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -2506,7 +2524,7 @@ async def get_courses(
         return courses
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -2991,7 +3009,7 @@ async def get_course_details(
         return course_details
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -3344,7 +3362,7 @@ async def get_course_professors(
         raise
     except Exception as e:
         logger.error(f"Error in get_course_professors: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -3745,7 +3763,7 @@ async def get_course_professor_reviews(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.post(
@@ -4110,7 +4128,7 @@ async def compare_courses(
 
     except Exception as e:
         logger.error(f"Error in courses compare: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -4299,7 +4317,7 @@ async def get_professors(
 
     except Exception as e:
         logger.error(f"Error in get_professors: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -4907,7 +4925,7 @@ async def get_professor_profile(
         raise
     except Exception as e:
         logger.error(f"Error in get_professor_profile: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -5260,7 +5278,7 @@ async def get_professor_reviews(
         raise
     except Exception as e:
         logger.error(f"Error in get_professor_reviews: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -5520,7 +5538,7 @@ async def search_professors(
 
     except Exception as e:
         logger.error(f"Error in search_professors: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -6043,7 +6061,7 @@ async def compare_professors(
         raise
     except Exception as e:
         logger.error(f"Error in compare_professors: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 # if __name__ == "__main__":
@@ -6102,3 +6120,4 @@ async def cache_clear() -> Dict[str, Any]:
 # Force reload for UCC stats update
 app.include_router(users_router)
 app.include_router(discover_router)
+app.include_router(professors_router)

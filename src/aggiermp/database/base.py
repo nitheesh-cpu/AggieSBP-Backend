@@ -1,29 +1,25 @@
 from datetime import datetime
-import os
 from sqlalchemy import (
     ARRAY,
     DateTime,
+    UniqueConstraint,
     create_engine,
     Column,
     String,
     Integer,
     Float,
     Boolean,
-    select,
     text,
     ForeignKey,
-    update,
     Text,
 )
 from sqlalchemy.orm import sessionmaker, DeclarativeBase, Session as SQLAlchemySession
-from sqlalchemy.dialects.postgresql import insert, JSON
+from sqlalchemy.dialects.postgresql import insert, JSON, JSONB
 from typing import List, Any, Dict
 import logging
 
 from ..models.schema import Review, University, Professor
-from dotenv import load_dotenv
-
-load_dotenv()
+from ..core.config import settings
 
 # Configure logging for database performance monitoring
 logging.basicConfig(level=logging.INFO)
@@ -489,6 +485,10 @@ class UserSubscriptionDB(Base):
 
 
 
+# ---------------------------------------------------------------------------
+# Global engine instance for connection pooling
+# ---------------------------------------------------------------------------
+
 # Global engine instance for connection pooling
 _engine = None
 _session_factory = None
@@ -501,23 +501,18 @@ def create_db_engine() -> Any:
     if _engine is not None:
         return _engine
 
-    url = "postgresql://{0}:{1}@{2}:{3}/{4}".format(
-        os.getenv("POSTGRES_USER"),
-        os.getenv("POSTGRES_PASSWORD"),
-        os.getenv("POSTGRES_HOST"),
-        os.getenv("POSTGRES_PORT"),
-        os.getenv("POSTGRES_DATABASE"),
-    )
+    url = settings.database_url
+    if not url:
+        raise RuntimeError("database_url is not configured")
 
-    # Log connection for debugging
     logger.info("Creating database engine with connection pooling")
 
     # Create engine with connection pooling configuration
     _engine = create_engine(
         url,
         # Connection pool settings for better performance
-        pool_size=10,  # Number of persistent connections to maintain
-        max_overflow=20,  # Additional connections when pool is full
+        pool_size=5,  # Number of persistent connections to maintain
+        max_overflow=10,  # Additional connections when pool is full
         pool_timeout=30,  # Seconds to wait for connection from pool
         pool_recycle=3600,  # Recycle connections after 1 hour
         pool_pre_ping=True,  # Validate connections before use
@@ -534,7 +529,7 @@ def create_db_engine() -> Any:
     # Create tables if they don't exist
     Base.metadata.create_all(_engine)
 
-    logger.info("Database engine created with pool_size=10, max_overflow=20")
+    logger.info("Database engine created with pool_size=5, max_overflow=10")
     return _engine
 
 
@@ -625,7 +620,7 @@ def check_database_health() -> Dict[str, Any]:
 # Configuration for local vs remote database
 def get_database_config() -> Dict[str, int]:
     """Get database configuration with environment-specific optimizations"""
-    host = os.getenv("POSTGRES_HOST", "localhost")
+    host = settings.db_host
     is_local = host in ["localhost", "127.0.0.1", "::1"]
 
     if is_local:
@@ -639,8 +634,8 @@ def get_database_config() -> Dict[str, int]:
     else:
         # Remote database optimizations
         return {
-            "pool_size": 10,  # More connections for remote database
-            "max_overflow": 20,  # More overflow for network latency
+            "pool_size": 5,  # Moderate connection pool size
+            "max_overflow": 10,  # Overflow for peak latency
             "pool_timeout": 30,  # Longer timeout for network delays
             "pool_recycle": 3600,  # Shorter recycle for remote connections
         }
@@ -649,171 +644,112 @@ def get_database_config() -> Dict[str, int]:
 def upsert_universities(
     session: SQLAlchemySession, universities: List[University]
 ) -> List[dict]:
-    """
-    Upsert universities into the database.
-    Insert new records and update existing ones based on ID.
-    """
-    query_all = session.execute(select(UniversityDB))
-    all_db_universities = query_all.scalars().all()
-    insert_universities: list[dict] = []
-    update_universities: list[dict] = []
+    """Upsert universities using a single database round-trip."""
+    if not universities:
+        return []
 
-    for university in universities:
-        db_university_obj = next(
-            (x for x in all_db_universities if x.id == university.id),
-            None,
+    rows = [
+        {
+            "id": u.id,
+            "name": u.name,
+            "legacy_school_id": u.legacy_school_id,
+            "city": u.city,
+            "state": u.state,
+        }
+        for u in universities
+    ]
+
+    try:
+        stmt = insert(UniversityDB).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "name": stmt.excluded.name,
+                "legacy_school_id": stmt.excluded.legacy_school_id,
+                "city": stmt.excluded.city,
+                "state": stmt.excluded.state,
+            },
         )
-
-        if db_university_obj:
-            if (
-                db_university_obj.name != university.name
-                or db_university_obj.legacy_school_id != university.legacy_school_id
-                or db_university_obj.city != university.city
-                or db_university_obj.state != university.state
-            ):
-                update_universities.append(
-                    {
-                        "id": university.id,
-                        "name": university.name,
-                        "legacy_school_id": university.legacy_school_id,
-                        "city": university.city,
-                        "state": university.state,
-                        "updated_at": datetime.now(),
-                    }
-                )
-        else:
-            insert_universities.append(
-                {
-                    "id": university.id,
-                    "name": university.name,
-                    "legacy_school_id": university.legacy_school_id,
-                    "city": university.city,
-                    "state": university.state,
-                }
-            )
-
-    print("Number of universities to insert: ", len(insert_universities))
-    print("Number of universities to update: ", len(update_universities))
-
-    if insert_universities:
-        session.execute(insert(UniversityDB), insert_universities)
-    if update_universities:
-        session.execute(update(UniversityDB), update_universities)
-
-    session.commit()
-    return insert_universities + update_universities
+        session.execute(stmt)
+        session.commit()
+        logger.info("Upserted %d universities", len(rows))
+        return rows
+    except Exception:
+        session.rollback()
+        raise
 
 
 def upsert_professors(
     session: SQLAlchemySession, professors: List[Professor]
 ) -> List[dict]:
+    """Upsert professors using a single database round-trip.
+
+    On conflict, only updates stats when the incoming num_ratings is higher than
+    the stored value (avoids overwriting fresher data with staler data).
     """
-    Upsert professors into the database.
-    Insert new records and update existing ones based on ID.
-    """
-    # Ensure transaction is clean
-    try:
-        if session.in_transaction():
-            session.execute(text("SELECT 1"))
-    except Exception:
-        session.rollback()
+    if not professors:
+        return []
 
-    try:
-        query_all = session.execute(select(ProfessorDB))
-        all_db_profs = query_all.scalars().all()
-        insert_professors: list[dict] = []
-        update_professors: list[dict] = []
-
-        for professor in professors:
-            # Generate UUID if no ID provided
-            if not professor.id:
-                raise ValueError("Professor ID is required")
-
-            db_prof_obj = next(
-                (x for x in all_db_profs if x.id == professor.id),
-                None,
-            )
-
-            if db_prof_obj:
-                # if the new professor has more ratings, update the existing professor
-                if professor.num_ratings > db_prof_obj.num_ratings:
-                    update_professors.append(
-                        {
-                            "id": professor.id,
-                            "avg_rating": professor.avg_rating,
-                            "avg_difficulty": professor.avg_difficulty,
-                            "num_ratings": professor.num_ratings,
-                            "would_take_again_percent": professor.would_take_again_percent,
-                            "updated_at": datetime.now(),
-                        }
-                    )
-            else:
-                insert_professors.append(
-                    {
-                        "id": professor.id,
-                        "university_id": professor.university_id,
-                        "legacy_id": professor.legacy_id,
-                        "first_name": professor.first_name,
-                        "last_name": professor.last_name,
-                        "department": professor.department,
-                        "avg_rating": professor.avg_rating,
-                        "avg_difficulty": professor.avg_difficulty,
-                        "num_ratings": professor.num_ratings,
-                        "would_take_again_percent": professor.would_take_again_percent,
-                        "created_at": datetime.now(),
-                        "updated_at": datetime.now(),
-                    }
-                )
-
-        print("Number of professors to insert: ", len(insert_professors))
-        print("Number of professors to update: ", len(update_professors))
-
-        if insert_professors:
-            session.execute(insert(ProfessorDB), insert_professors)
-        if update_professors:
-            session.execute(update(ProfessorDB), update_professors)
-
-        session.commit()
-        return insert_professors + update_professors
-    except Exception:
-        try:
-            session.rollback()
-        except Exception:
-            pass
-        raise
-
-
-def upsert_reviews(session: SQLAlchemySession, reviews: List[Review]) -> List[dict]:
-    """
-    Upsert reviews into the database.
-    Insert new records and update existing ones based on ID.
-    """
-    # Ensure transaction is clean
-    try:
-        if session.in_transaction():
-            session.execute(text("SELECT 1"))
-    except Exception:
-        session.rollback()
-
-    insert_reviews: list[dict] = []
-
-    for review in reviews:
-        insert_reviews.append(
+    rows = []
+    for p in professors:
+        if not p.id:
+            raise ValueError("Professor ID is required")
+        rows.append(
             {
-                **review.model_dump(),
+                "id": p.id,
+                "university_id": p.university_id,
+                "legacy_id": p.legacy_id,
+                "first_name": p.first_name,
+                "last_name": p.last_name,
+                "department": p.department,
+                "avg_rating": p.avg_rating,
+                "avg_difficulty": p.avg_difficulty,
+                "num_ratings": p.num_ratings,
+                "would_take_again_percent": p.would_take_again_percent,
                 "created_at": datetime.now(),
                 "updated_at": datetime.now(),
             }
         )
 
     try:
-        if insert_reviews:
-            session.execute(insert(ReviewDB), insert_reviews)
-            session.commit()
-        return insert_reviews
+        stmt = insert(ProfessorDB).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "avg_rating": stmt.excluded.avg_rating,
+                "avg_difficulty": stmt.excluded.avg_difficulty,
+                "num_ratings": stmt.excluded.num_ratings,
+                "would_take_again_percent": stmt.excluded.would_take_again_percent,
+                "updated_at": stmt.excluded.updated_at,
+            },
+            where=(stmt.excluded.num_ratings > ProfessorDB.num_ratings),
+        )
+        session.execute(stmt)
+        session.commit()
+        logger.info("Upserted %d professors", len(rows))
+        return rows
     except Exception:
-        try:
-            session.rollback()
-        except Exception:
-            pass
+        session.rollback()
+        raise
+
+
+def upsert_reviews(session: SQLAlchemySession, reviews: List[Review]) -> List[dict]:
+    """Insert reviews, skipping duplicates by legacy_id."""
+    if not reviews:
+        return []
+
+    rows = [
+        review.model_dump()
+        for review in reviews
+    ]
+
+    try:
+        stmt = insert(ReviewDB).values(rows)
+        stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
+        session.execute(stmt)
+        session.commit()
+        logger.info("Upserted %d reviews", len(rows))
+        return rows
+    except Exception:
+        session.rollback()
         raise

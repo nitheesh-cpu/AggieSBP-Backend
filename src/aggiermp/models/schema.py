@@ -202,13 +202,26 @@ class Summary(BaseModel):
 
 class UserSchedule(BaseModel):
     """User Saved Schedule Model"""
-    
+
     id: Optional[UUID] = None
     user_id: str
     name: str
     term_code: str
-    courses: List[Union[str, int]] = [] # List of CRNs or Course IDs
+    courses: List[str] = []  # List of CRN strings
     created_at: Optional[datetime] = None
+
+    @field_validator("courses", mode="before")
+    @classmethod
+    def normalize_courses(cls, v: Any) -> List[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            import json as _json
+            try:
+                v = _json.loads(v)
+            except (ValueError, TypeError):
+                return []
+        return [str(item) for item in v]
 
     model_config = ConfigDict(populate_by_name=True)
 

@@ -143,11 +143,13 @@ def cached(ttl: int = TTL_STANDARD) -> Callable:
                 result = await func(*args, **kwargs)
 
                 # Store in cache - convert Pydantic models to dicts first
+                # Don't cache empty lists so stale-empty results don't persist.
                 try:
                     serializable = _serialize_for_cache(result)
-                    await redis_client.setex(
-                        cache_key, ttl, json.dumps(serializable, default=str)
-                    )
+                    if serializable != [] and serializable is not None:
+                        await redis_client.setex(
+                            cache_key, ttl, json.dumps(serializable, default=str)
+                        )
                 except (TypeError, ValueError):
                     # Result not JSON serializable, skip caching
                     pass

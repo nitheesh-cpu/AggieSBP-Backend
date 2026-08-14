@@ -99,7 +99,7 @@ def upsert_reviews_and_summaries(
     skip_if_no_new_reviews: bool = True,
     resume: bool = True,
     clear_checkpoint_on_start: bool = False,
-    max_workers: int = 10,  # Parallel review fetching
+    max_workers: int = 4,  # Parallel review fetching
     batch_size: int = 50,  # Batch size for review fetching and summarization
 ) -> Dict[str, Any]:
     """
