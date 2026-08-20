@@ -284,7 +284,7 @@ app = FastAPI(
     },
     servers=[
         {
-            "url": "https://api-aggiesbp.servehttp.com",
+            "url": "https://api-aggiesbp.nitheeshk.com",
             "description": "Production server",
         },
         {"url": "http://localhost:8000", "description": "Development server"},
