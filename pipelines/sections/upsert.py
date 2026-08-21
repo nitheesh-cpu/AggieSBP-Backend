@@ -257,8 +257,8 @@ def upsert_sections(
         instructor_records = list({r["id"]: r for r in instructor_records}.values())
         meeting_records = list({r["id"]: r for r in meeting_records}.values())
 
-        # Upsert sections in batches (batch size of 200 to stay under Postgres max bound parameter limits: 200 * 22 cols = 4400 params)
-        BATCH_SIZE = 200
+        # Upsert sections in batches
+        BATCH_SIZE = 1000
 
         if section_records:
             for i in range(0, len(section_records), BATCH_SIZE):
@@ -537,8 +537,8 @@ def upsert_section_details(
         restriction_records = list({r["id"]: r for r in restriction_records}.values())
         bookstore_records = list({r["id"]: r for r in bookstore_records}.values())
 
-        # Upsert detail types in batches (batch size of 200 to stay under Postgres max bound parameter limits)
-        BATCH_SIZE = 200
+        # Upsert detail types in batches
+        BATCH_SIZE = 1000
 
         # Upsert attributes
         if attribute_records:
