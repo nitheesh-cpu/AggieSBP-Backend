@@ -35,11 +35,22 @@ from datetime import datetime
 from typing import Any, Dict, List
 from urllib.parse import quote
 
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
+
+# Add project src to path so we can import 'aggiermp'
+project_root = Path(__file__).resolve().parent.parent.parent.parent
+src_dir = project_root / "src"
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
+# Load .env explicitly from the backend root
+env_path = project_root / ".env"
+load_dotenv(dotenv_path=env_path)
+
 from pywebpush import WebPushException, webpush
 from sqlalchemy import text
-
-load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Logging

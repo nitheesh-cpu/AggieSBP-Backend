@@ -1,4 +1,4 @@
-﻿"""
+"""
 Configuration management for AggieRMP application.
 """
 
@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     )
 
     class Config:
-        env_file = ".env"
+        env_file = str(Path(__file__).parent.parent.parent.parent / ".env")
         env_file_encoding = "utf-8"
         # Ignore extra fields like database_id, universities_collection_id etc.
         extra = "ignore"
