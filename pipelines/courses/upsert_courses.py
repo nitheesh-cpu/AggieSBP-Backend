@@ -356,6 +356,8 @@ def bulk_upsert_courses(all_courses: List[CourseSchema], batch_size: int = 1000)
             course_dict, _ = convert_course_to_dict(course, set())
             # Always set updated_at for upsert
             course_dict["updated_at"] = datetime.now()
+            all_course_dicts.append(course_dict)
+
         # Deduplicate courses by ID to prevent ON CONFLICT CardinalityViolation
         all_course_dicts = list({c["id"]: c for c in all_course_dicts}.values())
 
