@@ -250,8 +250,8 @@ def upsert_sections(
                     }
                 )
 
-        # Upsert sections in batches (larger batch size for performance)
-        BATCH_SIZE = 5000
+        # Upsert sections in batches (smaller batch size to respect Postgres 65k limit)
+        BATCH_SIZE = 1000
 
         if section_records:
             for i in range(0, len(section_records), BATCH_SIZE):
@@ -524,8 +524,8 @@ def upsert_section_details(
                     }
                 )
 
-        # Upsert all detail types with larger batch size for performance
-        BATCH_SIZE = 5000
+        # Upsert all detail types with a smaller batch size to respect Postgres 65k limit
+        BATCH_SIZE = 1000
 
         # Upsert attributes
         if attribute_records:
