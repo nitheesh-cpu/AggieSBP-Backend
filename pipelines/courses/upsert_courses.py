@@ -337,7 +337,7 @@ def convert_course_to_dict(
         return course_dict, "insert"
 
 
-def bulk_upsert_courses(all_courses: List[CourseSchema], batch_size: int = 1000) -> int:
+def bulk_upsert_courses(all_courses: List[CourseSchema], batch_size: int = 200) -> int:
     """Bulk upsert all courses to courses table using PostgreSQL ON CONFLICT."""
     session = get_session()
 
@@ -356,7 +356,8 @@ def bulk_upsert_courses(all_courses: List[CourseSchema], batch_size: int = 1000)
             course_dict, _ = convert_course_to_dict(course, set())
             # Always set updated_at for upsert
             course_dict["updated_at"] = datetime.now()
-            all_course_dicts.append(course_dict)
+        # Deduplicate courses by ID to prevent ON CONFLICT CardinalityViolation
+        all_course_dicts = list({c["id"]: c for c in all_course_dicts}.values())
 
         print(
             f"  Upserting {len(all_course_dicts)} courses in batches of {batch_size}..."
@@ -639,7 +640,7 @@ def main() -> None:
 
     # PHASE 3: Bulk upsert all courses
     print("\n7. PHASE 3: Bulk upserting all courses...")
-    total_courses = bulk_upsert_courses(all_courses, batch_size=1000)
+    total_courses = bulk_upsert_courses(all_courses, batch_size=200)
 
     # Final summary
     end_time = time.time()

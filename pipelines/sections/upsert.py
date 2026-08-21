@@ -104,6 +104,8 @@ def upsert_terms(
 
         if term_records:
             try:
+                # Deduplicate by term_code to prevent ON CONFLICT CardinalityViolation
+                term_records = list({r["term_code"]: r for r in term_records}.values())
                 stmt = insert(TermDB).values(term_records)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["term_code"],
@@ -250,8 +252,13 @@ def upsert_sections(
                     }
                 )
 
-        # Upsert sections in batches (smaller batch size to respect Postgres 65k limit)
-        BATCH_SIZE = 1000
+        # Deduplicate records by ID to prevent ON CONFLICT CardinalityViolation
+        section_records = list({r["id"]: r for r in section_records}.values())
+        instructor_records = list({r["id"]: r for r in instructor_records}.values())
+        meeting_records = list({r["id"]: r for r in meeting_records}.values())
+
+        # Upsert sections in batches (batch size of 200 to stay under Postgres max bound parameter limits: 200 * 22 cols = 4400 params)
+        BATCH_SIZE = 200
 
         if section_records:
             for i in range(0, len(section_records), BATCH_SIZE):
@@ -524,8 +531,14 @@ def upsert_section_details(
                     }
                 )
 
-        # Upsert all detail types with a smaller batch size to respect Postgres 65k limit
-        BATCH_SIZE = 1000
+        # Deduplicate detail records by ID to prevent ON CONFLICT CardinalityViolation
+        attribute_records = list({r["id"]: r for r in attribute_records}.values())
+        prereq_records = list({r["id"]: r for r in prereq_records}.values())
+        restriction_records = list({r["id"]: r for r in restriction_records}.values())
+        bookstore_records = list({r["id"]: r for r in bookstore_records}.values())
+
+        # Upsert detail types in batches (batch size of 200 to stay under Postgres max bound parameter limits)
+        BATCH_SIZE = 200
 
         # Upsert attributes
         if attribute_records:
