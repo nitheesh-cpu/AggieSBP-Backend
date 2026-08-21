@@ -22,8 +22,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Any, Dict, cast
 
-# Add parent directory to path to import modules
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# Add parent directories to path to import modules
+project_root = Path(__file__).resolve().parent.parent.parent
+src_dir = project_root / "src"
+
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
 
 from sqlalchemy import (
     Boolean,
@@ -38,7 +44,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, insert
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 
 # Import from course-catalog-scraping module (hyphenated filename)
 course_scraping_path = Path(__file__).parent / "course_catalog_scraping.py"
@@ -54,11 +60,11 @@ get_all_departments = course_catalog_scraping.get_all_departments
 get_courses_from_department = course_catalog_scraping.get_courses_from_department
 
 from dotenv import load_dotenv
+env_path = project_root / ".env"
+load_dotenv(dotenv_path=env_path)
 
 from aggiermp.database.base import create_db_engine, get_session
 from pipelines.courses.schemas import CourseSchema, DepartmentSchema
-
-load_dotenv()
 
 # Create new Base for new tables
 BaseNew: Any = declarative_base()
