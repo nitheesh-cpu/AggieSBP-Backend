@@ -1583,7 +1583,6 @@ async def get_course_professors_details(
     - otherCourseSummaries: summaries for other courses they teach
     """
     import re
-    from difflib import SequenceMatcher
     from aggiermp.database.base import (
         SectionDB,
         SectionInstructorDB,
@@ -1591,7 +1590,8 @@ async def get_course_professors_details(
         ProfessorSummaryNewDB,
         GpaDataDB,
     )
-    from sqlalchemy import func, or_
+    from aggiermp.core.name_matching import parse_person_name, professor_name_score
+    from sqlalchemy import or_
 
     try:
         # Parse course_code (e.g., "CSCE121" -> dept="CSCE", course_num="121")
@@ -1640,28 +1640,10 @@ async def get_course_professors_details(
         # Step 2: Match instructor names to professor IDs and get summaries
         result_professors = []
 
-        def normalize_name_part(value: str) -> str:
-            return re.sub(r"[^a-z]", "", value.lower())
-
-        def parse_name(full_name: str) -> tuple[str, List[str]]:
-            raw_parts = [p for p in full_name.strip().split() if p]
-            if not raw_parts:
-                return ("", [])
-            # Drop common suffixes and punctuation-only tokens.
-            suffixes = {"jr", "sr", "ii", "iii", "iv", "phd", "md"}
-            parts = [
-                normalize_name_part(p)
-                for p in raw_parts
-                if normalize_name_part(p) and normalize_name_part(p) not in suffixes
-            ]
-            if not parts:
-                return ("", [])
-            first = parts[0]
-            surname_tokens = parts[1:] if len(parts) > 1 else [parts[-1]]
-            return (first, surname_tokens)
-
         for instructor_name, sections in instructor_sections.items():
-            first_name, surname_tokens = parse_name(instructor_name)
+            parsed_instructor = parse_person_name(instructor_name)
+            first_name = parsed_instructor.given[0] if parsed_instructor.given else ""
+            surname_tokens = list(parsed_instructor.surname)
             if not surname_tokens:
                 continue
 
@@ -1683,52 +1665,17 @@ async def get_course_professors_details(
             professor = None
             best_score = 0.0
             for candidate in candidates:
-                cand_first = normalize_name_part(candidate.first_name or "")
-                cand_last = normalize_name_part(candidate.last_name or "")
-                if not cand_last:
-                    continue
-
-                last_score = max(
-                    (
-                        SequenceMatcher(None, surname_token, cand_last).ratio()
-                        for surname_token in surname_tokens
-                    ),
-                    default=0.0,
-                )
-                first_score = (
-                    SequenceMatcher(None, first_name, cand_first).ratio()
-                    if first_name and cand_first
-                    else 0.0
-                )
-                bonus = 0.0
-                if first_name and cand_first and cand_first.startswith(first_name[:1]):
-                    bonus += 0.05
-                if any(
-                    cand_last.startswith(surname_token[:3])
-                    for surname_token in surname_tokens
-                    if len(surname_token) >= 3
-                ):
-                    bonus += 0.05
-
+                candidate_name = f"{candidate.first_name} {candidate.last_name}"
+                identity_score = professor_name_score(instructor_name, candidate_name)
                 review_signal = min(float(candidate.num_ratings or 0), 50.0) / 50.0
-                score = (last_score * 0.72) + (first_score * 0.2) + bonus + (
-                    review_signal * 0.08
-                )
+                score = identity_score + (review_signal * 0.02)
                 if score > best_score:
                     best_score = score
                     professor = candidate
 
-            # Fallback to stricter lookup when candidate pool is empty.
-            if not professor:
-                fallback_token = surname_tokens[-1]
-                fallback_query = db.query(ProfessorDB).filter(
-                    ProfessorDB.last_name.ilike(f"%{fallback_token}%")
-                )
-                if first_name:
-                    fallback_query = fallback_query.filter(
-                        ProfessorDB.first_name.ilike(f"{first_name}%")
-                    )
-                professor = fallback_query.first()
+            # Avoid attaching data from a merely similar but different person.
+            if best_score < 0.82:
+                professor = None
 
             # Get overall summary for totalReviews
             overall_summary = None
@@ -1804,48 +1751,50 @@ async def get_course_professors_details(
                         "confidence": overall_summary.confidence,
                     }
 
-                # Get grade distribution for this course + professor
-                gpa_last_names: List[str] = []
-                if professor and professor.last_name:
-                    gpa_last_names.append(str(professor.last_name))
-                gpa_last_names.extend(surname_tokens)
-                gpa_last_names = [n for n in {name.strip() for name in gpa_last_names} if n]
-
-                gpa_last_name_filters = [
-                    GpaDataDB.professor.ilike(f"%{name}%") for name in gpa_last_names
-                ]
-                gpa_rows = (
-                    db.query(
-                        func.avg(GpaDataDB.gpa).label("avg_gpa"),
-                        func.sum(GpaDataDB.grade_a).label("total_a"),
-                        func.sum(GpaDataDB.grade_b).label("total_b"),
-                        func.sum(GpaDataDB.grade_c).label("total_c"),
-                        func.sum(GpaDataDB.grade_d).label("total_d"),
-                        func.sum(GpaDataDB.grade_f).label("total_f"),
-                        func.sum(GpaDataDB.total_students).label("total_students"),
-                    )
+                # Match individual GPA rows by identity. Last-name-only SQL matching
+                # can merge two instructors who happen to share a surname.
+                canonical_name = f"{professor.first_name} {professor.last_name}"
+                course_gpa_rows = (
+                    db.query(GpaDataDB)
                     .filter(
                         GpaDataDB.dept == dept,
                         GpaDataDB.course_number == course_num,
-                        or_(*gpa_last_name_filters)
-                        if gpa_last_name_filters
-                        else GpaDataDB.professor.isnot(None),
                     )
-                    .first()
+                    .all()
                 )
+                matched_gpa_rows = [
+                    row
+                    for row in course_gpa_rows
+                    if max(
+                        professor_name_score(row.professor, instructor_name),
+                        professor_name_score(row.professor, canonical_name),
+                    )
+                    >= 0.82
+                ]
+                total_students = sum(row.total_students or 0 for row in matched_gpa_rows)
 
-                if gpa_rows and gpa_rows.total_students and gpa_rows.total_students > 0:
+                if total_students > 0:
+                    gpa_students = sum(
+                        row.total_students or 0
+                        for row in matched_gpa_rows
+                        if row.gpa is not None
+                    )
+                    weighted_gpa_points = sum(
+                        (row.gpa or 0) * (row.total_students or 0)
+                        for row in matched_gpa_rows
+                        if row.gpa is not None
+                    )
                     prof_data["grades"] = {
-                        "avgGpa": round(gpa_rows.avg_gpa, 2)
-                        if gpa_rows.avg_gpa
+                        "avgGpa": round(weighted_gpa_points / gpa_students, 2)
+                        if gpa_students
                         else None,
-                        "totalStudents": gpa_rows.total_students,
+                        "totalStudents": total_students,
                         "distribution": {
-                            "A": gpa_rows.total_a or 0,
-                            "B": gpa_rows.total_b or 0,
-                            "C": gpa_rows.total_c or 0,
-                            "D": gpa_rows.total_d or 0,
-                            "F": gpa_rows.total_f or 0,
+                            "A": sum(row.grade_a or 0 for row in matched_gpa_rows),
+                            "B": sum(row.grade_b or 0 for row in matched_gpa_rows),
+                            "C": sum(row.grade_c or 0 for row in matched_gpa_rows),
+                            "D": sum(row.grade_d or 0 for row in matched_gpa_rows),
+                            "F": sum(row.grade_f or 0 for row in matched_gpa_rows),
                         },
                     }
 

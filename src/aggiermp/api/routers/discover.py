@@ -95,6 +95,46 @@ def calculate_confidence_score(total_reviews: int, gpa_student_count: int) -> fl
     return min(1.0, math.log10(total_data_points + 1) / 3.0)
 
 
+def _discover_professor_key(row: Any) -> tuple[str, str, str]:
+    """Identify one displayed course/professor combination across duplicate DB rows."""
+    first_name = " ".join(str(row.first_name or "").casefold().split())
+    last_name = " ".join(str(row.last_name or "").casefold().split())
+    display_name = f"{first_name} {last_name}".strip() or "tba"
+    return (
+        str(row.dept or "").casefold(),
+        str(row.course_number or "").casefold(),
+        display_name,
+    )
+
+
+def _discover_row_quality(row: Any) -> tuple[int, int, int, int, int]:
+    """Prefer the duplicate professor record backed by the strongest review data."""
+    total_reviews = int(row.total_reviews or 0)
+    avg_rating = float(row.avg_rating or 0)
+    avg_difficulty = float(row.avg_difficulty or 0)
+    gpa_students = int(row.gpa_student_count or 0)
+    return (
+        int(total_reviews > 0),
+        total_reviews,
+        int(avg_rating > 0),
+        int(avg_difficulty > 0),
+        gpa_students,
+    )
+
+
+def _dedupe_discover_professor_rows(rows: List[Any]) -> List[Any]:
+    """Collapse fuzzy-join duplicates before computing their easiness scores."""
+    best_rows: Dict[tuple[str, str, str], Any] = {}
+    for row in rows:
+        key = _discover_professor_key(row)
+        current = best_rows.get(key)
+        if current is None or _discover_row_quality(row) > _discover_row_quality(
+            current
+        ):
+            best_rows[key] = row
+    return list(best_rows.values())
+
+
 
 class TermDepartment(BaseModel):
     code: str
@@ -763,9 +803,10 @@ async def discover_dept_courses(
         )
 
         result = db.execute(query, params)
+        rows = _dedupe_discover_professor_rows(list(result))
 
         courses: List[Dict[str, Any]] = []
-        for row in result:
+        for row in rows:
             tags = row.common_tags[:5] if row.common_tags else []
 
             avg_gpa = float(row.avg_gpa) if row.avg_gpa else None
