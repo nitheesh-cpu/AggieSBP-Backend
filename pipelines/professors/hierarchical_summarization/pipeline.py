@@ -18,6 +18,10 @@ from pipelines.professors.hierarchical_summarization.summarizer import (
 from pipelines.professors.hierarchical_summarization.course_normalizer import (
     CourseNormalizer,
 )
+from pipelines.professors.hierarchical_summarization.ai_clients import (
+    ClusterJudgment,
+    TypeSafeReviewJudge,
+)
 from pipelines.professors.schemas import (
     ProcessedReview,
     CourseSummary,
@@ -40,6 +44,7 @@ class HierarchicalSummarizationPipeline:
         self.clusterer = ReviewClusterer()
         self.summarizer = HierarchicalSummarizer()
         self.course_normalizer = CourseNormalizer(session=session)
+        self.typesafe_judge = TypeSafeReviewJudge.from_env()
 
     def process_professor_reviews(
         self, raw_reviews: List[dict], professor_id: str
@@ -149,16 +154,60 @@ class HierarchicalSummarizationPipeline:
         course_summaries = []
 
         for course_code, clusters in course_clusters.items():
+            judgments: Dict[int, ClusterJudgment] = {}
+            if self.typesafe_judge is not None:
+                judgments = self.typesafe_judge.classify_clusters(clusters)
+
             # Identify cluster types
             cluster_types = {}
+            sentiments = {}
             for cluster_id, cluster_reviews in clusters.items():
-                cluster_type = self.clusterer.identify_cluster_type(cluster_reviews)
+                judgment = judgments.get(cluster_id)
+                cluster_type = (
+                    judgment.topic
+                    if judgment is not None
+                    else self.clusterer.identify_cluster_type(cluster_reviews)
+                )
                 cluster_types[cluster_id] = cluster_type
+                if judgment is not None:
+                    sentiments[cluster_id] = judgment.sentiment
 
             # Summarize clusters
             cluster_summaries = self.summarizer.summarize_clusters(
-                clusters, cluster_types
+                clusters, cluster_types, sentiments
             )
+
+            # Verify all generated summaries in one TypeSafe request. Unsupported
+            # prose is replaced with direct source sentences before persistence.
+            if self.typesafe_judge is not None:
+                summaries_by_id = {
+                    cluster_id: cluster_summary.summary
+                    for cluster_id, cluster_summary in zip(
+                        clusters.keys(), cluster_summaries
+                    )
+                }
+                support = self.typesafe_judge.verify_summaries(
+                    clusters, summaries_by_id
+                )
+                for cluster_id, cluster_summary in zip(
+                    clusters.keys(), cluster_summaries
+                ):
+                    probability = support.get(cluster_id)
+                    judgment = judgments.get(cluster_id)
+                    if probability is not None:
+                        if probability < self.typesafe_judge.support_threshold:
+                            cluster_summary.summary = (
+                                self.summarizer.extractive_summary(
+                                    clusters[cluster_id], max_sentences=4
+                                )
+                            )
+                            probability = 0.75
+                        topic_confidence = (
+                            judgment.topic_confidence
+                            if judgment is not None
+                            else probability
+                        )
+                        cluster_summary.confidence = min(probability, topic_confidence)
 
             # Use actual review count for this course (not just clustered reviews)
             actual_review_count = review_counts_by_course.get(course_code, 0)
@@ -172,19 +221,33 @@ class HierarchicalSummarizationPipeline:
             # Organize summaries by type
             for cluster_summary in cluster_summaries:
                 if cluster_summary.cluster_type == "teaching":
-                    course_summary.teaching = cluster_summary.summary
+                    course_summary.teaching = self._merge_summary_text(
+                        course_summary.teaching, cluster_summary.summary
+                    )
                 elif cluster_summary.cluster_type == "exams":
-                    course_summary.exams = cluster_summary.summary
+                    course_summary.exams = self._merge_summary_text(
+                        course_summary.exams, cluster_summary.summary
+                    )
                 elif cluster_summary.cluster_type == "grading":
-                    course_summary.grading = cluster_summary.summary
+                    course_summary.grading = self._merge_summary_text(
+                        course_summary.grading, cluster_summary.summary
+                    )
                 elif cluster_summary.cluster_type == "workload":
-                    course_summary.workload = cluster_summary.summary
+                    course_summary.workload = self._merge_summary_text(
+                        course_summary.workload, cluster_summary.summary
+                    )
                 elif cluster_summary.cluster_type == "personality":
-                    course_summary.personality = cluster_summary.summary
+                    course_summary.personality = self._merge_summary_text(
+                        course_summary.personality, cluster_summary.summary
+                    )
                 elif cluster_summary.cluster_type == "policies":
-                    course_summary.policies = cluster_summary.summary
+                    course_summary.policies = self._merge_summary_text(
+                        course_summary.policies, cluster_summary.summary
+                    )
                 else:
-                    course_summary.other = cluster_summary.summary
+                    course_summary.other = self._merge_summary_text(
+                        course_summary.other, cluster_summary.summary
+                    )
 
             # Calculate overall confidence
             if cluster_summaries:
@@ -251,6 +314,15 @@ class HierarchicalSummarizationPipeline:
             )
 
         return course_summaries
+
+    @staticmethod
+    def _merge_summary_text(existing: str | None, new: str) -> str:
+        """Retain multiple clusters assigned to the same semantic topic."""
+        if not existing:
+            return new
+        if new in existing:
+            return existing
+        return f"{existing} {new}"
 
     def _generate_professor_summary(
         self,
@@ -405,40 +477,7 @@ class HierarchicalSummarizationPipeline:
 
         # Cluster
         clusters = self.clusterer.cluster_reviews(processed_reviews, embeddings)
-
-        # Identify cluster types
-        cluster_types = {}
-        for cluster_id, cluster_reviews in clusters.items():
-            cluster_type = self.clusterer.identify_cluster_type(cluster_reviews)
-            cluster_types[cluster_id] = cluster_type
-
-        # Summarize clusters
-        cluster_summaries = self.summarizer.summarize_clusters(clusters, cluster_types)
-
-        # Build course summary
-        course_summary = CourseSummary(
-            course=course_code, total_reviews=len(processed_reviews)
+        summaries = self._generate_course_summaries(
+            {course_code: clusters}, {course_code: len(processed_reviews)}
         )
-
-        for cluster_summary in cluster_summaries:
-            if cluster_summary.cluster_type == "teaching":
-                course_summary.teaching = cluster_summary.summary
-            elif cluster_summary.cluster_type == "exams":
-                course_summary.exams = cluster_summary.summary
-            elif cluster_summary.cluster_type == "grading":
-                course_summary.grading = cluster_summary.summary
-            elif cluster_summary.cluster_type == "workload":
-                course_summary.workload = cluster_summary.summary
-            elif cluster_summary.cluster_type == "personality":
-                course_summary.personality = cluster_summary.summary
-            elif cluster_summary.cluster_type == "policies":
-                course_summary.policies = cluster_summary.summary
-            else:
-                course_summary.other = cluster_summary.summary
-
-        if cluster_summaries:
-            course_summary.confidence = sum(
-                cs.confidence for cs in cluster_summaries
-            ) / len(cluster_summaries)
-
-        return course_summary
+        return summaries[0]

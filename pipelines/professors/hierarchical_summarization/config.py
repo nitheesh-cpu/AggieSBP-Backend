@@ -31,6 +31,12 @@ SUMMARIES_CACHE_DIR = os.path.join(CACHE_DIR, "summaries")
 OMP_NUM_THREADS = int(os.getenv("OMP_NUM_THREADS", "2"))
 TOKENIZERS_PARALLELISM = os.getenv("TOKENIZERS_PARALLELISM", "true")
 
+# A generated summary below this evidence-support probability is replaced with
+# an extractive fallback. Tune against labeled review/summary pairs.
+TYPESAFE_SUPPORT_THRESHOLD = float(
+    os.getenv("TYPESAFE_SUPPORT_THRESHOLD", "0.72")
+)
+
 # Cluster types to identify
 CLUSTER_TYPES = [
     "teaching",

@@ -3,7 +3,7 @@ Hierarchical summarization module using BART.
 """
 
 import re
-from typing import List, Dict
+from typing import Dict, List, Mapping, Optional
 import torch
 from transformers import BartForConditionalGeneration, BartTokenizer
 
@@ -14,13 +14,31 @@ from pipelines.professors.schemas import (
     ProcessedReview,
     ClusterSummary,
 )
+from pipelines.professors.hierarchical_summarization.ai_clients import (
+    TamuAIChatClient,
+    TamuAIError,
+    TamuAIQuotaExceeded,
+)
 
 
 class HierarchicalSummarizer:
     """Generates summaries using BART in a hierarchical manner"""
 
     def __init__(self) -> None:
-        # Check CUDA availability BEFORE loading model
+        self.tamu_client = TamuAIChatClient.from_env()
+        self.tokenizer: Optional[BartTokenizer] = None
+        self.model: Optional[BartForConditionalGeneration] = None
+        self.device = torch.device("cpu")
+
+        # Avoid loading the large local model when TAMU generation is configured.
+        if self.tamu_client is None:
+            self._load_local_model()
+
+    def _load_local_model(self) -> None:
+        """Load BART lazily for local generation and API fallbacks."""
+        if self.model is not None and self.tokenizer is not None:
+            return
+
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
@@ -75,6 +93,9 @@ class HierarchicalSummarizer:
             return text
 
         try:
+            self._load_local_model()
+            assert self.tokenizer is not None
+            assert self.model is not None
             # Tokenize
             inputs = self.tokenizer(
                 text,
@@ -151,8 +172,18 @@ class HierarchicalSummarizer:
         selected = all_sentences[:max_sentences]
         return ". ".join(selected) + "." if selected else "No review text available."
 
+    def extractive_summary(
+        self, reviews: List[ProcessedReview], max_sentences: int = 3
+    ) -> str:
+        """Public evidence-preserving fallback used by the verifier."""
+        return self._extractive_summary(reviews, max_sentences=max_sentences)
+
     def summarize_cluster(
-        self, cluster_reviews: List[ProcessedReview], cluster_type: str
+        self,
+        cluster_reviews: List[ProcessedReview],
+        cluster_type: str,
+        sentiment_override: Optional[str] = None,
+        generated_summary: Optional[str] = None,
     ) -> ClusterSummary:
         """
         Summarize a single cluster of reviews.
@@ -176,8 +207,10 @@ class HierarchicalSummarizer:
         # Combine review texts (needed for sentiment analysis)
         combined_text = " ".join([review.text for review in cluster_reviews])
 
+        if generated_summary:
+            summary = generated_summary
         # For very small clusters (< 3 reviews), use extractive summarization
-        if len(cluster_reviews) < 3:
+        elif len(cluster_reviews) < 3:
             summary = self._extractive_summary(cluster_reviews, max_sentences=3)
         else:
             # Chunk if necessary (BART max input is 1024 tokens, roughly 3000-4000 chars)
@@ -205,7 +238,7 @@ class HierarchicalSummarizer:
                 )
                 summary = self._extractive_summary(cluster_reviews, max_sentences=4)
 
-        # Determine sentiment (simple heuristic)
+        # Determine sentiment. TypeSafe supplies the override when configured.
         text_lower = combined_text.lower()
         positive_words = [
             "good",
@@ -231,7 +264,9 @@ class HierarchicalSummarizer:
         positive_count = sum(1 for word in positive_words if word in text_lower)
         negative_count = sum(1 for word in negative_words if word in text_lower)
 
-        if positive_count > negative_count * 1.5:
+        if sentiment_override in {"positive", "negative", "mixed", "unclear"}:
+            sentiment = sentiment_override
+        elif positive_count > negative_count * 1.5:
             sentiment = "positive"
         elif negative_count > positive_count * 1.5:
             sentiment = "negative"
@@ -250,7 +285,10 @@ class HierarchicalSummarizer:
         )
 
     def summarize_clusters(
-        self, clusters: Dict[int, List[ProcessedReview]], cluster_types: Dict[int, str]
+        self,
+        clusters: Dict[int, List[ProcessedReview]],
+        cluster_types: Dict[int, str],
+        sentiments: Optional[Mapping[int, str]] = None,
     ) -> List[ClusterSummary]:
         """
         Summarize multiple clusters.
@@ -262,11 +300,26 @@ class HierarchicalSummarizer:
         Returns:
             List of ClusterSummary objects
         """
+        generated: Dict[int, str] = {}
+        if self.tamu_client is not None:
+            try:
+                generated = self.tamu_client.summarize_clusters(clusters, cluster_types)
+            except TamuAIQuotaExceeded:
+                raise
+            except TamuAIError as exc:
+                print(f"Warning: TAMU AI generation failed; using local BART: {exc}")
+                self._load_local_model()
+
         summaries = []
 
         for cluster_id, cluster_reviews in clusters.items():
             cluster_type = cluster_types.get(cluster_id, "other")
-            summary = self.summarize_cluster(cluster_reviews, cluster_type)
+            summary = self.summarize_cluster(
+                cluster_reviews,
+                cluster_type,
+                sentiment_override=(sentiments or {}).get(cluster_id),
+                generated_summary=generated.get(cluster_id),
+            )
             summaries.append(summary)
 
         return summaries

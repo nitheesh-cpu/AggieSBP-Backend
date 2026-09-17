@@ -104,6 +104,30 @@ export OMP_NUM_THREADS=4
 export TOKENIZERS_PARALLELISM=true
 ```
 
+### TAMU AI Chat and TypeSafe
+
+Copy `.env.example` to `.env` and provide credentials. When
+`TAMU_AI_API_KEY` and `TAMU_AI_MODEL` are set, the pipeline uses TAMU AI Chat.
+`TAMU_AI_BASE_URL` defaults to `https://chat-api.tamu.ai/openai`. The pipeline
+generates all cluster summaries for a course in one TAMU AI Chat request.
+Otherwise it uses the existing local BART model.
+
+When `TYPESAFE_API_KEY` is set, TypeSafe classifies each cluster's primary topic
+and sentiment, then checks whether the generated summary is supported by its
+source reviews. Summaries below `TYPESAFE_SUPPORT_THRESHOLD` are replaced with
+an extractive fallback. If TypeSafe is unavailable, the existing keyword and
+size-based heuristics remain active.
+
+For a quota-bounded daily run:
+
+```bash
+python -m pipelines.professors.upsert_reviews_and_summaries --max-summaries 25
+```
+
+The job checkpoints progress, stops cleanly on a TAMU HTTP 429 response, and
+can resume the next day. Scheduling at `00:10 UTC` runs just after the documented
+daily TAMU allowance reset regardless of Central daylight-saving changes.
+
 ## Example
 
 See `example_usage.py` for a complete example.

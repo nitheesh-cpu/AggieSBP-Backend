@@ -17,8 +17,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Set, Tuple, Dict, Any
 
+from dotenv import load_dotenv
+
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent.parent
+load_dotenv(project_root / ".env")
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
@@ -26,6 +29,9 @@ from aggiermp.database.base import ProfessorDB, ReviewDB, get_session, upsert_re
 from pipelines.professors.scrapers import RMPReviewCollector
 from pipelines.professors.hierarchical_summarization import (
     HierarchicalSummarizationPipeline,
+)
+from pipelines.professors.hierarchical_summarization.ai_clients import (
+    TamuAIQuotaExceeded,
 )
 from pipelines.professors.upsert import upsert_professor_summary
 
@@ -101,6 +107,7 @@ def upsert_reviews_and_summaries(
     clear_checkpoint_on_start: bool = False,
     max_workers: int = 4,  # Parallel review fetching
     batch_size: int = 50,  # Batch size for review fetching and summarization
+    max_summaries: int = 0,  # Zero means unlimited
 ) -> Dict[str, Any]:
     """
     Get new reviews and generate summaries for professors.
@@ -115,6 +122,8 @@ def upsert_reviews_and_summaries(
         clear_checkpoint_on_start: If True, clear checkpoint file at start
         max_workers: Number of parallel workers for review fetching
         batch_size: Batch size for processing professors
+        max_summaries: Maximum professor summaries to generate in this run.
+                       Zero means unlimited.
 
     Returns:
         Dictionary with results
@@ -155,8 +164,10 @@ def upsert_reviews_and_summaries(
             "reviews_added": 0,
             "summaries_generated": 0,
             "professors_skipped": 0,
+            "quota_exhausted": False,
             "errors": [],
         }
+        stop_requested = False
 
         # Pre-fetch existing review IDs for all professors (batch database query)
         print("Loading existing review IDs...")
@@ -233,6 +244,10 @@ def upsert_reviews_and_summaries(
                 professors_to_summarize = batch_professors
 
             for i, professor_id in enumerate(professors_to_summarize, 1):
+                if max_summaries and results["summaries_generated"] >= max_summaries:
+                    print(f"Reached max_summaries={max_summaries}; saving checkpoint")
+                    stop_requested = True
+                    break
                 try:
                     print(
                         f"    [{i}/{len(professors_to_summarize)}] {professor_id[:20]}...",
@@ -332,6 +347,11 @@ def upsert_reviews_and_summaries(
                     if results["professors_processed"] % 10 == 0 and use_checkpoint:
                         save_checkpoint(processed_professors)
 
+                except TamuAIQuotaExceeded as e:
+                    print(f"TAMU AI allowance exhausted: {e}")
+                    results["quota_exhausted"] = True
+                    stop_requested = True
+                    break
                 except Exception as e:
                     error_msg = f"Error processing professor {professor_id}: {e}"
                     print(f"ERROR: {e}")
@@ -346,8 +366,11 @@ def upsert_reviews_and_summaries(
             if use_checkpoint:
                 save_checkpoint(processed_professors)
 
+            if stop_requested:
+                break
+
         # Clear checkpoint on successful completion
-        if use_checkpoint:
+        if use_checkpoint and not stop_requested:
             print("Processing complete. Clearing checkpoint.")
             clear_checkpoint()
 
@@ -394,6 +417,12 @@ def main() -> None:
     parser.add_argument(
         "--professor-id", type=str, help="Process only a specific professor ID"
     )
+    parser.add_argument(
+        "--max-summaries",
+        type=int,
+        default=int(os.getenv("TAMU_AI_MAX_SUMMARIES_PER_RUN", "0")),
+        help="Stop after generating this many professor summaries (0 = unlimited)",
+    )
     args = parser.parse_args()
 
     # Set environment variables for performance
@@ -405,9 +434,12 @@ def main() -> None:
 
     result = upsert_reviews_and_summaries(
         professor_ids=professor_ids,
-        resume=(not args.no_resume and not args.force_update and not args.professor_id),
+        # Forced regeneration still needs checkpoints so a quota-limited run can
+        # continue with the next professor after the TAMU allowance resets.
+        resume=(not args.no_resume and not args.professor_id),
         clear_checkpoint_on_start=args.clear_checkpoint,
         skip_if_no_new_reviews=not args.force_update,
+        max_summaries=args.max_summaries,
     )
 
     if "error" in result:
