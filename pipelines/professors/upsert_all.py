@@ -26,6 +26,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from pipelines.professors.upsert_professors import upsert_all_professors
+from pipelines.professors.campuses import get_university_ids
 from pipelines.professors.upsert_reviews_and_summaries import (
     upsert_reviews_and_summaries,
 )
@@ -36,6 +37,7 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Complete professor pipeline workflow")
+    parser.add_argument("--university-id", help="RMP school ID, e.g. 1006 for Galveston")
     parser.add_argument(
         "--max-workers",
         type=int,
@@ -62,9 +64,7 @@ def main() -> None:
     os.environ["OMP_NUM_THREADS"] = "2"
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
-    # Default to Texas A&M University ID
-    TEXAS_AM_ID = "U2Nob29sLTEwMDM="  # Texas A&M University
-    university_id = os.getenv("UNIVERSITY_ID", TEXAS_AM_ID)
+    university_ids = get_university_ids(args.university_id)
 
     print("Starting workflow...")
     print(
@@ -73,14 +73,17 @@ def main() -> None:
 
     try:
         # Step 1: Upsert professors
-        professor_result = upsert_all_professors(university_id)
-
-        if "error" in professor_result:
-            print("ERROR: Professor upsert failed. Aborting.")
-            sys.exit(1)
+        professor_ids = []
+        for university_id in university_ids:
+            print(f"Importing campus {university_id}")
+            professor_result = upsert_all_professors(university_id)
+            if "error" in professor_result:
+                print("ERROR: Professor upsert failed. Aborting.")
+                sys.exit(1)
+            professor_ids.extend(professor_result.get("professor_ids", []))
+        professor_ids = list(dict.fromkeys(professor_ids))
 
         # Step 2: Upsert reviews and summaries (optimized with parallel fetching and batching)
-        professor_ids = professor_result.get("professor_ids")
         review_result = upsert_reviews_and_summaries(
             professor_ids=professor_ids,
             max_workers=args.max_workers,

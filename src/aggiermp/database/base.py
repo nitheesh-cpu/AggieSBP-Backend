@@ -13,7 +13,12 @@ from sqlalchemy import (
     ForeignKey,
     Text,
 )
-from sqlalchemy.orm import sessionmaker, DeclarativeBase, Session as SQLAlchemySession
+from sqlalchemy.orm import (
+    sessionmaker,
+    DeclarativeBase,
+    Session as SQLAlchemySession,
+    deferred,
+)
 from sqlalchemy.dialects.postgresql import insert, JSON, JSONB
 from typing import List, Any, Dict
 import logging
@@ -454,6 +459,14 @@ class ProfessorSummaryNewDB(Base):
     avg_difficulty = Column(Float, nullable=True)
     common_tags: Column[List[str]] = Column(ARRAY(String), nullable=True)
     tag_frequencies = Column(JSON, nullable=True)
+
+    # Structured-summary fields, added by
+    # pipelines/professors/migrations/001_structured_professor_summaries.sql.
+    # Deferred so existing whole-row queries keep working before it is applied.
+    tldr = deferred(Column(Text, nullable=True))
+    tips = deferred(Column(ARRAY(Text), nullable=True))
+    review_stats = deferred(Column(JSON, nullable=True))
+    citations = deferred(Column(JSON, nullable=True))
 
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)

@@ -32,3 +32,19 @@ def test_prefers_primary_part_of_compound_surname() -> None:
     correct = professor_name_score("Arroyo Relion, Jesus", "Jesus Arroyo")
     secondary_only = professor_name_score("Arroyo Relion, Jesus", "Jesus Relion")
     assert correct > secondary_only
+
+
+def test_de_ruiter_name_variants() -> None:
+    parsed = parse_person_name("Darryl De Ruiter")
+    assert parsed.given == ("darryl",)
+    assert parsed.surname == ("de", "ruiter")
+    for variant in ("Darryl De Ruiter", "Darryl DeRuiter", "De Ruiter, Darryl", "DE RUITER D"):
+        assert professor_name_score("Darryl De Ruiter", variant) == 1.0
+    assert not professor_names_match("Darryl De Ruiter", "David De Ruiter")
+    assert not professor_names_match("Darryl De Ruiter", "Darryl De Smith")
+
+
+def test_multiple_surname_particles_preserve_given_names() -> None:
+    parsed = parse_person_name("Maria Elena de la Cruz")
+    assert parsed.given == ("maria", "elena")
+    assert parsed.surname == ("de", "la", "cruz")

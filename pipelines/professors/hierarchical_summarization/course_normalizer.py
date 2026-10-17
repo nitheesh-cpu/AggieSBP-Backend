@@ -50,7 +50,40 @@ class CourseNormalizer:
             "FINC": "FINC",
             "ACCT": "ACCT",
             "ID": "IDIS",
+            # Student shorthand and full subject names seen in RMP course codes
+            "ASTRO": "ASTR",
+            "ASTRONOMY": "ASTR",
+            "PSYCH": "PSYC",
+            "PYSCH": "PSYC",
+            "PSYCHOLOGY": "PSYC",
+            "CHEMISTRY": "CHEM",
+            "OCHEM": "CHEM",
+            "HISTORY": "HIST",
+            "STATS": "STAT",
+            "STATISTICS": "STAT",
+            "SOCIO": "SOCI",
+            "SOCIOLOGY": "SOCI",
+            "PHYSICS": "PHYS",
+            "PHSYS": "PHYS",
+            "BIO": "BIOL",
+            "BIOLOGY": "BIOL",
+            "KINES": "KINE",
+            "ANTHRO": "ANTH",
+            "ANTHROPOLOGY": "ANTH",
+            "ENGLISH": "ENGL",
+            "POLISCI": "POLS",
+            "GOVT": "POLS",
+            "GOVERNMENT": "POLS",
+            "COMMS": "COMM",
+            "COMMUNICATIONS": "COMM",
+            "CALC": "MATH",
+            "CALCULUS": "MATH",
+            "ACCTT": "ACCT",
+            "BUSINESS": "BUSN",
         }
+        # Real department codes and "ASTRONOMY"-style full names, from the DB
+        self.department_codes: set[str] = set()
+        self.department_names: Dict[str, str] = {}
 
         # Known cross-listings (fallback if database doesn't have them)
         self.fallback_cross_listings = {
@@ -64,7 +97,44 @@ class CourseNormalizer:
         # Load cross-listings from database if session provided
         self.cross_listings: Dict[str, str] = {}  # Maps "DEPT123" -> canonical code
         if session:
+            self._load_departments_from_db(session)
             self._load_cross_listings_from_db(session)
+
+    def _load_departments_from_db(self, session: Session) -> None:
+        """Map single-word department names (e.g. ASTRONOMY) to their codes."""
+        try:
+            rows = session.execute(text("SELECT id, long_name FROM departments"))
+            for row in rows:
+                code = str(row.id).upper().strip()
+                self.department_codes.add(code)
+                name = re.sub(r"[^A-Z]", "", str(row.long_name or "").upper())
+                if name and name != code:
+                    self.department_names.setdefault(name, code)
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+
+    def normalize_department(self, dept: str) -> str:
+        """Resolve aliases, full names, and truncated full names to a code."""
+        dept = dept.upper()
+        if dept in self.dept_aliases:
+            return self.dept_aliases[dept]
+        if dept in self.department_codes:
+            return dept
+        if dept in self.department_names:
+            return self.department_names[dept]
+        if len(dept) >= 6:
+            # Truncated names such as ANTHROPOLOG; only an unambiguous prefix.
+            matches = {
+                code
+                for name, code in self.department_names.items()
+                if name.startswith(dept)
+            }
+            if len(matches) == 1:
+                return matches.pop()
+        return dept
 
     def _load_cross_listings_from_db(self, session: Session) -> None:
         """Load cross-listings from the courses table"""
@@ -215,7 +285,7 @@ class CourseNormalizer:
         dept, number = match.groups()
 
         # Normalize department name
-        normalized_dept = self.dept_aliases.get(dept, dept)
+        normalized_dept = self.normalize_department(dept)
 
         # Extract all possible course numbers (handles cases like 221222 -> [221, 222])
         course_numbers = self._extract_course_numbers(number)

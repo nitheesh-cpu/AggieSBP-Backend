@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 
 
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "phd", "md"}
+_SURNAME_PARTICLES = {"de", "del", "della", "der", "di", "du", "la", "le", "van", "von", "den", "ten", "ter"}
 
 
 def _normalize_token(value: str) -> str:
@@ -58,7 +59,11 @@ def parse_person_name(full_name: str) -> ParsedName:
     if len(parts[-1]) == 1:
         return ParsedName((parts[-1],), parts[:-1])
 
-    return ParsedName(parts[:-1], (parts[-1],))
+    surname_start = len(parts) - 1
+    # Keep particles with the surname, while preserving at least one given name.
+    while surname_start > 1 and parts[surname_start - 1] in _SURNAME_PARTICLES:
+        surname_start -= 1
+    return ParsedName(parts[:surname_start], parts[surname_start:])
 
 
 def _token_similarity(left: str, right: str) -> float:
@@ -76,15 +81,19 @@ def professor_name_score(left: str, right: str) -> float:
     if not a.surname or not b.surname:
         return 0.0
 
+    # RMP may join a compound surname that the registrar writes with spaces.
+    same_surname = "".join(a.surname) == "".join(b.surname)
+    a_surname = tuple(token for token in a.surname if token not in _SURNAME_PARTICLES) or a.surname
+    b_surname = tuple(token for token in b.surname if token not in _SURNAME_PARTICLES) or b.surname
     surname_scores = [
         _token_similarity(a_token, b_token)
-        for a_token in a.surname
-        for b_token in b.surname
+        for a_token in a_surname
+        for b_token in b_surname
     ]
-    surname_score = max(surname_scores, default=0.0)
+    surname_score = 1.0 if same_surname else max(surname_scores, default=0.0)
     if surname_score < 0.72:
         return 0.0
-    primary_surname_matches = a.surname[0] == b.surname[0]
+    primary_surname_matches = same_surname or a_surname[0] == b_surname[0]
     if not primary_surname_matches:
         # Keep compound-surname variants eligible, but prefer the primary
         # surname so "Arroyo Relion" ranks above an unrelated "Relion".

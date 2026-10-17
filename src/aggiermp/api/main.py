@@ -33,6 +33,12 @@ from ..core.cache import (
     TTL_15MIN,
     TTL_WEEK,
 )
+from .structured_summaries import (
+    STRUCTURED_SUMMARY_COLUMNS,
+    structured_course_fields,
+    structured_overall_fields,
+    structured_summary_columns_present,
+)
 from .routers.discover import router as discover_router
 from .routers.users import router as users_router
 from .routers.professors import router as professors_router
@@ -1572,6 +1578,7 @@ async def get_course_professors_details(
     term_code: str,
     course_code: str,
     db: Session = Depends(get_db_session),
+    campus: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     """
     Get comprehensive professor data for a course in a term.
@@ -1589,11 +1596,32 @@ async def get_course_professors_details(
         ProfessorDB,
         ProfessorSummaryNewDB,
         GpaDataDB,
+        TermDB,
     )
     from aggiermp.core.name_matching import parse_person_name, professor_name_score
-    from sqlalchemy import or_
+    from aggiermp.core.campuses import (
+        TEXAS_AM_ID, university_id_for_campus, campus_from_term_description,
+    )
+    from sqlalchemy import or_, func
+    from sqlalchemy.orm import undefer
+    from aggiermp.api.structured_summaries import (
+        STRUCTURED_SUMMARY_COLUMNS,
+        structured_course_fields,
+        structured_overall_fields,
+        structured_summary_columns_present,
+    )
 
     try:
+        structured = structured_summary_columns_present(db)
+        summary_options = (
+            [
+                undefer(getattr(ProfessorSummaryNewDB, column))
+                for column in STRUCTURED_SUMMARY_COLUMNS
+            ]
+            if structured
+            else []
+        )
+
         # Parse course_code (e.g., "CSCE121" -> dept="CSCE", course_num="121")
         match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", course_code.upper())
         if not match:
@@ -1605,18 +1633,28 @@ async def get_course_professors_details(
         dept = match.group(1)
         course_num = match.group(2)
         target_course_code = course_code.upper()
+        term = db.query(TermDB).filter(TermDB.term_code == term_code).first()
+        term_campus = campus_from_term_description(term.term_desc if term else None)
+        campus_filters = []
+        if campus:
+            campus_match = func.lower(func.trim(SectionDB.campus)) == campus.strip().lower()
+            if (term_campus or "").casefold() == campus.strip().casefold():
+                campus_match = or_(campus_match, SectionDB.campus.is_(None), func.trim(SectionDB.campus) == "")
+            campus_filters.append(campus_match)
 
         # Step 1: Get all instructors teaching this course in this term
         instructor_rows = (
             db.query(
                 SectionInstructorDB.instructor_name,
                 SectionDB.section_number,
+                SectionDB.campus,
             )
             .join(SectionDB, SectionInstructorDB.section_id == SectionDB.id)
             .filter(
                 SectionInstructorDB.term_code == term_code,
                 SectionDB.dept == dept,
                 SectionDB.course_number == course_num,
+                *campus_filters,
             )
             .distinct()
             .all()
@@ -1629,18 +1667,19 @@ async def get_course_professors_details(
             )
 
         # Build unique instructor names and their sections
-        instructor_sections: Dict[str, List[str]] = {}
+        instructor_sections: Dict[Tuple[str, Optional[str]], List[str]] = {}
         for row in instructor_rows:
-            name = row.instructor_name
-            if name not in instructor_sections:
-                instructor_sections[name] = []
-            if row.section_number not in instructor_sections[name]:
-                instructor_sections[name].append(row.section_number)
+            identity = (row.instructor_name, (row.campus or "").strip() or term_campus)
+            if identity not in instructor_sections:
+                instructor_sections[identity] = []
+            if row.section_number not in instructor_sections[identity]:
+                instructor_sections[identity].append(row.section_number)
 
         # Step 2: Match instructor names to professor IDs and get summaries
         result_professors = []
 
-        for instructor_name, sections in instructor_sections.items():
+        for (instructor_name, instructor_campus), sections in instructor_sections.items():
+            university_id = university_id_for_campus(instructor_campus)
             parsed_instructor = parse_person_name(instructor_name)
             first_name = parsed_instructor.given[0] if parsed_instructor.given else ""
             surname_tokens = list(parsed_instructor.surname)
@@ -1654,6 +1693,7 @@ async def get_course_professors_details(
                 if token
             ]
             prof_query = db.query(ProfessorDB)
+            prof_query = prof_query.filter(ProfessorDB.university_id == university_id)
             if surname_filters:
                 prof_query = prof_query.filter(or_(*surname_filters))
             if first_name:
@@ -1682,6 +1722,7 @@ async def get_course_professors_details(
             if professor:
                 overall_summary = (
                     db.query(ProfessorSummaryNewDB)
+                    .options(*summary_options)
                     .filter(
                         ProfessorSummaryNewDB.professor_id == professor.id,
                         ProfessorSummaryNewDB.course_code.is_(None),
@@ -1692,7 +1733,14 @@ async def get_course_professors_details(
             prof_data: Dict[str, Any] = {
                 "id": professor.id if professor else None,
                 "name": instructor_name,
+                "campus": instructor_campus,
+                "universityId": university_id,
                 "rating": professor.avg_rating if professor else None,
+                "overallRating": professor.avg_rating if professor else None,
+                "overallReviewCount": professor.num_ratings if professor else 0,
+                "rmpId": professor.legacy_id if professor else None,
+                "courseRating": None,
+                "courseReviewCount": 0,
                 "totalReviews": overall_summary.total_reviews if overall_summary else 0,
                 "courseSummary": None,
                 "overallSummary": None,
@@ -1704,6 +1752,7 @@ async def get_course_professors_details(
                 # Get ALL course summaries for this professor
                 all_course_summaries = (
                     db.query(ProfessorSummaryNewDB)
+                    .options(*summary_options)
                     .filter(
                         ProfessorSummaryNewDB.professor_id == professor.id,
                         ProfessorSummaryNewDB.course_code.isnot(None),
@@ -1715,6 +1764,7 @@ async def get_course_professors_details(
                 def format_course_summary(s: Any) -> Dict[str, Any]:
                     return {
                         "courseCode": s.course_code,
+                        "rating": s.avg_rating,
                         "teaching": s.teaching,
                         "exams": s.exams,
                         "grading": s.grading,
@@ -1724,12 +1774,15 @@ async def get_course_professors_details(
                         "other": s.other,
                         "reviewCount": s.total_reviews,
                         "confidence": s.confidence,
+                        **structured_course_fields(s, structured),
                     }
 
                 for cs in all_course_summaries:
                     if cs.course_code == target_course_code:
                         # This is the target course
                         prof_data["courseSummary"] = format_course_summary(cs)
+                        prof_data["courseRating"] = cs.avg_rating
+                        prof_data["courseReviewCount"] = cs.total_reviews
                     else:
                         prof_data["otherCourseSummaries"].append(format_course_summary(cs))
 
@@ -1749,6 +1802,7 @@ async def get_course_professors_details(
                         "consistency": overall_summary.consistency,
                         "reviewCount": overall_summary.total_reviews,
                         "confidence": overall_summary.confidence,
+                        **structured_overall_fields(overall_summary, structured),
                     }
 
                 # Match individual GPA rows by identity. Last-name-only SQL matching
@@ -1761,7 +1815,7 @@ async def get_course_professors_details(
                         GpaDataDB.course_number == course_num,
                     )
                     .all()
-                )
+                ) if university_id == TEXAS_AM_ID else []
                 matched_gpa_rows = [
                     row
                     for row in course_gpa_rows
@@ -2645,9 +2699,14 @@ async def get_course_details(
             db.execute(check_query, {"course_code": course_id.upper()}).scalar() or 0
         )
 
+        structured = professors_count > 0 and structured_summary_columns_present(db)
+        structured_select = (
+            "ps.tips, ps.review_stats, ps.citations," if structured else ""
+        )
+
         if professors_count > 0:
             # Use full RMP + grade distribution query
-            professors_query = text("""
+            professors_query = text(f"""
                 WITH latest_semester_per_prof AS (
                     SELECT 
                         gd.professor,
@@ -2680,7 +2739,8 @@ async def get_course_details(
                         SUM(gd.grade_a + gd.grade_b + gd.grade_c + gd.grade_d + gd.grade_f) as total_grades,
                         p.id as professor_id
                     FROM professors p
-                    LEFT JOIN latest_semester_per_prof lsp ON lsp.professor = UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1))
+                    LEFT JOIN latest_semester_per_prof lsp ON p.university_id = 'U2Nob29sLTEwMDM='
+                        AND lsp.professor = UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1))
                         AND lsp.rn = 1
                     LEFT JOIN gpa_data gd ON gd.professor = lsp.professor
                         AND gd.dept = lsp.dept
@@ -2698,6 +2758,9 @@ async def get_course_details(
                     ps.professor_id,
                     p.first_name || ' ' || p.last_name as name,
                     COALESCE(p.avg_rating, NULL) as rating,
+                    p.legacy_id as rmp_id,
+                    p.num_ratings as overall_review_count,
+                    ps.avg_rating as course_rating,
                     ps.total_reviews,
                     ps.confidence,
                     ps.teaching,
@@ -2706,6 +2769,7 @@ async def get_course_details(
                     ps.workload,
                     ps.personality,
                     ps.policies,
+                    {structured_select}
                     CASE 
                         WHEN pg.total_grades > 0 THEN ROUND((pg.total_a::numeric / pg.total_grades) * 100)
                         ELSE NULL
@@ -2830,6 +2894,13 @@ async def get_course_details(
             if prof.professor_id:
                 professor_data["id"] = prof.professor_id
                 professor_data["rating"] = float(prof.rating) if prof.rating else None
+                professor_data["overallRating"] = professor_data["rating"]
+                professor_data["overallReviewCount"] = int(prof.overall_review_count or 0)
+                professor_data["rmpId"] = prof.rmp_id
+                professor_data["courseRating"] = (
+                    float(prof.course_rating) if prof.course_rating is not None else None
+                )
+                professor_data["courseReviewCount"] = int(prof.total_reviews or 0)
                 professor_data["totalReviews"] = (
                     int(prof.total_reviews) if prof.total_reviews else 0
                 )
@@ -2839,6 +2910,9 @@ async def get_course_details(
 
                 # Include detailed course summary fields
                 professor_data["courseSummary"] = {
+                    "courseCode": course_id.upper(),
+                    "rating": professor_data["courseRating"],
+                    "reviewCount": professor_data["courseReviewCount"],
                     "teaching": prof.teaching if hasattr(prof, "teaching") else None,
                     "exams": prof.exams if hasattr(prof, "exams") else None,
                     "grading": prof.grading if hasattr(prof, "grading") else None,
@@ -2847,6 +2921,7 @@ async def get_course_details(
                     if hasattr(prof, "personality")
                     else None,
                     "policies": prof.policies if hasattr(prof, "policies") else None,
+                    **structured_course_fields(prof, structured),
                 }
 
             # Only include gradeDistribution if we have actual data
@@ -4685,12 +4760,15 @@ async def get_professor_profile(
             would_take_again_query, {"professor_id": professor_id}
         ).fetchone()
 
+        structured = structured_summary_columns_present(db)
+
         # Get courses taught by professor and overall tag frequencies
-        courses_query = text("""
+        courses_query = text(f"""
             SELECT 
                 ps.course_code as course_id,
                 COALESCE(c.name, 'Course Title') as course_name,
                 ps.total_reviews as reviews_count,
+                {"ps.tips," if structured else ""}
                 COALESCE(p.avg_rating, NULL) as avg_rating
             FROM professor_summaries_new ps
             LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
@@ -4713,17 +4791,19 @@ async def get_professor_profile(
                     "avg_rating": float(course.avg_rating)
                     if course.avg_rating
                     else 3.0,
+                    "tips": structured_course_fields(course, structured)["tips"],
                 }
             )
 
         # Get overall professor summary (course_code IS NULL in new schema)
-        overall_summary_query = text("""
+        overall_summary_query = text(f"""
             SELECT 
                 ps.overall_sentiment,
                 ps.strengths,
                 ps.complaints,
                 ps.consistency,
                 ps.confidence,
+                {"ps.tldr, ps.review_stats, ps.citations," if structured else ""}
                 ps.total_reviews
             FROM professor_summaries_new ps
             WHERE ps.professor_id = :professor_id
@@ -4863,6 +4943,7 @@ async def get_professor_profile(
                 "confidence": float(overall_summary_result.confidence)
                 if overall_summary_result and overall_summary_result.confidence
                 else None,
+                **structured_overall_fields(overall_summary_result, structured),
             }
             if overall_summary_result
             else None,

@@ -31,6 +31,36 @@ def generate_summary_id(professor_id: str, course_code: Optional[str] = None) ->
     return hashlib.md5(key.encode()).hexdigest()
 
 
+STRUCTURED_COLUMNS = ("tldr", "tips", "review_stats", "citations")
+_structured_columns_present: Optional[bool] = None
+
+
+def structured_columns_present(session: Any) -> bool:
+    """Whether migrations/001_structured_professor_summaries.sql was applied."""
+    global _structured_columns_present
+    if _structured_columns_present is None:
+        try:
+            rows = session.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'professor_summaries_new' "
+                    "AND column_name = ANY(:names)"
+                ),
+                {"names": list(STRUCTURED_COLUMNS)},
+            ).fetchall()
+            _structured_columns_present = len(rows) == len(STRUCTURED_COLUMNS)
+        except Exception:
+            session.rollback()
+            return False
+        if not _structured_columns_present:
+            print(
+                "Warning: professor_summaries_new lacks tldr/tips/review_stats/"
+                "citations; apply pipelines/professors/migrations/"
+                "001_structured_professor_summaries.sql to store them"
+            )
+    return _structured_columns_present
+
+
 def upsert_professor_summary(
     professor_summary: ProfessorSummary, session: Any = None
 ) -> bool:
@@ -102,6 +132,10 @@ def upsert_professor_summary(
                 "avg_difficulty": professor_summary.avg_difficulty,
                 "common_tags": professor_summary.common_tags or [],
                 "tag_frequencies": professor_summary.tag_frequencies,
+                "tldr": professor_summary.tldr,
+                "tips": [],
+                "review_stats": professor_summary.review_stats,
+                "citations": professor_summary.citations,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -136,36 +170,48 @@ def upsert_professor_summary(
                     "avg_difficulty": course_summary.avg_difficulty,
                     "common_tags": course_summary.common_tags or [],
                     "tag_frequencies": course_summary.tag_frequencies,
+                    "tldr": None,
+                    "tips": course_summary.tips or [],
+                    "review_stats": course_summary.review_stats,
+                    "citations": course_summary.citations,
                     "created_at": now,
                     "updated_at": now,
                 }
             )
+
+        update_columns = [
+            "overall_sentiment",
+            "strengths",
+            "complaints",
+            "consistency",
+            "teaching",
+            "exams",
+            "grading",
+            "workload",
+            "personality",
+            "policies",
+            "other",
+            "confidence",
+            "total_reviews",
+            "avg_rating",
+            "avg_difficulty",
+            "common_tags",
+            "tag_frequencies",
+            "updated_at",
+        ]
+        if structured_columns_present(session):
+            update_columns.extend(STRUCTURED_COLUMNS)
+        else:
+            for record in records_to_upsert:
+                for column in STRUCTURED_COLUMNS:
+                    record.pop(column, None)
 
         # Use bulk upsert for better performance
         try:
             stmt = insert(ProfessorSummaryNewDB).values(records_to_upsert)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["id"],
-                set_={
-                    "overall_sentiment": stmt.excluded.overall_sentiment,
-                    "strengths": stmt.excluded.strengths,
-                    "complaints": stmt.excluded.complaints,
-                    "consistency": stmt.excluded.consistency,
-                    "teaching": stmt.excluded.teaching,
-                    "exams": stmt.excluded.exams,
-                    "grading": stmt.excluded.grading,
-                    "workload": stmt.excluded.workload,
-                    "personality": stmt.excluded.personality,
-                    "policies": stmt.excluded.policies,
-                    "other": stmt.excluded.other,
-                    "confidence": stmt.excluded.confidence,
-                    "total_reviews": stmt.excluded.total_reviews,
-                    "avg_rating": stmt.excluded.avg_rating,
-                    "avg_difficulty": stmt.excluded.avg_difficulty,
-                    "common_tags": stmt.excluded.common_tags,
-                    "tag_frequencies": stmt.excluded.tag_frequencies,
-                    "updated_at": stmt.excluded.updated_at,
-                },
+                set_={column: stmt.excluded[column] for column in update_columns},
             )
             session.execute(stmt)
             session.commit()

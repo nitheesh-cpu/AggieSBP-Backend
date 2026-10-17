@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from ...database.base import get_session
 from ...core.cache import cached, TTL_WEEK
+from ...core.campuses import campus_university_sql
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ def calculate_confidence_score(total_reviews: int, gpa_student_count: int) -> fl
     return min(1.0, math.log10(total_data_points + 1) / 3.0)
 
 
-def _discover_professor_key(row: Any) -> tuple[str, str, str]:
+def _discover_professor_key(row: Any) -> tuple[str, str, str, str]:
     """Identify one displayed course/professor combination across duplicate DB rows."""
     first_name = " ".join(str(row.first_name or "").casefold().split())
     last_name = " ".join(str(row.last_name or "").casefold().split())
@@ -104,6 +105,7 @@ def _discover_professor_key(row: Any) -> tuple[str, str, str]:
         str(row.dept or "").casefold(),
         str(row.course_number or "").casefold(),
         display_name,
+        str(getattr(row, "university_id", "") or ""),
     )
 
 
@@ -124,7 +126,7 @@ def _discover_row_quality(row: Any) -> tuple[int, int, int, int, int]:
 
 def _dedupe_discover_professor_rows(rows: List[Any]) -> List[Any]:
     """Collapse fuzzy-join duplicates before computing their easiness scores."""
-    best_rows: Dict[tuple[str, str, str], Any] = {}
+    best_rows: Dict[tuple[str, str, str, str], Any] = {}
     for row in rows:
         key = _discover_professor_key(row)
         current = best_rows.get(key)
@@ -563,7 +565,7 @@ async def discover_ucc_courses(
         query = text(r"""
             WITH ucc_sections AS (
                 SELECT s.id, s.dept, s.course_number, s.course_title, s.credit_hours,
-                       s.attributes_text
+                       s.attributes_text, s.campus
                 FROM sections s
                 WHERE s.term_code = :term_code
                   AND s.attributes_text IS NOT NULL
@@ -580,6 +582,7 @@ async def discover_ucc_courses(
                     us.course_number,
                     us.course_title,
                     us.credit_hours,
+                    us.campus,
                     si.instructor_name
                 FROM ucc_sections us
                 CROSS JOIN LATERAL regexp_split_to_table(us.attributes_text, '\|') AS ucc_cat(v)
@@ -608,6 +611,7 @@ async def discover_ucc_courses(
                 up.course_title,
                 up.credit_hours,
                 p.id as professor_id,
+                p.university_id,
                 p.first_name,
                 p.last_name,
                 COALESCE(psn.avg_rating, p.avg_rating, 0) as avg_rating,
@@ -620,6 +624,7 @@ async def discover_ucc_courses(
             FROM ucc_pairs up
             LEFT JOIN professors p ON (
                 up.instructor_name IS NOT NULL
+                AND p.university_id = __CAMPUS_SCHOOL__
                 AND up.instructor_name ILIKE p.first_name || '%%'
                 AND up.instructor_name ILIKE '%%' || p.last_name
             )
@@ -632,9 +637,10 @@ async def discover_ucc_courses(
                 p.id IS NOT NULL
                 AND g.dept = up.dept
                 AND g.course_number = up.course_number
+                AND p.university_id = 'U2Nob29sLTEwMDM='
                 AND g.professor ILIKE p.last_name || '%%'
             )
-        """)
+        """.replace("__CAMPUS_SCHOOL__", campus_university_sql("up.campus")))
 
         result = db.execute(
             query, {"term_code": term_code, "ucc_attributes": UCC_ATTRIBUTES}
@@ -770,6 +776,7 @@ async def discover_dept_courses(
                 s.course_title,
                 s.credit_hours,
                 p.id as professor_id,
+                p.university_id,
                 p.first_name,
                 p.last_name,
                 COALESCE(psn.avg_rating, p.avg_rating, 0) as avg_rating,
@@ -783,6 +790,7 @@ async def discover_dept_courses(
             LEFT JOIN section_instructors si ON s.id = si.section_id
             LEFT JOIN professors p ON (
                 si.instructor_name IS NOT NULL
+                AND p.university_id = __CAMPUS_SCHOOL__
                 AND si.instructor_name ILIKE p.first_name || '%%'
                 AND si.instructor_name ILIKE '%%' || p.last_name
             )
@@ -795,11 +803,12 @@ async def discover_dept_courses(
                 p.id IS NOT NULL
                 AND g.dept = s.dept
                 AND g.course_number = s.course_number
+                AND p.university_id = 'U2Nob29sLTEwMDM='
                 AND g.professor ILIKE p.last_name || '%%'
             )
             WHERE s.term_code = :term_code
               AND s.dept = :dept_code
-        """ + ((" AND " + " AND ".join(extra_filters)) if extra_filters else "")
+        """.replace("__CAMPUS_SCHOOL__", campus_university_sql("s.campus")) + ((" AND " + " AND ".join(extra_filters)) if extra_filters else "")
         )
 
         result = db.execute(query, params)

@@ -3,6 +3,7 @@ Clustering module using HDBSCAN for semantic grouping.
 """
 
 import numpy as np
+import logging
 from typing import List, Dict
 import hdbscan
 
@@ -12,6 +13,8 @@ from pipelines.professors.hierarchical_summarization.config import (
     CLUSTER_KEYWORDS,
 )
 from pipelines.professors.schemas import ProcessedReview
+
+logger = logging.getLogger(__name__)
 
 
 class ReviewClusterer:
@@ -61,13 +64,26 @@ class ReviewClusterer:
                 clusters[label] = []
             clusters[label].append(review)
 
-        print(f"Found {len(clusters)} clusters, {len(noise_reviews)} noise points")
+        logger.debug(
+            "Found %d clusters and %d noise points", len(clusters), len(noise_reviews)
+        )
 
-        # Fallback: if no clusters found, put all reviews (including noise) into cluster 0
-        # This ensures we still generate summaries for small review sets
+        # Never discard outliers. They often contain minority opinions that are
+        # important to a faithful review summary. Keep them in one explicit
+        # cluster so they are represented without creating one request per item.
         if not clusters and noise_reviews:
             clusters[0] = noise_reviews
-            print(f"  -> Fallback: using all {len(noise_reviews)} reviews as single cluster")
+            logger.debug(
+                "Using all %d reviews as one fallback cluster", len(noise_reviews)
+            )
+        elif noise_reviews:
+            noise_cluster_id = max(clusters) + 1
+            clusters[noise_cluster_id] = noise_reviews
+            logger.debug(
+                "Preserving %d outliers in cluster %d",
+                len(noise_reviews),
+                noise_cluster_id,
+            )
 
         return clusters
 

@@ -2,6 +2,14 @@
 
 A comprehensive data collection and analysis system for Texas A&M University professor ratings, grade distributions, and course information.
 
+Professor imports include College Station (RMP school 1003) and Galveston (1006)
+by default. Each campus is stored as its own university; professor identities and
+RMP profile IDs are preserved. To import Galveston alone, run
+`python -m pipelines.professors.upsert_professors --university-id 1006`.
+For reviews and summaries as well, use
+`python -m pipelines.professors.upsert_all --university-id 1006`.
+An explicit `UNIVERSITY_ID` environment setting still selects a single campus.
+
 [![courses upsert](https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M.svg)](https://cronitor.io)
 [![gpa upsert](https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo.svg)](https://cronitor.io)
 [![sections upsert](https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4.svg)](https://cronitor.io)

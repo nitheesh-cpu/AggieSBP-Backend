@@ -54,102 +54,61 @@ class RMPReviewCollector:
     def get_all_professors(
         self, university_id: str, limit: int = 1000
     ) -> List[Professor]:
-        """Fetches all professors from Texas A&M University"""
-        professors = []
-        response = self.session.post(
-            "https://www.ratemyprofessors.com/graphql",
-            headers=self.headers,
-            cookies=self.cookies,
-            json={
-                "query": 'query TeacherSearchResultsPageQuery(\n  $query: TeacherSearchQuery!\n  $schoolID: ID\n  $includeSchoolFilter: Boolean!\n) {\n  search: newSearch {\n    ...TeacherSearchPagination_search_1ZLmLD\n  }\n  school: node(id: $schoolID) @include(if: $includeSchoolFilter) {\n    __typename\n    ... on School {\n      name\n      ...StickyHeaderContent_school\n    }\n    id\n  }\n}\n\nfragment CardFeedback_teacher on Teacher {\n  wouldTakeAgainPercent\n  avgDifficulty\n}\n\nfragment CardName_teacher on Teacher {\n  firstName\n  lastName\n}\n\nfragment CardSchool_teacher on Teacher {\n  department\n  school {\n    name\n    id\n  }\n}\n\nfragment CompareSchoolLink_school on School {\n  legacyId\n}\n\nfragment HeaderDescription_school on School {\n  name\n  city\n  state\n  legacyId\n  ...RateSchoolLink_school\n  ...CompareSchoolLink_school\n}\n\nfragment HeaderRateButton_school on School {\n  ...RateSchoolLink_school\n  ...CompareSchoolLink_school\n}\n\nfragment RateSchoolLink_school on School {\n  legacyId\n}\n\nfragment StickyHeaderContent_school on School {\n  name\n  ...HeaderDescription_school\n  ...HeaderRateButton_school\n}\n\nfragment TeacherBookmark_teacher on Teacher {\n  id\n  isSaved\n}\n\nfragment TeacherCard_teacher on Teacher {\n  id\n  legacyId\n  avgRating\n  numRatings\n  ...CardFeedback_teacher\n  ...CardSchool_teacher\n  ...CardName_teacher\n  ...TeacherBookmark_teacher\n}\n\nfragment TeacherSearchPagination_search_1ZLmLD on newSearch {\n  teachers(query: $query, first: 8, after: "") {\n    didFallback\n    edges {\n      cursor\n      node {\n        ...TeacherCard_teacher\n        id\n        __typename\n      }\n    }\n    pageInfo {\n      hasNextPage\n      endCursor\n    }\n    resultCount\n    filters {\n      field\n      options {\n        value\n        id\n      }\n    }\n  }\n}\n',
-                "variables": {
-                    "query": {
-                        "text": "",
-                        "schoolID": university_id,
-                        "fallback": True,
-                    },
-                    "schoolID": university_id,
-                    "count": limit,
-                    "includeSchoolFilter": True,
-                },
-            },
-        )
-        data = (
-            response.json()
-            .get("data", {})
-            .get("search", {})
-            .get("teachers", {})
-            .get("edges", [])
-        )
-        more_data = (
-            response.json()
-            .get("data", {})
-            .get("search", {})
-            .get("teachers", {})
-            .get("pageInfo", {})
-            .get("hasNextPage", False)
-        )
-        cursor = (
-            response.json()
-            .get("data", {})
-            .get("search", {})
-            .get("teachers", {})
-            .get("pageInfo", {})
-            .get("endCursor", "")
-        )
-        professors = [
-            Professor(**edge["node"], university_id=university_id) for edge in data
-        ]
-
-        while more_data:
+        """Fetch a campus's professors without cross-school fallback results."""
+        query = """
+        query CampusProfessors($count: Int!, $cursor: String, $query: TeacherSearchQuery!) {
+          search: newSearch {
+            teachers(query: $query, first: $count, after: $cursor) {
+              edges { node {
+                id legacyId firstName lastName department avgRating numRatings
+                avgDifficulty wouldTakeAgainPercent school { id }
+              } }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+        """
+        professors = {}
+        cursor = None
+        seen_cursors = set()
+        while True:
             response = self.session.post(
-                "https://www.ratemyprofessors.com/graphql",
+                self.url,
                 headers=self.headers,
                 cookies=self.cookies,
                 json={
-                    "query": "query TeacherSearchPaginationQuery(\n  $count: Int!\n  $cursor: String\n  $query: TeacherSearchQuery!\n) {\n  search: newSearch {\n    ...TeacherSearchPagination_search_1jWD3d\n  }\n}\n\nfragment CardFeedback_teacher on Teacher {\n  wouldTakeAgainPercent\n  avgDifficulty\n}\n\nfragment CardName_teacher on Teacher {\n  firstName\n  lastName\n}\n\nfragment CardSchool_teacher on Teacher {\n  department\n  school {\n    name\n    id\n  }\n}\n\nfragment TeacherBookmark_teacher on Teacher {\n  id\n  isSaved\n}\n\nfragment TeacherCard_teacher on Teacher {\n  id\n  legacyId\n  avgRating\n  numRatings\n  ...CardFeedback_teacher\n  ...CardSchool_teacher\n  ...CardName_teacher\n  ...TeacherBookmark_teacher\n}\n\nfragment TeacherSearchPagination_search_1jWD3d on newSearch {\n  teachers(query: $query, first: $count, after: $cursor) {\n    didFallback\n    edges {\n      cursor\n      node {\n        ...TeacherCard_teacher\n        id\n        __typename\n      }\n    }\n    pageInfo {\n      hasNextPage\n      endCursor\n    }\n    resultCount\n    filters {\n      field\n      options {\n        value\n        id\n      }\n    }\n  }\n}\n",
+                    "query": query,
                     "variables": {
-                        "count": limit,
+                        "count": min(max(limit, 1), 100),
                         "cursor": cursor,
                         "query": {
-                            "text": "",
-                            "schoolID": university_id,
-                            "fallback": True,
+                            "text": "", "schoolID": university_id, "fallback": False,
                         },
                     },
                 },
+                timeout=30,
             )
-            data = (
-                response.json()
-                .get("data", {})
-                .get("search", {})
-                .get("teachers", {})
-                .get("edges", [])
-            )
-            more_data = (
-                response.json()
-                .get("data", {})
-                .get("search", {})
-                .get("teachers", {})
-                .get("pageInfo", {})
-                .get("hasNextPage", False)
-            )
-            cursor = (
-                response.json()
-                .get("data", {})
-                .get("search", {})
-                .get("teachers", {})
-                .get("pageInfo", {})
-                .get("endCursor", "")
-            )
-            professors.extend(
-                [
-                    Professor(**edge["node"], university_id=university_id)
-                    for edge in data
-                ]
-            )
+            response.raise_for_status()
+            body = response.json()
+            if body.get("errors"):
+                raise ValueError("RMP campus professor query returned GraphQL errors")
+            teachers = body["data"]["search"]["teachers"]
+            for edge in teachers["edges"]:
+                node = edge["node"]
+                if node.get("school", {}).get("id") != university_id:
+                    continue
+                professor = Professor(**node, university_id=university_id)
+                professors[professor.id] = professor
+            page = teachers["pageInfo"]
+            if page["hasNextPage"] is False:
+                return list(professors.values())
+            if page["hasNextPage"] is not True:
+                raise ValueError("Invalid RMP campus professor pagination")
+            cursor = page.get("endCursor")
+            if not cursor or cursor in seen_cursors:
+                raise ValueError("RMP campus professor pagination did not advance")
+            seen_cursors.add(cursor)
             print(f"Collected {len(professors)} professors")
-        return professors
 
     def get_professor(self, professor_name: str, university_id: str) -> Professor:
         """Returns the professor details for a given professor name"""

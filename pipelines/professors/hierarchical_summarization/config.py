@@ -21,6 +21,8 @@ HDBSCAN_MIN_SAMPLES = 2
 # Preprocessing parameters
 MIN_REVIEW_LENGTH = 8  # words
 DEDUPLICATION_SIMILARITY_THRESHOLD = 0.95
+SUMMARY_SIMILARITY_THRESHOLD = float(os.getenv("SUMMARY_SIMILARITY_THRESHOLD", "0.72"))
+SUMMARY_MAX_ITEMS_PER_TOPIC = int(os.getenv("SUMMARY_MAX_ITEMS_PER_TOPIC", "2"))
 
 # Cache directories
 CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
@@ -33,9 +35,9 @@ TOKENIZERS_PARALLELISM = os.getenv("TOKENIZERS_PARALLELISM", "true")
 
 # A generated summary below this evidence-support probability is replaced with
 # an extractive fallback. Tune against labeled review/summary pairs.
-TYPESAFE_SUPPORT_THRESHOLD = float(
-    os.getenv("TYPESAFE_SUPPORT_THRESHOLD", "0.72")
-)
+TYPESAFE_SUPPORT_THRESHOLD = float(os.getenv("TYPESAFE_SUPPORT_THRESHOLD", "0.72"))
+TYPESAFE_TOPIC_THRESHOLD = float(os.getenv("TYPESAFE_TOPIC_THRESHOLD", "0.62"))
+TYPESAFE_RISK_THRESHOLD = float(os.getenv("TYPESAFE_RISK_THRESHOLD", "0.55"))
 
 # Cluster types to identify
 CLUSTER_TYPES = [

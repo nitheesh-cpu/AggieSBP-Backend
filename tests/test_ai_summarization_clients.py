@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+import requests
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -9,6 +11,7 @@ from pipelines.professors.hierarchical_summarization.ai_clients import (
     TamuAIQuotaExceeded,
     TypeSafeReviewJudge,
 )
+from pipelines.professors.schemas import SummaryClaim
 
 
 class FakeResponse:
@@ -19,7 +22,7 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise RuntimeError("request failed")
+            raise requests.HTTPError("request failed")
 
     def json(self):
         return self._body
@@ -27,59 +30,116 @@ class FakeResponse:
 
 class FakeSession:
     def __init__(self, response):
-        self.response = response
+        self.responses = response if isinstance(response, list) else [response]
         self.calls = []
 
     def post(self, url, **kwargs):
         self.calls.append((url, kwargs))
-        return self.response
+        return self.responses[min(len(self.calls) - 1, len(self.responses) - 1)]
 
 
-def make_review(text):
-    return SimpleNamespace(text=text)
+def make_review(text, review_id="review-1"):
+    return SimpleNamespace(text=text, review_id=review_id)
 
 
 class TamuAIChatClientTests(unittest.TestCase):
-    def test_batches_clusters_and_parses_json(self):
-        content = (
-            '{"clusters": [{"cluster_id": "2", '
-            '"summary": "Exams closely follow the study guides."}]}'
+    @patch.object(ai_clients.time, "sleep")
+    def test_timeout_recovers(self, sleep):
+        client = self.make_client(FakeResponse(200, {}))
+        response = FakeResponse(
+            200, {"choices": [{"message": {"content": '{"clusters": []}'}}]}
         )
-        session = FakeSession(
-            FakeResponse(200, {"choices": [{"message": {"content": content}}]})
-        )
-        client = TamuAIChatClient(
-            api_key="secret",
-            base_url="https://example.test/v1",
-            model="test-model",
-            session=session,
+        with patch.object(
+            client._injected_session,
+            "post",
+            side_effect=[requests.Timeout("timeout"), response],
+        ):
+            self.assertEqual(client._post([]), {"clusters": []})
+        self.assertEqual(client.requests_made, 2)
+
+    def make_client(self, responses, **kwargs):
+        return TamuAIChatClient(
+            api_key="test",
+            base_url="https://example.test",
+            model="test",
+            session=FakeSession(responses),
+            **kwargs,
         )
 
-        result = client.summarize_clusters(
-            {2: [make_review("The exams closely followed the study guide.")]},
-            {2: "exams"},
+    @patch.object(ai_clients.time, "sleep")
+    def test_transient_server_error_recovers_before_fallback(self, sleep):
+        client = self.make_client(
+            [
+                FakeResponse(500, {}),
+                FakeResponse(
+                    200, {"choices": [{"message": {"content": '{"clusters": []}'}}]}
+                ),
+            ]
         )
+        self.assertEqual(client._post([]), {"clusters": []})
+        self.assertEqual(client.requests_made, 2)
+        self.assertEqual(client.retries_made, 1)
+        sleep.assert_called_once_with(1)
 
-        self.assertEqual(result, {2: "Exams closely follow the study guides."})
-        self.assertEqual(
-            session.calls[0][0], "https://example.test/v1/chat/completions"
-        )
-        request = session.calls[0][1]["json"]
-        self.assertEqual(request["model"], "test-model")
-        self.assertNotIn("response_format", request)
+    @patch.object(ai_clients.time, "sleep")
+    def test_retries_are_bounded(self, sleep):
+        client = self.make_client(FakeResponse(503, {}))
+        with self.assertRaises(TamuAIError):
+            client._post([])
+        self.assertEqual(client.requests_made, 3)
 
-    def test_treats_429_as_daily_quota_stop(self):
-        client = TamuAIChatClient(
-            api_key="secret",
-            base_url="https://example.test/v1",
-            model="test-model",
-            session=FakeSession(FakeResponse(429, {})),
-        )
+    def test_auth_errors_do_not_retry(self):
+        client = self.make_client(FakeResponse(401, {}))
+        with self.assertRaises(TamuAIError):
+            client._post([])
+        self.assertEqual(client.requests_made, 1)
 
-        with self.assertRaises(TamuAIQuotaExceeded):
-            client.summarize_clusters(
-                {0: [make_review("Useful review text.")]}, {0: "other"}
+    def test_quota_stops_subsequent_requests(self):
+        client = self.make_client(FakeResponse(429, {}))
+        for _ in range(2):
+            with self.assertRaises(TamuAIQuotaExceeded):
+                client._post([])
+        self.assertEqual(client.requests_made, 1)
+
+    def test_budget_is_atomic_under_concurrency(self):
+        client = self.make_client(FakeResponse(200, {}), max_requests=3)
+
+        def consume(_):
+            try:
+                client._consume_request_budget()
+                return True
+            except TamuAIQuotaExceeded:
+                return False
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            self.assertEqual(sum(pool.map(consume, range(50))), 3)
+        self.assertEqual(client.requests_made, 3)
+
+    def test_length_finish_reason_is_reported_as_truncation(self):
+        client = self.make_client(
+            FakeResponse(
+                200,
+                {
+                    "choices": [
+                        {
+                            "message": {"content": '{"clusters": []}'},
+                            "finish_reason": "length",
+                        }
+                    ]
+                },
             )
+        )
+        with self.assertRaisesRegex(ai_clients.TamuAIInvalidJSON, "token limit"):
+            client._post([])
+
+    def test_empty_verification_does_not_construct_sdk_client(self):
+        with patch.object(ai_clients, "TypeSafeClient") as sdk:
+            judge = TypeSafeReviewJudge()
+            self.assertEqual(judge.verify_claims({}, {}), {})
+            self.assertEqual(judge.verify_claims({1: []}, {1: []}), {})
+            self.assertEqual(judge.classify_clusters({}), {})
+            self.assertEqual(judge.verify_summaries({}, {}), {})
+            sdk.assert_not_called()
 
     def test_enforces_local_request_budget(self):
         session = FakeSession(
@@ -96,9 +156,9 @@ class TamuAIChatClientTests(unittest.TestCase):
             session=session,
         )
 
-        client.summarize_clusters({}, {})
+        client._post([])
         with self.assertRaises(TamuAIQuotaExceeded):
-            client.summarize_clusters({}, {})
+            client._post([])
 
     def test_rejects_non_json_model_output(self):
         session = FakeSession(
@@ -112,12 +172,12 @@ class TamuAIChatClientTests(unittest.TestCase):
         )
 
         with self.assertRaises(TamuAIError):
-            client.summarize_clusters({}, {})
+            client._post([])
 
     def test_parses_tamu_sse_fallback(self):
         sse = "\n".join(
             [
-                'data: {"choices":[{"delta":{"content":"{\\\"clusters\\\":"}}]}',
+                'data: {"choices":[{"delta":{"content":"{\\"clusters\\":"}}]}',
                 'data: {"choices":[{"delta":{"content":"[]}"}}]}',
                 "data: [DONE]",
             ]
@@ -130,7 +190,7 @@ class TamuAIChatClientTests(unittest.TestCase):
             session=session,
         )
 
-        self.assertEqual(client.summarize_clusters({}, {}), {})
+        self.assertEqual(client._post([]), {"clusters": []})
         request = session.calls[0][1]
         self.assertFalse(request["json"]["stream"])
         self.assertEqual(request["params"], {"bypass_filter": "false"})
@@ -177,8 +237,8 @@ class TypeSafeReviewJudgeTests(unittest.TestCase):
         self.assertEqual(result[4].topic, "teaching")
         self.assertEqual(result[4].sentiment, "positive")
         self.assertAlmostEqual(result[4].topic_confidence, 0.91)
-        self.assertEqual(
-            set(FakeTypeSafeClient.last_questions), {"topic_4", "sentiment_4"}
+        self.assertTrue(
+            {"topic_4", "sentiment_4"}.issubset(FakeTypeSafeClient.last_questions)
         )
 
     @patch.object(ai_clients, "Noul", FakeQuestion)
@@ -198,6 +258,55 @@ class TypeSafeReviewJudgeTests(unittest.TestCase):
         self.assertEqual(
             FakeTypeSafeClient.last_state["clusters"]["1"]["summary"],
             "The course used weekly quizzes.",
+        )
+
+    @patch.object(ai_clients, "Noul", FakeQuestion)
+    @patch.object(ai_clients, "Score", FakeQuestion)
+    @patch.object(ai_clients, "TypeSafeClient", FakeTypeSafeClient)
+    def test_verifies_each_claim_independently(self):
+        FakeTypeSafeClient.response = SimpleNamespace(
+            choices={
+                "claim_topic_1_0": SimpleNamespace(choice="exams", confidence=0.9)
+            },
+            nouls={
+                "claim_supported_1_0": SimpleNamespace(noul=0.93),
+                "claim_overgeneralized_1_0": SimpleNamespace(noul=0.12),
+                "claim_erases_disagreement_1_0": SimpleNamespace(noul=0.08),
+                "claim_positive_1_0": SimpleNamespace(noul=0.91),
+                "claim_negative_1_0": SimpleNamespace(noul=0.06),
+                "claim_mixed_1_0": SimpleNamespace(noul=0.04),
+            },
+            scores={
+                "claim_importance_1_0": SimpleNamespace(score=3.4, confidence=0.82)
+            },
+        )
+        judge = TypeSafeReviewJudge()
+        claim = SummaryClaim(
+            text="Weekly quizzes were used.",
+            topic="exams",
+            evidence_review_ids=["review-1"],
+        )
+
+        result = judge.verify_claims(
+            {1: [make_review("Weekly quizzes were used.")]}, {1: [claim]}
+        )
+
+        self.assertAlmostEqual(result[(1, 0)].support_probability, 0.93)
+        self.assertAlmostEqual(result[(1, 0)].overgeneralization_probability, 0.12)
+        self.assertEqual(result[(1, 0)].topic, "exams")
+        self.assertEqual(result[(1, 0)].sentiment, "positive")
+        self.assertAlmostEqual(result[(1, 0)].importance, 3.4)
+
+    def test_combines_independent_claim_valence_without_forcing_a_side(self):
+        self.assertEqual(
+            TypeSafeReviewJudge._claim_sentiment(0.83, 0.22, 0.78)[0], "mixed"
+        )
+        self.assertEqual(TypeSafeReviewJudge._claim_sentiment(0.18, 0.22)[0], "neutral")
+        self.assertEqual(
+            TypeSafeReviewJudge._claim_sentiment(0.7, 0.48, 0.2)[0], "mixed"
+        )
+        self.assertEqual(
+            TypeSafeReviewJudge._claim_sentiment(0.71, 0.2, 0.1)[0], "positive"
         )
 
 

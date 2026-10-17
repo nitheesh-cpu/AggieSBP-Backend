@@ -8,7 +8,6 @@ This script:
 Optimized with batch processing for better performance.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -17,7 +16,10 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from aggiermp.database.base import ProfessorDB, get_session, upsert_professors
+from aggiermp.database.base import (
+    ProfessorDB, UniversityDB, get_session, upsert_professors, upsert_universities,
+)
+from pipelines.professors.campuses import CAMPUSES, get_university_ids
 from pipelines.professors.scrapers import RMPReviewCollector
 from typing import Any, Dict
 
@@ -34,11 +36,17 @@ def upsert_all_professors(university_id: str, session: Any = None) -> Dict[str, 
         Dictionary with results
     """
     close_session = False
+    collector = None
     if session is None:
         session = get_session()
         close_session = True
 
     try:
+        # The professor foreign key requires the campus row before its first import.
+        if university_id in CAMPUSES and not session.query(UniversityDB.id).filter(
+            UniversityDB.id == university_id
+        ).first():
+            upsert_universities(session, [CAMPUSES[university_id]])
         print("Scraping professors...", end=" ", flush=True)
         collector = RMPReviewCollector()
         professors = collector.get_all_professors(university_id, limit=1000)
@@ -81,23 +89,24 @@ def upsert_all_professors(university_id: str, session: Any = None) -> Dict[str, 
         }
 
     finally:
+        if collector is not None:
+            collector.session.close()
         if close_session:
             session.close()
 
 
 def main() -> None:
-    """Main function - default to Texas A&M"""
-    # Default to Texas A&M University ID
-    # You can find this by searching on RMP or using the get_university_by_name function
-    TEXAS_AM_ID = "U2Nob29sLTEwMDM="  # Texas A&M University
+    """Import both Texas A&M campuses unless one campus is selected."""
+    import argparse
 
-    # Allow override via environment variable
-    university_id = os.getenv("UNIVERSITY_ID", TEXAS_AM_ID)
-
-    result = upsert_all_professors(university_id)
-
-    if "error" in result:
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Import campus professor pools")
+    parser.add_argument("--university-id", help="RMP school ID, e.g. 1006 for Galveston")
+    args = parser.parse_args()
+    for university_id in get_university_ids(args.university_id):
+        print(f"Importing campus {university_id}")
+        result = upsert_all_professors(university_id)
+        if "error" in result:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
