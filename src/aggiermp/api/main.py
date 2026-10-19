@@ -237,6 +237,20 @@ class Professor(BaseModel):
     total_courses: int
 
 
+def _review_quality(review: Any) -> Optional[float]:
+    """A review's quality rating (1-5) as RateMyProfessor shows it.
+
+    RMP stores quality in clarity_rating and helpful_rating. Difficulty is a
+    separate scale and must not be mixed in. None when the review has neither.
+    """
+    parts = [
+        float(r)
+        for r in (review.clarity_rating, review.helpful_rating)
+        if r is not None and r > 0
+    ]
+    return round(sum(parts) / len(parts), 1) if parts else None
+
+
 class Review(BaseModel):
     """Review information model"""
 
@@ -1931,7 +1945,14 @@ async def get_departments_info(
                         2
                     ) as weighted_avg_gpa
                 FROM gpa_data 
-                WHERE year = '2025' AND semester = 'SPRING'
+                WHERE (year, semester) IN (
+                    SELECT year, semester FROM gpa_data
+                    WHERE gpa IS NOT NULL AND total_students > 0
+                    GROUP BY year, semester
+                    ORDER BY (year::int) DESC,
+                             CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
+                    LIMIT 4
+                )
                   AND gpa IS NOT NULL AND total_students > 0
                 GROUP BY dept
             ),
@@ -1952,8 +1973,8 @@ async def get_departments_info(
                     d.long_name as name,
                     COALESCE(gs.course_count, 0) as courses,
                     COALESCE(gs.professor_count, 0) as professors,
-                    COALESCE(gs.weighted_avg_gpa, 3.0) as avg_gpa,
-                    COALESCE(rr.avg_professor_rating, 3.0) as rating
+                    gs.weighted_avg_gpa as avg_gpa,
+                    rr.avg_professor_rating as rating
                 FROM departments d
                 LEFT JOIN gpa_stats gs ON d.id = gs.dept
                 LEFT JOIN review_ratings rr ON d.id = rr.dept_code
@@ -1963,8 +1984,8 @@ async def get_departments_info(
                     COUNT(*) as total_departments,
                     COALESCE(SUM(courses), 0) as total_courses,
                     COALESCE(SUM(professors), 0) as total_professors,
-                    ROUND(AVG(NULLIF(avg_gpa, 3.0))::numeric, 2) as overall_avg_gpa,
-                    ROUND(AVG(NULLIF(rating, 3.0))::numeric, 1) as overall_avg_rating
+                    ROUND(AVG(avg_gpa)::numeric, 2) as overall_avg_gpa,
+                    ROUND(AVG(rating)::numeric, 1) as overall_avg_rating
                 FROM dept_data
             ),
             top_depts AS (
@@ -2020,10 +2041,10 @@ async def get_departments_info(
         overall_avg_gpa = (
             float(agg_row.rating_or_overall_gpa)
             if agg_row.rating_or_overall_gpa
-            else 3.0
+            else None
         )
         overall_avg_rating = (
-            float(agg_row.overall_rating) if agg_row.overall_rating else 3.0
+            float(agg_row.overall_rating) if agg_row.overall_rating else None
         )
 
         # Parse top departments
@@ -2041,7 +2062,7 @@ async def get_departments_info(
                     else 0,
                     "avgGpa": float(dept_row.avg_gpa_or_total_professors)
                     if dept_row.avg_gpa_or_total_professors
-                    else 3.0,
+                    else None,
                     "rating": float(dept_row.rating_or_overall_gpa)
                     if dept_row.rating_or_overall_gpa
                     else None,
@@ -2177,8 +2198,8 @@ async def get_departments(
                 d.long_name as name,
                 COALESCE(last_sem.course_count, 0) as courses,
                 COALESCE(last_sem.professor_count, 0) as professors,
-                COALESCE(last_sem.weighted_avg_gpa, 3.0) as avgGpa,
-                COALESCE(review_ratings.avg_professor_rating, 3.0) as rating,
+                last_sem.weighted_avg_gpa as avgGpa,
+                review_ratings.avg_professor_rating as rating,
                 d.title as description
             FROM departments d
             LEFT JOIN (
@@ -2191,7 +2212,14 @@ async def get_departments(
                         2
                     ) as weighted_avg_gpa
                 FROM gpa_data 
-                WHERE year = '2025' AND semester = 'SPRING'
+                WHERE (year, semester) IN (
+                    SELECT year, semester FROM gpa_data
+                    WHERE gpa IS NOT NULL AND total_students > 0
+                    GROUP BY year, semester
+                    ORDER BY (year::int) DESC,
+                             CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
+                    LIMIT 4
+                )
                   AND gpa IS NOT NULL AND total_students > 0
                 GROUP BY dept
             ) last_sem ON d.id = last_sem.dept
@@ -2260,7 +2288,7 @@ async def get_departments(
                     "name": row.name,
                     "courses": int(row.courses) if row.courses else 0,
                     "professors": int(row.professors) if row.professors else 0,
-                    "avgGpa": float(row.avggpa) if row.avggpa else 3.0,
+                    "avgGpa": float(row.avggpa) if row.avggpa else None,
                     "rating": float(row.rating) if row.rating else None,
                     "topCourses": top_courses_by_dept.get(row.code, []),
                     "description": row.description,
@@ -2341,7 +2369,7 @@ async def get_courses(
                 WHERE gpa IS NOT NULL AND total_students > 0
                 GROUP BY year, semester
                 ORDER BY (year::int) DESC,
-                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SPRING' THEN 2 WHEN 'SUMMER' THEN 3 ELSE 4 END
+                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
                 LIMIT 4
             ),
             last_4_semesters_gpa AS (
@@ -2423,7 +2451,7 @@ async def get_courses(
                 END as difficulty,
                 COALESCE(ed.total_enrollment, 0) as enrollment,
                 COALESCE(sd.section_count, 0) as sections,
-                COALESCE(cr.avg_professor_rating, 3.0) as rating,
+                cr.avg_professor_rating as rating,
                 c.description,
                 CASE 
                     WHEN c.course_number ~ '^[0-9]+$' AND c.course_number::int < 300 THEN ARRAY['Undergraduate']
@@ -2480,8 +2508,12 @@ async def get_courses(
                     sa.attribute_id,
                     sa.attribute_title
                 FROM section_attributes sa
-                WHERE sa.year = '2025' 
-                  AND sa.semester = 'Fall'
+                WHERE (sa.year, sa.semester) = (
+                    SELECT year, semester FROM section_attributes
+                    GROUP BY year, semester
+                    ORDER BY year DESC, CASE semester WHEN 'Fall' THEN 1 WHEN 'Summer' THEN 2 WHEN 'Spring' THEN 3 ELSE 4 END
+                    LIMIT 1
+                )
                 ORDER BY sa.dept, sa.course_number, sa.attribute_id
             """)
 
@@ -2516,7 +2548,7 @@ async def get_courses(
                     "difficulty": row.difficulty,
                     "enrollment": int(row.enrollment),
                     "sections": int(row.sections),
-                    "rating": float(row.rating),
+                    "rating": float(row.rating) if row.rating is not None else None,
                     "description": row.description
                     or f"Course in {row.department_name}",
                     "tags": row.tags,
@@ -2604,7 +2636,7 @@ async def get_course_details(
                 WHERE gpa IS NOT NULL AND total_students > 0
                 GROUP BY year, semester
                 ORDER BY (year::int) DESC,
-                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SPRING' THEN 2 WHEN 'SUMMER' THEN 3 ELSE 4 END
+                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
                 LIMIT 4
             ),
             last_4_semesters_gpa AS (
@@ -2646,8 +2678,21 @@ async def get_course_details(
                 WHERE year = (SELECT MAX(year) FROM gpa_data WHERE total_students > 0)
                   AND total_students > 0
                 GROUP BY dept, course_number
+            ),
+            all_time_gpa AS (
+                -- Fallback for courses not taught in the recent window
+                -- (e.g. renumbered courses): every semester on record.
+                SELECT
+                    ROUND(
+                        SUM(gd.gpa::numeric * gd.total_students) / NULLIF(SUM(gd.total_students), 0),
+                        2
+                    ) as weighted_avg_gpa,
+                    MAX(gd.year) as last_year
+                FROM gpa_data gd
+                WHERE gd.dept = :dept AND gd.course_number = :course_num
+                  AND gd.gpa IS NOT NULL AND gd.total_students > 0
             )
-            SELECT 
+            SELECT
                 c.code as code,
                 c.name as name,
                 c.description,
@@ -2662,21 +2707,27 @@ async def get_course_details(
                 c.corequisite_courses,
                 c.corequisite_groups,
                 c.cross_listings,
-                CASE 
-                    WHEN l4s.weighted_avg_gpa IS NOT NULL THEN l4s.weighted_avg_gpa
-                    ELSE -1
-                END as avgGPA,
-                CASE 
-                    WHEN l4s.weighted_avg_gpa IS NULL THEN 'Unknown'
-                    WHEN l4s.weighted_avg_gpa >= 3.7 THEN 'Light'
-                    WHEN l4s.weighted_avg_gpa >= 3.3 THEN 'Moderate'
-                    WHEN l4s.weighted_avg_gpa >= 2.7 THEN 'Challenging'
-                    WHEN l4s.weighted_avg_gpa >= 2.0 THEN 'Intensive'
+                COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa, -1) as avgGPA,
+                CASE
+                    WHEN l4s.weighted_avg_gpa IS NOT NULL THEN 'recent'
+                    WHEN atg.weighted_avg_gpa IS NOT NULL THEN 'all'
+                    ELSE NULL
+                END as gpa_scope,
+                atg.last_year as gpa_last_year,
+                CASE
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) IS NULL THEN 'Unknown'
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) >= 3.7 THEN 'Light'
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) >= 3.3 THEN 'Moderate'
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) >= 2.7 THEN 'Challenging'
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) >= 2.0 THEN 'Intensive'
                     ELSE 'Rigorous'
                 END as difficulty,
                 COALESCE(ed.total_enrollment, 0) as enrollment,
-                COALESCE(sd.section_count, 0) as sections
+                (SELECT MAX(year) FROM gpa_data WHERE total_students > 0) as enrollment_year,
+                COALESCE(sd.section_count, 0) as sections,
+                (SELECT term_code FROM current_term) as sections_term_code
             FROM courses c
+            CROSS JOIN all_time_gpa atg
             LEFT JOIN last_4_semesters_gpa l4s ON c.subject_id = l4s.dept AND c.course_number = l4s.course_number
             LEFT JOIN section_data sd ON c.subject_id = sd.dept AND c.course_number = sd.course_number
             LEFT JOIN enrollment_data ed ON c.subject_id = ed.dept AND c.course_number = ed.course_number
@@ -2936,7 +2987,7 @@ async def get_course_details(
 
             professors.append(professor_data)
 
-        # Get section attributes for Fall 2025 (latest available data)
+        # Section attributes from the latest semester this course has data for
         section_attrs_query = text("""
             SELECT DISTINCT 
                 sa.attribute_id,
@@ -2944,8 +2995,12 @@ async def get_course_details(
             FROM section_attributes sa
             WHERE sa.dept = :dept 
               AND sa.course_number = :course_num
-              AND sa.year = '2025' 
-              AND sa.semester = 'Fall'
+              AND (sa.year, sa.semester) = (
+                  SELECT year, semester FROM section_attributes
+                  WHERE dept = :dept AND course_number = :course_num
+                  ORDER BY year DESC, CASE semester WHEN 'Fall' THEN 1 WHEN 'Summer' THEN 2 WHEN 'Spring' THEN 3 ELSE 4 END
+                  LIMIT 1
+              )
             ORDER BY sa.attribute_id
         """)
 
@@ -3001,9 +3056,19 @@ async def get_course_details(
             "labHours": course_result.lab_hours,
             "otherHours": course_result.other_hours,
             "avgGPA": float(course_result.avggpa) if course_result.avggpa != -1 else -1,
+            # "recent" = last 4 semesters; "all" = every semester on record,
+            # used when the course wasn't taught recently.
+            "gpaScope": course_result.gpa_scope,
+            "gpaLastYear": str(course_result.gpa_last_year)
+            if course_result.gpa_last_year
+            else None,
             "difficulty": course_result.difficulty,
             "enrollment": int(course_result.enrollment),
+            "enrollmentYear": str(course_result.enrollment_year)
+            if course_result.enrollment_year
+            else None,
             "sections": int(course_result.sections),
+            "sectionsTermCode": course_result.sections_term_code,
             "professors": professors,
             "prerequisites": {
                 "text": course_result.prerequisites_text,
@@ -3294,25 +3359,7 @@ async def get_course_professors(
             if review.professor_id not in reviews_by_prof:
                 reviews_by_prof[review.professor_id] = []
 
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (6 - (review.difficulty_rating or 3))
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             tags = []
             if review.rating_tags:
@@ -3694,26 +3741,7 @@ async def get_course_professor_reviews(
 
         reviews = []
         for review in reviews_result:
-            # Calculate overall rating from individual ratings
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (review.difficulty_rating or 0)
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             # Convert would_take_again to boolean
             would_take_again = (
@@ -3985,9 +4013,14 @@ async def compare_courses(
                             2
                         ) as weighted_avg_gpa
                     FROM gpa_data 
-                    WHERE ( year = '2025' AND semester IN ('FALL', 'SPRING', 'SUMMER')) 
-                          OR (year = '2024' AND semester IN ('FALL', 'SPRING', 'SUMMER')) 
-                          OR (year = '2023' AND semester = 'FALL'))
+                    WHERE (year, semester) IN (
+                        SELECT year, semester FROM gpa_data
+                        WHERE gpa IS NOT NULL AND total_students > 0
+                        GROUP BY year, semester
+                        ORDER BY (year::int) DESC,
+                                 CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
+                        LIMIT 4
+                    )
                       AND gpa IS NOT NULL AND total_students > 0
                     GROUP BY dept, course_number
                 ),
@@ -4075,7 +4108,7 @@ async def compare_courses(
                     {
                         "id": prof.professor_id,
                         "name": prof.name,
-                        "rating": float(prof.rating) if prof.rating else 3.0,
+                        "rating": float(prof.rating) if prof.rating else None,
                         "reviews": int(prof.reviews) if prof.reviews else 0,
                     }
                 )
@@ -4088,8 +4121,12 @@ async def compare_courses(
                 FROM section_attributes sa
                 WHERE sa.dept = :dept 
                   AND sa.course_number = :course_num
-                  AND sa.year = '2025' 
-                  AND sa.semester = 'Fall'
+                  AND (sa.year, sa.semester) = (
+                      SELECT year, semester FROM section_attributes
+                      WHERE dept = :dept AND course_number = :course_num
+                      ORDER BY year DESC, CASE semester WHEN 'Fall' THEN 1 WHEN 'Summer' THEN 2 WHEN 'Spring' THEN 3 ELSE 4 END
+                      LIMIT 1
+                  )
                 ORDER BY sa.attribute_id
             """)
 
@@ -4103,14 +4140,14 @@ async def compare_courses(
                 else:
                     section_attributes.append(attr.attribute_id)
 
-            # Calculate rating based on difficulty (6 - average difficulty from reviews)
+            # Course rating = average review quality for this course
             rating_query = text("""
                 SELECT 
-                    ROUND((6.0 - AVG(difficulty_rating))::numeric, 1) as course_rating,
+                    ROUND(AVG((COALESCE(clarity_rating, helpful_rating) + COALESCE(helpful_rating, clarity_rating)) / 2.0)::numeric, 1) as course_rating,
                     COUNT(*) as review_count
                 FROM reviews 
                 WHERE course_code = :course_code
-                  AND difficulty_rating IS NOT NULL
+                  AND COALESCE(clarity_rating, helpful_rating) IS NOT NULL
             """)
 
             rating_result = db.execute(
@@ -4119,7 +4156,7 @@ async def compare_courses(
             course_rating = (
                 float(rating_result.course_rating)
                 if rating_result and rating_result.course_rating
-                else 3.0
+                else None
             )
             review_count = (
                 int(rating_result.review_count)
@@ -4328,7 +4365,7 @@ async def get_professors(
                     "name": row.name,
                     "overall_rating": float(row.overall_rating)
                     if row.overall_rating
-                    else 3.0,
+                    else None,
                     "total_reviews": int(row.total_reviews) if row.total_reviews else 0,
                     "departments": list(row.departments) if row.departments else [],
                     "courses_taught": list(row.courses_taught)
@@ -4763,24 +4800,54 @@ async def get_professor_profile(
         structured = structured_summary_columns_present(db)
 
         # Get courses taught by professor and overall tag frequencies
+        # avg_rating is this course's rating, not the professor's overall one.
         courses_query = text(f"""
-            SELECT 
+            SELECT
                 ps.course_code as course_id,
-                COALESCE(c.name, 'Course Title') as course_name,
+                c.name as course_name,
                 ps.total_reviews as reviews_count,
                 {"ps.tips," if structured else ""}
-                COALESCE(p.avg_rating, NULL) as avg_rating
+                ps.avg_rating as avg_rating
             FROM professor_summaries_new ps
             LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
-            LEFT JOIN professors p ON ps.professor_id = p.id
             WHERE ps.professor_id = :professor_id
+              AND ps.course_code IS NOT NULL
             ORDER BY ps.total_reviews DESC
         """)
 
         courses_result = db.execute(courses_query, {"professor_id": professor_id})
+
+        # Official grade data (anex) for this professor, keyed by course code.
+        # anex names professors "LASTNAME F".
+        gpa_by_course: Dict[str, Any] = {}
+        first_name = (professor_result.first_name or "").strip()
+        last_name = (professor_result.last_name or "").strip()
+        if first_name and last_name:
+            gpa_query = text("""
+                SELECT
+                    gd.dept || gd.course_number as course_code,
+                    ROUND(
+                        SUM(gd.gpa::numeric * gd.total_students)
+                        / NULLIF(SUM(gd.total_students), 0),
+                        2
+                    ) as avg_gpa,
+                    SUM(gd.total_students) as students,
+                    MAX(gd.year) as last_year
+                FROM gpa_data gd
+                WHERE gd.professor = :anex_name
+                  AND gd.gpa IS NOT NULL AND gd.total_students > 0
+                GROUP BY gd.dept, gd.course_number
+            """)
+            for row in db.execute(
+                gpa_query,
+                {"anex_name": f"{last_name.upper()} {first_name[0].upper()}"},
+            ):
+                gpa_by_course[row.course_code] = row
+
         courses = []
 
         for course in courses_result:
+            gpa_row = gpa_by_course.get(course.course_id)
             courses.append(
                 {
                     "course_id": course.course_id,
@@ -4790,7 +4857,16 @@ async def get_professor_profile(
                     else 0,
                     "avg_rating": float(course.avg_rating)
                     if course.avg_rating
-                    else 3.0,
+                    else None,
+                    "avg_gpa": float(gpa_row.avg_gpa)
+                    if gpa_row is not None and gpa_row.avg_gpa is not None
+                    else None,
+                    "gpa_students": int(gpa_row.students)
+                    if gpa_row is not None and gpa_row.students
+                    else 0,
+                    "gpa_last_year": str(gpa_row.last_year)
+                    if gpa_row is not None and gpa_row.last_year
+                    else None,
                     "tips": structured_course_fields(course, structured)["tips"],
                 }
             )
@@ -4844,7 +4920,7 @@ async def get_professor_profile(
                 r.review_date,
                 r.course_code,
                 r.rating_tags,
-                COALESCE(c.name, 'Course') as course_name
+                c.name as course_name
             FROM reviews r
             LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
             WHERE r.professor_id = :professor_id
@@ -4860,26 +4936,7 @@ async def get_professor_profile(
         recent_reviews = []
 
         for review in recent_reviews_result:
-            # Calculate overall rating from individual ratings
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (6 - (review.difficulty_rating or 3))
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             # Parse rating tags
             tags = []
@@ -4901,6 +4958,9 @@ async def get_professor_profile(
                     "course_name": review.course_name,
                     "review_text": review.review_text,
                     "overall_rating": overall_rating,
+                    "difficulty_rating": float(review.difficulty_rating)
+                    if review.difficulty_rating
+                    else None,
                     "would_take_again": review.would_take_again == 1
                     if review.would_take_again is not None
                     else None,
@@ -4918,7 +4978,7 @@ async def get_professor_profile(
             "name": professor_result.name,
             "overall_rating": float(stats_result.overall_rating)
             if stats_result and stats_result.overall_rating
-            else 3.0,
+            else None,
             "total_reviews": int(stats_result.total_reviews)
             if stats_result and stats_result.total_reviews
             else 0,
@@ -4926,8 +4986,8 @@ async def get_professor_profile(
                 would_take_again_result.would_take_again_percent
             )
             if would_take_again_result
-            and would_take_again_result.would_take_again_percent
-            else 0.0,
+            and would_take_again_result.would_take_again_percent is not None
+            else None,
             "courses": courses,
             "departments": list(stats_result.departments)
             if stats_result and stats_result.departments and stats_result.departments[0]
@@ -5234,26 +5294,7 @@ async def get_professor_reviews(
         reviews = []
 
         for review in result:
-            # Calculate overall rating from individual ratings
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (6 - (review.difficulty_rating or 3))
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             # Convert would_take_again to boolean
             would_take_again = (
@@ -5537,7 +5578,7 @@ async def search_professors(
                 "name": row.name,
                 "overall_rating": float(row.overall_rating)
                 if row.overall_rating
-                else 3.0,
+                else None,
                 "total_reviews": int(row.total_reviews) if row.total_reviews else 0,
                 "would_take_again_percent": float(row.would_take_again_percent)
                 if row.would_take_again_percent
@@ -5933,7 +5974,7 @@ async def compare_professors(
                     "course_id": row.course_id,
                     "course_name": row.course_name,
                     "reviews_count": int(row.reviews_count) if row.reviews_count else 0,
-                    "avg_rating": float(row.avg_rating) if row.avg_rating else 3.0,
+                    "avg_rating": float(row.avg_rating) if row.avg_rating else None,
                 }
             )
             total_reviews_by_prof[row.professor_id] += (
@@ -5992,25 +6033,7 @@ async def compare_professors(
             if review.professor_id not in reviews_by_prof:
                 reviews_by_prof[review.professor_id] = []
 
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (6 - (review.difficulty_rating or 3))
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             tags = []
             if review.rating_tags:
@@ -6056,7 +6079,7 @@ async def compare_professors(
                     "name": prof.name,
                     "overall_rating": float(prof.avg_rating)
                     if prof.avg_rating
-                    else 3.0,
+                    else None,
                     "total_reviews": total_reviews_by_prof.get(prof_id, 0),
                     "would_take_again_percent": wta_by_prof.get(prof_id, 0.0),
                     "courses": courses_by_prof.get(prof_id, []),

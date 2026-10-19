@@ -167,6 +167,18 @@ class FitSectionCampusOptionsRequest(BaseModel):
     course_keys: List[str]
 
 
+class DiscoverFitSection(BaseModel):
+    """One section that fits the student's busy times."""
+
+    id: str
+    crn: str
+    section: Optional[str] = None
+    is_open: Optional[bool] = None
+    instructor: Optional[str] = None
+    # e.g. "MWF 09:10 AM-10:00 AM"; several meetings joined with "; ".
+    meetings: Optional[str] = None
+
+
 class DiscoverFitCourseMatch(BaseModel):
     course_key: str
     dept: str
@@ -175,6 +187,7 @@ class DiscoverFitCourseMatch(BaseModel):
     compatible_section_count: int
     sample_section_id: Optional[str] = None
     sample_crn: Optional[str] = None
+    sections: List[DiscoverFitSection] = []
 
 
 class UccFitCandidatesRequest(BaseModel):
@@ -252,19 +265,51 @@ async def discover_ucc_fit_candidates(
                       FROM regexp_split_to_table(s.attributes_text, '\|') AS attr
                       WHERE TRIM(attr) = ANY(:categories)
                   )
+            ),
+            candidate_courses AS (
+                SELECT dept, course_number, MAX(course_title) AS course_title
+                FROM candidate_sections
+                GROUP BY dept, course_number
+            ),
+            course_gpa AS (
+                SELECT
+                    g.dept,
+                    g.course_number,
+                    SUM(g.gpa::numeric * g.total_students)
+                        / NULLIF(SUM(g.total_students), 0) AS avg_gpa
+                FROM gpa_data g
+                JOIN candidate_courses cc
+                  ON cc.dept = g.dept AND cc.course_number = g.course_number
+                WHERE g.gpa IS NOT NULL AND g.total_students > 0
+                GROUP BY g.dept, g.course_number
+            ),
+            course_reviews AS (
+                SELECT
+                    r.course_code,
+                    AVG(r.difficulty_rating) AS avg_difficulty,
+                    AVG(
+                        (COALESCE(r.clarity_rating, r.helpful_rating)
+                         + COALESCE(r.helpful_rating, r.clarity_rating)) / 2.0
+                    ) AS avg_rating
+                FROM reviews r
+                WHERE r.course_code IN (
+                    SELECT dept || course_number FROM candidate_courses
+                )
+                GROUP BY r.course_code
             )
             SELECT
-                cs.dept,
-                cs.course_number,
-                MAX(cs.course_title) AS course_title,
-                AVG(g.gpa)           AS avg_gpa
-            FROM candidate_sections cs
-            LEFT JOIN gpa_data g ON (
-                g.dept          = cs.dept
-                AND g.course_number = cs.course_number
-            )
-            GROUP BY cs.dept, cs.course_number
-            ORDER BY cs.dept, cs.course_number
+                cc.dept,
+                cc.course_number,
+                cc.course_title,
+                cg.avg_gpa,
+                cr.avg_difficulty,
+                cr.avg_rating
+            FROM candidate_courses cc
+            LEFT JOIN course_gpa cg
+              ON cg.dept = cc.dept AND cg.course_number = cc.course_number
+            LEFT JOIN course_reviews cr
+              ON cr.course_code = cc.dept || cc.course_number
+            ORDER BY cc.dept, cc.course_number
             """
         )
 
@@ -283,7 +328,13 @@ async def discover_ucc_fit_candidates(
                 courseNumber=str(r.course_number),
                 courseTitle=str(r.course_title or f"{r.dept} {r.course_number}"),
                 easinessScore=round(
-                    calculate_easiness_score(float(r.avg_gpa) if r.avg_gpa else 0, 0, 0) * 100, 1
+                    calculate_easiness_score(
+                        float(r.avg_gpa) if r.avg_gpa else 0,
+                        float(r.avg_difficulty) if r.avg_difficulty else 0,
+                        float(r.avg_rating) if r.avg_rating else 0,
+                    )
+                    * 100,
+                    1,
                 ),
             )
             for r in rows
@@ -308,8 +359,6 @@ async def discover_fit_sections(
     """
     try:
         if not payload.course_keys:
-            return []
-        if not payload.schedule_blocks:
             return []
 
         attribute_descs = [
@@ -349,7 +398,9 @@ async def discover_fit_sections(
                     s.crn,
                     s.dept,
                     s.course_number,
-                    s.course_title
+                    s.course_title,
+                    s.section_number,
+                    s.is_open
                 FROM sections s
                 WHERE s.term_code = :term_code
                   AND (s.dept || '-' || s.course_number) = ANY(:course_keys)
@@ -420,7 +471,9 @@ async def discover_fit_sections(
                     cs.crn,
                     cs.dept,
                     cs.course_number,
-                    cs.course_title
+                    cs.course_title,
+                    cs.section_number,
+                    cs.is_open
                 FROM candidate_sections cs
                 LEFT JOIN conflicting_sections cf ON cf.section_id = cs.id
                 WHERE cf.section_id IS NULL
@@ -432,7 +485,34 @@ async def discover_fit_sections(
                 MIN(course_title) AS course_title,
                 COUNT(*)::int AS compatible_section_count,
                 MIN(id) AS sample_section_id,
-                MIN(crn) AS sample_crn
+                MIN(crn) AS sample_crn,
+                json_agg(
+                    json_build_object(
+                        'id', id,
+                        'crn', crn,
+                        'section', section_number,
+                        'is_open', is_open,
+                        'instructor', (
+                            SELECT si.instructor_name
+                            FROM section_instructors si
+                            WHERE si.section_id = compatible_sections.id
+                            ORDER BY si.is_primary DESC NULLS LAST
+                            LIMIT 1
+                        ),
+                        'meetings', (
+                            SELECT string_agg(
+                                array_to_string(sm.days_of_week, '')
+                                    || ' ' || TRIM(sm.begin_time)
+                                    || '-' || TRIM(sm.end_time),
+                                '; ' ORDER BY sm.meeting_index
+                            )
+                            FROM section_meetings sm
+                            WHERE sm.section_id = compatible_sections.id
+                              AND COALESCE(TRIM(sm.begin_time), '') <> ''
+                        )
+                    )
+                    ORDER BY section_number
+                ) AS sections
             FROM compatible_sections
             GROUP BY dept, course_number
             ORDER BY dept, course_number
@@ -462,6 +542,21 @@ async def discover_fit_sections(
                 compatible_section_count=int(r.compatible_section_count or 0),
                 sample_section_id=str(r.sample_section_id) if r.sample_section_id else None,
                 sample_crn=str(r.sample_crn) if r.sample_crn else None,
+                sections=[
+                    DiscoverFitSection(
+                        id=str(s["id"]),
+                        crn=str(s["crn"]),
+                        section=s.get("section"),
+                        is_open=s.get("is_open"),
+                        instructor=s.get("instructor"),
+                        meetings=s.get("meetings"),
+                    )
+                    for s in (
+                        json.loads(r.sections)
+                        if isinstance(r.sections, str)
+                        else (r.sections or [])
+                    )
+                ],
             )
             for r in rows
         ]
