@@ -5951,10 +5951,10 @@ async def compare_professors(
                 ps.course_code as course_id,
                 COALESCE(c.name, 'Course Title') as course_name,
                 ps.total_reviews as reviews_count,
-                p.avg_rating
+                -- This course's rating, not the professor's overall one.
+                ps.avg_rating
             FROM professor_summaries_new ps
             LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
-            LEFT JOIN professors p ON ps.professor_id = p.id
             WHERE ps.professor_id = ANY(:professor_ids)
               AND ps.course_code IS NOT NULL
             ORDER BY ps.professor_id, ps.total_reviews DESC
