@@ -7,10 +7,11 @@ import asyncio
 import ast
 import json
 import logging
+import secrets
 import time
 from typing import Any, Dict, List, Optional, Tuple, cast, Iterator
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -6148,6 +6149,17 @@ async def cache_status() -> Dict[str, Any]:
     return await get_cache_stats()
 
 
+def require_admin_key(x_admin_key: Optional[str] = Header(None)) -> None:
+    """Reject the request unless X-Admin-Key matches ADMIN_API_KEY."""
+    expected = settings.admin_api_key
+    if not expected:
+        raise HTTPException(status_code=503, detail="Admin endpoints are disabled.")
+    if not x_admin_key or not secrets.compare_digest(
+        x_admin_key.encode(), expected.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid admin key.")
+
+
 @app.delete(
     "/cache/clear",
     responses={
@@ -6158,13 +6170,17 @@ async def cache_status() -> Dict[str, Any]:
                     "example": {"message": "Cache cleared", "keys_deleted": 15}
                 }
             },
-        }
+        },
+        401: {"description": "Missing or invalid X-Admin-Key header"},
+        503: {"description": "ADMIN_API_KEY is not configured"},
     },
     summary="/cache/clear",
-    description="Clear all cached API responses. Use with caution.",
+    description="Clear all cached API responses. Requires the X-Admin-Key header. Use with caution.",
     tags=["Admin"],
+    dependencies=[Depends(require_admin_key)],
 )
-async def cache_clear() -> Dict[str, Any]:
+@limiter.limit("5/minute")
+async def cache_clear(request: Request) -> Dict[str, Any]:
     """Clear all cached API responses."""
     deleted = await clear_all_cache()
     return {"message": "Cache cleared", "keys_deleted": deleted}

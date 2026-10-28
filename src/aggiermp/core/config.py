@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    # Required in the X-Admin-Key header for admin endpoints (e.g. /cache/clear).
+    # When unset, those endpoints are disabled.
+    admin_api_key: Optional[str] = Field(None, alias="admin_api_key")
 
     # SuperTokens
     supertokens_connection_uri: str = "http://localhost:3567"
