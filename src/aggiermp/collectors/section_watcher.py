@@ -52,6 +52,8 @@ load_dotenv(dotenv_path=env_path)
 from pywebpush import WebPushException, webpush
 from sqlalchemy import text
 
+from aggiermp.core.push_endpoints import PUSH_TIMEOUT_SECONDS, is_allowed_push_endpoint
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -145,6 +147,9 @@ _WATCH_QUERY = text("""
 # ---------------------------------------------------------------------------
 def _send_push(sub_row: Any, payload: str) -> tuple[str, bool]:
     """Send one push notification. Returns (endpoint, success)."""
+    if not is_allowed_push_endpoint(sub_row.endpoint):
+        logger.warning("Skipping non-push-service endpoint")
+        return sub_row.endpoint, False
     subscription_info = {
         "endpoint": sub_row.endpoint,
         "keys": {"p256dh": sub_row.p256dh, "auth": sub_row.auth},
@@ -155,6 +160,7 @@ def _send_push(sub_row: Any, payload: str) -> tuple[str, bool]:
             data=payload,
             vapid_private_key=VAPID_PRIVATE_KEY,
             vapid_claims={"sub": VAPID_CONTACT},
+            timeout=PUSH_TIMEOUT_SECONDS,
         )
         return sub_row.endpoint, True
     except WebPushException as exc:

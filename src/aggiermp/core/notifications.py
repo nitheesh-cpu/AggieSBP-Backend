@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..database.base import UserSubscriptionDB
 from ..core.config import settings
+from ..core.push_endpoints import PUSH_TIMEOUT_SECONDS, is_allowed_push_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ class NotificationService:
         payload = json.dumps(message)
 
         for sub in subscriptions:
+            # Rows saved before endpoint validation existed may point anywhere.
+            if not is_allowed_push_endpoint(sub.endpoint):
+                logger.warning(f"Skipping subscription with non-push-service endpoint for user {user_id}")
+                continue
+
             subscription_info = {
                 "endpoint": sub.endpoint,
                 "keys": {
@@ -43,7 +49,8 @@ class NotificationService:
                     subscription_info=subscription_info,
                     data=payload,
                     vapid_private_key=settings.vapid_private_key,
-                    vapid_claims={"sub": settings.vapid_contact_email}
+                    vapid_claims={"sub": settings.vapid_contact_email},
+                    timeout=PUSH_TIMEOUT_SECONDS,
                 )
                 success_count += 1
             except WebPushException as ex:

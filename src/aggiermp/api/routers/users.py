@@ -3,7 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import json
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ from ...database.base import get_session as _get_session_raw, UserSubscriptionDB
 from ...models.schema import UserSchedule, UserTrackedSection, UserSubscription
 from ...core.notifications import NotificationService
 from ...core.config import settings
+from ...core.push_endpoints import is_allowed_push_endpoint
 
 
 def get_session() -> Iterator[_Session]:
@@ -145,6 +146,14 @@ class PushSubscriptionRequest(BaseModel):
     user_agent: Optional[str] = None
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("endpoint")
+    @classmethod
+    def _endpoint_is_push_service(cls, value: str) -> str:
+        # The server POSTs to this URL, so only accept real browser push services.
+        if not is_allowed_push_endpoint(value):
+            raise ValueError("endpoint must be an https URL on a browser push service")
+        return value
 
 class CreateScheduleRequest(BaseModel):
     name: str
@@ -510,12 +519,15 @@ async def get_tracked_section(section_id: str, session, db):
 
 
 @router.post("/test-notification")
-async def send_test_notification(
+def send_test_notification(
     session: SessionContainer = Depends(verify_session()),
     db: Session = Depends(get_session),
 ):
     """
     Send a simple test push notification to the current user's active subscriptions.
+
+    Plain ``def`` so FastAPI runs the blocking push sends in its threadpool
+    instead of on the event loop.
     """
     user_id = session.get_user_id()
 
