@@ -345,11 +345,14 @@ class TamuAIChatClient:
         }
 
     def _post(
-        self, messages: List[Dict[str, str]], max_tokens: Optional[int] = None
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         for attempt in range(self.max_retries + 1):
             try:
-                return self._post_once(messages, max_tokens)
+                return self._post_once(messages, max_tokens, response_format)
             except TamuAIQuotaExceeded:
                 with self._budget_lock:
                     self._quota_exhausted = True
@@ -370,7 +373,10 @@ class TamuAIChatClient:
         raise AssertionError("unreachable")
 
     def _post_once(
-        self, messages: List[Dict[str, str]], max_tokens: Optional[int] = None
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._consume_request_budget()
         self._thread_sessions.requests = (
@@ -390,7 +396,9 @@ class TamuAIChatClient:
                 "temperature": 0.1,
                 "max_tokens": max_tokens or self.max_output_tokens,
                 "stream": False,
-                "response_format": (
+                # Callers other than professor summaries pass their own format.
+                "response_format": response_format
+                or (
                     professor_summary_response_format()
                     if self.response_format == "json_schema"
                     else {"type": "json_object"}

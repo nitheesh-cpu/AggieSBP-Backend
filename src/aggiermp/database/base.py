@@ -144,6 +144,11 @@ class CourseDB(Base):
     corequisite_courses: Column[List[str]] = Column(ARRAY(String), nullable=True)
     corequisite_groups = Column(Text, nullable=True)
     cross_listings: Column[List[str]] = Column(ARRAY(String), nullable=True)
+    # Parsed AND/OR trees (pipelines/courses/parse_prereqs.py); see
+    # pipelines/courses/migrations/001_prereq_trees.sql.
+    prereq_tree = Column(JSONB, nullable=True)
+    coreq_tree = Column(JSONB, nullable=True)
+    prereq_parse = Column(JSONB, nullable=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.now)
     updated_at = Column(DateTime, nullable=False, default=datetime.now)

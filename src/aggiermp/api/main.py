@@ -43,6 +43,7 @@ from .structured_summaries import (
 from .routers.discover import router as discover_router
 from .routers.users import router as users_router
 from .routers.professors import router as professors_router
+from .routers.prereqs import router as prereqs_router
 from ..core.config import settings
 from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
 from supertokens_python.recipe import (
@@ -2707,6 +2708,9 @@ async def get_course_details(
                 c.corequisites as corequisites_text,
                 c.corequisite_courses,
                 c.corequisite_groups,
+                c.prereq_tree,
+                c.coreq_tree,
+                c.prereq_parse,
                 c.cross_listings,
                 COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa, -1) as avgGPA,
                 CASE
@@ -3079,6 +3083,10 @@ async def get_course_details(
                 "groups": json.loads(course_result.prerequisite_groups)
                 if course_result.prerequisite_groups
                 else [],
+                # AND/OR tree (pipelines/courses/prereq_parser.py); prefer it
+                # over `groups`, which mis-parses "A and B".
+                "tree": course_result.prereq_tree,
+                "confidence": (course_result.prereq_parse or {}).get("confidence"),
             },
             "corequisites": {
                 "text": course_result.corequisites_text,
@@ -3088,6 +3096,7 @@ async def get_course_details(
                 "groups": json.loads(course_result.corequisite_groups)
                 if course_result.corequisite_groups
                 else [],
+                "tree": course_result.coreq_tree,
             },
             "crossListings": list(course_result.cross_listings)
             if course_result.cross_listings
@@ -6190,3 +6199,4 @@ async def cache_clear(request: Request) -> Dict[str, Any]:
 app.include_router(users_router)
 app.include_router(discover_router)
 app.include_router(professors_router)
+app.include_router(prereqs_router)
