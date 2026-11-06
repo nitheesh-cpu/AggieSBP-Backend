@@ -44,6 +44,7 @@ from .routers.discover import router as discover_router
 from .routers.users import router as users_router
 from .routers.professors import router as professors_router
 from .routers.prereqs import router as prereqs_router
+from .routers.planner import router as planner_router
 from ..core.config import settings
 from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
 from supertokens_python.recipe import (
@@ -6200,3 +6201,4 @@ app.include_router(users_router)
 app.include_router(discover_router)
 app.include_router(professors_router)
 app.include_router(prereqs_router)
+app.include_router(planner_router)
