@@ -6,9 +6,10 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
+from aggiermp.core.professor_identity import Person, Profile
 from aggiermp.core.campuses import (
     TEXAS_AM_ID, TEXAS_AM_GALVESTON_ID, university_id_for_campus,
     campus_from_term_description, campus_university_sql,
@@ -41,7 +42,33 @@ def query(all_rows=None, first=None):
     return result
 
 
+def evidence(subjects_by_id=None, people=None):
+    """Patch the identity loaders with fixed teaching and review evidence."""
+    subjects_by_id = subjects_by_id or {}
+
+    def load_people(db, name, pidm, dept):
+        own, namesakes = (people or {}).get(pidm, (frozenset(), []))
+        return Person(name, frozenset(own) | {dept}), namesakes
+
+    def load_profiles(db, candidates):
+        return [
+            Profile(c.id, f"{c.first_name} {c.last_name}",
+                    frozenset(subjects_by_id.get(c.id, ())), frozenset())
+            for c in candidates
+        ]
+
+    return [
+        patch("aggiermp.core.professor_identity.load_people", load_people),
+        patch("aggiermp.core.professor_identity.load_profiles", load_profiles),
+    ]
+
+
 class CampusMatchingTests(unittest.TestCase):
+    def setUp(self):
+        for patcher in evidence():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_de_ruiter_lookup_includes_compound_surname_candidate(self):
         profile = SimpleNamespace(
             id="VGVhY2hlci0xMTU3NzQ1", first_name="Darryl", last_name="De Ruiter",
@@ -51,7 +78,7 @@ class CampusMatchingTests(unittest.TestCase):
         db = Mock()
         db.query.side_effect = [
             query(first=SimpleNamespace(term_desc="Spring 2027 - College Station")),
-            query([SimpleNamespace(instructor_name="Darryl De Ruiter", section_number="500",
+            query([SimpleNamespace(instructor_name="Darryl De Ruiter", instructor_pidm=1, section_number="500",
                                    campus="College Station")]),
             candidates, query(), query(), query(),
         ]
@@ -75,8 +102,9 @@ class CampusMatchingTests(unittest.TestCase):
         self.assertEqual(campus_from_term_description("Fall 2026 - Galveston"), "Galveston")
 
     def test_same_name_instructors_are_not_merged_across_campuses(self):
-        instructors = [SimpleNamespace(instructor_name="Amanda Wood", section_number="1", campus=c)
-                       for c in ["College Station", "Galveston"]]
+        instructors = [SimpleNamespace(instructor_name="Amanda Wood", instructor_pidm=i,
+                                   section_number="1", campus=c)
+                       for i, c in enumerate(["College Station", "Galveston"])]
         profiles = [SimpleNamespace(id=pid, first_name="Amanda", last_name="Wood",
                     university_id=uid, num_ratings=count, avg_rating=rating, legacy_id=legacy)
                     for pid, uid, count, rating, legacy in [
@@ -105,16 +133,32 @@ class CampusMatchingTests(unittest.TestCase):
         profiles = [SimpleNamespace(id=pid, first_name="Yu", last_name="Zhang",
                     university_id=TEXAS_AM_ID, num_ratings=count, avg_rating=4,
                     legacy_id=count) for pid, count in [("ag", 90), ("cs", 5)]]
-        db = Mock()
-        db.query.side_effect = [
-            query(first=SimpleNamespace(term_desc="Fall 2026 - College Station")),
-            query([SimpleNamespace(instructor_name="Yu Zhang", section_number="1",
-                                   campus="College Station")]),
-            query(profiles), query([("cs", "CSCE 411")]), query(), query(), query(),
-        ]
-        result = asyncio.run(details_endpoint()(None, "202631", "CSCE411", db, None))
-        self.assertEqual(result["professors"][0]["id"], "cs")
+        ag_yu = Person("Yu Zhang", frozenset({"AGEC"}))
 
+        def run(available):
+            db = Mock()
+            db.query.side_effect = [
+                query(first=SimpleNamespace(term_desc="Fall 2026 - College Station")),
+                query([SimpleNamespace(instructor_name="Yu Zhang", instructor_pidm=7,
+                                       section_number="1", campus="College Station")]),
+                query(available), query(), query(), query(),
+            ]
+            patchers = evidence({"ag": {"AGEC", "ECON"}, "cs": {"CSCE"}},
+                                {7: ({"CSCE"}, [ag_yu])})
+            for patcher in patchers:
+                patcher.start()
+            try:
+                result = asyncio.run(details_endpoint()(None, "202631", "CSCE411", db, None))
+            finally:
+                for patcher in patchers:
+                    patcher.stop()
+            return result["professors"][0]
+
+        self.assertEqual(run(profiles)["id"], "cs")
+        # Without the CS profile, the AGEC namesake's reviews must not appear.
+        unmatched = run(profiles[:1])
+        self.assertIsNone(unmatched["id"])
+        self.assertEqual(unmatched["totalReviews"], 0)
 
 if __name__ == "__main__":
     unittest.main()

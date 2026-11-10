@@ -61,14 +61,16 @@ async def close_redis() -> None:
         _redis_client = None
 
 
-def _generate_cache_key(request: Request) -> str:
-    """Generate a cache key from request path and query params."""
+def _generate_cache_key(request: Request, version: str = "") -> str:
+    """Generate a cache key from request path, query params, and logic version."""
     # Include path and sorted query params
     path = request.url.path
     query_params = str(sorted(request.query_params.items()))
 
     # Create a hash for the key
     key_data = f"{path}:{query_params}"
+    if version:
+        key_data = f"{version}:{key_data}"
     key_hash = hashlib.md5(key_data.encode()).hexdigest()[:16]
 
     return f"api:{path}:{key_hash}"
@@ -90,6 +92,7 @@ def _serialize_for_cache(obj: Any) -> Any:
 def cached(
     ttl: int = TTL_STANDARD,
     ttl_for: Optional[Callable[[Request], int]] = None,
+    version: str = "",
 ) -> Callable:
     """
     Decorator to cache endpoint responses in Redis.
@@ -103,6 +106,9 @@ def cached(
     Args:
         ttl: Time to live in seconds
         ttl_for: Optional per-request TTL (e.g. shorter when filtering on seat status)
+        version: Part of the cache key. Pass a value that changes with the
+            logic behind the response, so a deploy that changes that logic
+            stops serving responses cached by the old code.
 
     Returns:
         Decorated function with caching
@@ -130,7 +136,7 @@ def cached(
                 result = await func(*args, **kwargs)
                 return result
 
-            cache_key = _generate_cache_key(request)
+            cache_key = _generate_cache_key(request, version)
 
             try:
                 # Check cache

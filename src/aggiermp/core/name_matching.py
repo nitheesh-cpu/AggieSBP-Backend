@@ -109,7 +109,11 @@ def professor_name_score(left: str, right: str) -> float:
     )
 
     # A matching given-name initial plus a matching surname is a strong signal.
-    has_initial_only = any(len(token) == 1 for token in (*a.given, *b.given))
+    # Only a first-name initial counts: the middle "S." in "Monique S. Cooper"
+    # must not make her match "Marcia Cooper".
+    has_initial_only = any(
+        len(name.given[0]) == 1 for name in (a, b) if name.given
+    )
     if (
         has_initial_only
         and a.given_initial

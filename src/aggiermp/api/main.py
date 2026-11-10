@@ -46,6 +46,7 @@ from .routers.professors import router as professors_router
 from .routers.prereqs import router as prereqs_router
 from .routers.planner import router as planner_router
 from ..core.config import settings
+from ..core.professor_identity import MATCHING_VERSION as PROFESSOR_MATCHING_VERSION
 from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
 from supertokens_python.recipe import (
     session,
@@ -1589,7 +1590,7 @@ async def get_course_professors_by_term(
     description="Get all professors teaching a course with their summaries and other course summaries.",
 )
 @limiter.limit("60/minute")
-@cached(ttl=TTL_WEEK)
+@cached(ttl=TTL_WEEK, version=PROFESSOR_MATCHING_VERSION)
 async def get_course_professors_details(
     request: Request,
     term_code: str,
@@ -1616,6 +1617,9 @@ async def get_course_professors_details(
         TermDB,
     )
     from aggiermp.core.name_matching import parse_person_name, professor_name_score
+    from aggiermp.core.professor_identity import (
+        NAME_MATCH_THRESHOLD, choose_profile, load_people, load_profiles,
+    )
     from aggiermp.core.campuses import (
         TEXAS_AM_ID, university_id_for_campus, campus_from_term_description,
     )
@@ -1663,6 +1667,7 @@ async def get_course_professors_details(
         instructor_rows = (
             db.query(
                 SectionInstructorDB.instructor_name,
+                SectionInstructorDB.instructor_pidm,
                 SectionDB.section_number,
                 SectionDB.campus,
             )
@@ -1683,19 +1688,24 @@ async def get_course_professors_details(
                 detail=f"No professors found for {course_code} in term {term_code}",
             )
 
-        # Build unique instructor names and their sections
-        instructor_sections: Dict[Tuple[str, Optional[str]], List[str]] = {}
+        # Build unique instructors and their sections. The PIDM separates
+        # different people who share a name.
+        instructor_sections: Dict[Tuple[str, Optional[int], Optional[str]], List[str]] = {}
         for row in instructor_rows:
-            identity = (row.instructor_name, (row.campus or "").strip() or term_campus)
+            identity = (
+                row.instructor_name,
+                row.instructor_pidm,
+                (row.campus or "").strip() or term_campus,
+            )
             if identity not in instructor_sections:
                 instructor_sections[identity] = []
             if row.section_number not in instructor_sections[identity]:
                 instructor_sections[identity].append(row.section_number)
 
-        # Step 2: Match instructor names to professor IDs and get summaries
+        # Step 2: Match instructors to professor profiles and get summaries
         result_professors = []
 
-        for (instructor_name, instructor_campus), sections in instructor_sections.items():
+        for (instructor_name, pidm, instructor_campus), sections in instructor_sections.items():
             university_id = university_id_for_campus(instructor_campus)
             parsed_instructor = parse_person_name(instructor_name)
             first_name = parsed_instructor.given[0] if parsed_instructor.given else ""
@@ -1717,37 +1727,29 @@ async def get_course_professors_details(
                 prof_query = prof_query.filter(
                     ProfessorDB.first_name.ilike(f"{first_name[:1]}%")
                 )
-            candidates = prof_query.limit(200).all()
+            candidates = [
+                candidate
+                for candidate in prof_query.all()
+                if professor_name_score(
+                    instructor_name, f"{candidate.first_name} {candidate.last_name}"
+                )
+                >= NAME_MATCH_THRESHOLD
+            ]
 
-            from aggiermp.database.base import ReviewDB
-
-            finalists = []
-            best_score = 0.82
-            for candidate in candidates:
-                candidate_name = f"{candidate.first_name} {candidate.last_name}"
-                identity_score = professor_name_score(instructor_name, candidate_name)
-                if identity_score > best_score:
-                    best_score = identity_score
-                    finalists = [candidate]
-                elif identity_score == best_score:
-                    finalists.append(candidate)
-
-            if len(finalists) > 1:
-                evidence = db.query(ReviewDB.professor_id, ReviewDB.course_code).filter(
-                    ReviewDB.professor_id.in_([candidate.id for candidate in finalists]),
-                    ReviewDB.course_code.ilike(f"{dept}%"),
-                ).distinct().all()
-                exact_ids = set()
-                subject_ids = set()
-                for profile_id, reviewed_course in evidence:
-                    normalized = re.sub(r"[^A-Z0-9]", "", reviewed_course.upper())
-                    if normalized == target_course_code:
-                        exact_ids.add(profile_id)
-                    if re.match(rf"^{dept}\d", normalized):
-                        subject_ids.add(profile_id)
-                eligible = exact_ids or subject_ids
-                finalists = [candidate for candidate in finalists if candidate.id in eligible]
-            professor = finalists[0] if len(finalists) == 1 else None
+            # A name match is not an identity match: check whose teaching
+            # history each profile's reviews fit (see professor_identity).
+            professor = None
+            if candidates:
+                instructor, namesakes = load_people(db, instructor_name, pidm, dept)
+                chosen = choose_profile(
+                    instructor,
+                    target_course_code,
+                    load_profiles(db, candidates),
+                    namesakes,
+                )
+                professor = next(
+                    (c for c in candidates if chosen and c.id == chosen.id), None
+                )
 
             # Get overall summary for totalReviews
             overall_summary = None
