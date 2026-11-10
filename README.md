@@ -1,5 +1,10 @@
 # AggieSB+ Backend
 
+[![courses upsert](https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M.svg)](https://cronitor.io)
+[![gpa upsert](https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo.svg)](https://cronitor.io)
+[![sections upsert](https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4.svg)](https://cronitor.io)
+[![sections watcher](https://cronitor.io/badges/FnepfT/production/zqE7gN84msH6qtSME2AqAYzXWVs.svg)](https://cronitor.io)
+
 FastAPI service and data pipelines behind AggieSB+ (Aggie Schedule Builder Plus), a course and professor research tool for Texas A&M students. It combines official grade distributions, RateMyProfessors reviews and section data into one API.
 
 - Live site: https://aggieschedulebuilderplus.vercel.app
@@ -103,6 +108,26 @@ graph TD
 ```
 
 The API is a single FastAPI app (`src/aggiermp/api/main.py`) plus routers for discover, professors, prerequisites, planner and users. Reads go to PostgreSQL through SQLAlchemy, with raw SQL where a query is complex. Responses are cached in Redis. Scheduled pipelines scrape the TAMU catalog, section listings, Anex grade data and RateMyProfessors into Postgres. A separate section-watcher job compares section open status against users' tracked sections and sends push notifications. The web app and the extension are both clients of the same API.
+
+### Data sources
+
+| Source | What it provides |
+| --- | --- |
+| TAMU Course Catalog | Departments, courses, descriptions and prerequisite text |
+| Howdy class search | Terms, sections, meeting times, instructors and seat status |
+| Anex.us | Historical grade distributions by course, section and professor |
+| RateMyProfessors | Professor ratings and student reviews (College Station and Galveston) |
+
+### Pipeline status
+
+The scrapers and the seat-alert watcher run on a schedule in production, monitored with Cronitor:
+
+| Pipeline | Status |
+| --- | --- |
+| Sections upsert | <img width="50%" src="https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4/detailed.svg" alt="sections upsert" /> |
+| GPA upsert | <img width="50%" src="https://cronitor.io/badges/PpJGqD/production/5dERFenglEK7EEHI_IIF7YOerDo/detailed.svg" alt="gpa upsert" /> |
+| Courses upsert | <img width="50%" src="https://cronitor.io/badges/CX7Ga9/production/PC1VqKFw9Yu8A5XVaQYPIlzpt8M/detailed.svg" alt="courses upsert" /> |
+| Sections watcher | <img width="50%" src="https://cronitor.io/badges/FnepfT/production/zqE7gN84msH6qtSME2AqAYzXWVs/detailed.svg" alt="sections watcher" /> |
 
 ## Engineering highlights
 
