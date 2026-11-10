@@ -3,7 +3,8 @@ Text preprocessing module for review cleaning and deduplication.
 """
 
 import re
-from typing import List, Set
+import logging
+from typing import Any, List, Optional, Set
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -15,21 +16,27 @@ from pipelines.professors.hierarchical_summarization.config import (
 )
 from pipelines.professors.schemas import ProcessedReview
 
+logger = logging.getLogger(__name__)
+
 
 class ReviewPreprocessor:
     """Preprocesses reviews: normalizes, cleans, and deduplicates"""
 
-    def __init__(self) -> None:
+    def __init__(self, embedding_model: Optional[Any] = None) -> None:
         # Load embedding model for deduplication
-        print("Loading embedding model for deduplication...")
+        if embedding_model is not None:
+            self.embedding_model = embedding_model
+            return
+
+        logger.debug("Loading embedding model for deduplication")
         import torch
 
-        print(f"CUDA available: {torch.cuda.is_available()}")
+        logger.debug("CUDA available: %s", torch.cuda.is_available())
         if torch.cuda.is_available():
-            print(f"CUDA device: {torch.cuda.get_device_name(0)}")
+            logger.debug("CUDA device: %s", torch.cuda.get_device_name(0))
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.embedding_model = SentenceTransformer(EMBEDDING_MODEL, device=device)
-        print(f"Embedding model loaded on {device}")
+        logger.debug("Embedding model loaded on %s", device)
 
     def normalize_text(self, text: str) -> str:
         """
@@ -91,12 +98,15 @@ class ReviewPreprocessor:
         if len(reviews) < 2:
             return reviews
 
-        print(f"Deduplicating {len(reviews)} reviews...")
+        logger.debug("Deduplicating %d reviews", len(reviews))
 
         # Generate embeddings for all reviews
         texts = [review.text for review in reviews]
         embeddings = self.embedding_model.encode(
-            texts, batch_size=64, show_progress_bar=True, convert_to_numpy=True
+            texts,
+            batch_size=64,
+            show_progress_bar=logger.isEnabledFor(logging.DEBUG),
+            convert_to_numpy=True,
         )
 
         # Compute pairwise similarities
@@ -123,7 +133,9 @@ class ReviewPreprocessor:
             seen_indices.update(similar_indices)
 
         removed = len(reviews) - len(unique_reviews)
-        print(f"Removed {removed} duplicate reviews ({len(unique_reviews)} unique)")
+        logger.debug(
+            "Removed %d duplicate reviews (%d unique)", removed, len(unique_reviews)
+        )
 
         return unique_reviews
 

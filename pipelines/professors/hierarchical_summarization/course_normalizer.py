@@ -5,9 +5,34 @@ Handles normalization of course codes to group variations, aliases, and cross-li
 """
 
 import re
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+
+_NAME_STOPWORDS = {"AND", "OF", "THE", "FOR", "IN", "ENG"}
+
+
+def _name_tokens(name: str) -> set[str]:
+    """Words of a department name: "Computer Sci & Engr" -> {COMPUTER, SCI, ENGR}."""
+    return {
+        token
+        for token in re.findall(r"[A-Z]+", name.upper())
+        if len(token) > 1 and token not in _NAME_STOPWORDS
+    }
+
+
+def _tokens_overlap(left: set[str], right: set[str]) -> int:
+    """Count words in left that match a word in right, allowing abbreviations."""
+    return sum(
+        1
+        for a in left
+        if any(
+            a == b
+            or (min(len(a), len(b)) >= 3 and (a.startswith(b) or b.startswith(a)))
+            for b in right
+        )
+    )
 
 
 class CourseNormalizer:
@@ -50,7 +75,46 @@ class CourseNormalizer:
             "FINC": "FINC",
             "ACCT": "ACCT",
             "ID": "IDIS",
+            # Student shorthand and full subject names seen in RMP course codes
+            "ASTRO": "ASTR",
+            "ASTRONOMY": "ASTR",
+            "PSYCH": "PSYC",
+            "PYSCH": "PSYC",
+            "PSYCHOLOGY": "PSYC",
+            "CHEMISTRY": "CHEM",
+            "OCHEM": "CHEM",
+            "HISTORY": "HIST",
+            "STATS": "STAT",
+            "STATISTICS": "STAT",
+            "SOCIO": "SOCI",
+            "SOCIOLOGY": "SOCI",
+            "PHYSICS": "PHYS",
+            "PHSYS": "PHYS",
+            "BIO": "BIOL",
+            "BIOLOGY": "BIOL",
+            "KINES": "KINE",
+            "ANTHRO": "ANTH",
+            "ANTHROPOLOGY": "ANTH",
+            "ENGLISH": "ENGL",
+            "POLISCI": "POLS",
+            "GOVT": "POLS",
+            "GOVERNMENT": "POLS",
+            "COMMS": "COMM",
+            "COMMUNICATIONS": "COMM",
+            "CALC": "MATH",
+            "CALCULUS": "MATH",
+            "ACCTT": "ACCT",
+            "BUSINESS": "BUSN",
         }
+        # Real department codes and "ASTRONOMY"-style full names, from the DB
+        self.department_codes: set[str] = set()
+        self.department_names: Dict[str, str] = {}
+        # Department code -> words of its names, for fuzzy "Computer Science" lookups
+        self.department_tokens: Dict[str, set[str]] = {}
+        # Course number -> subjects that offer it, from the catalog
+        self.subjects_by_number: Dict[str, set[str]] = {}
+        # Professor ID -> course number -> subjects they taught (grade/section data)
+        self._taught_cache: Dict[str, Dict[str, set[str]]] = {}
 
         # Known cross-listings (fallback if database doesn't have them)
         self.fallback_cross_listings = {
@@ -64,7 +128,83 @@ class CourseNormalizer:
         # Load cross-listings from database if session provided
         self.cross_listings: Dict[str, str] = {}  # Maps "DEPT123" -> canonical code
         if session:
+            self._load_departments_from_db(session)
             self._load_cross_listings_from_db(session)
+            self._load_catalog_from_db(session)
+
+    def _rollback(self) -> None:
+        """Clear a failed transaction so later queries in this session still run."""
+        if self.session is None:
+            return
+        try:
+            self.session.rollback()
+        except Exception:
+            pass
+
+    def _load_departments_from_db(self, session: Session) -> None:
+        """Map department names (e.g. ASTRONOMY, "Computer Sci & Engr") to codes."""
+        try:
+            rows = session.execute(text("SELECT id, title, long_name FROM departments"))
+            for row in rows:
+                code = str(row.id).upper().strip()
+                self.department_codes.add(code)
+                # long_name looks like "CHEM - Chemistry"; title is "Chemistry"
+                long_name = re.sub(
+                    rf"^{re.escape(code)}\s*-\s*",
+                    "",
+                    str(row.long_name or ""),
+                    flags=re.IGNORECASE,
+                )
+                tokens: set[str] = set()
+                for raw_name in (row.title, long_name):
+                    name = re.sub(r"[^A-Z]", "", str(raw_name or "").upper())
+                    if name and name != code:
+                        self.department_names.setdefault(name, code)
+                    tokens |= _name_tokens(str(raw_name or ""))
+                self.department_tokens[code] = tokens
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+
+    def _load_catalog_from_db(self, session: Session) -> None:
+        """Index which subjects offer each course number."""
+        try:
+            rows = session.execute(
+                text("SELECT DISTINCT subject_id, course_number FROM courses")
+            )
+            for row in rows:
+                number = str(row.course_number).upper().strip()
+                self.subjects_by_number.setdefault(number, set()).add(
+                    str(row.subject_id).upper().strip()
+                )
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+
+    def normalize_department(self, dept: str) -> str:
+        """Resolve aliases, full names, and truncated full names to a code."""
+        dept = dept.upper()
+        # Real codes first: COSC is Construction Science now, not old CS
+        if dept in self.department_codes:
+            return dept
+        if dept in self.dept_aliases:
+            return self.dept_aliases[dept]
+        if dept in self.department_names:
+            return self.department_names[dept]
+        if len(dept) >= 6:
+            # Truncated names such as ANTHROPOLOG; only an unambiguous prefix.
+            matches = {
+                code
+                for name, code in self.department_names.items()
+                if name.startswith(dept)
+            }
+            if len(matches) == 1:
+                return matches.pop()
+        return dept
 
     def _load_cross_listings_from_db(self, session: Session) -> None:
         """Load cross-listings from the courses table"""
@@ -115,7 +255,11 @@ class CourseNormalizer:
 
             pass  # Cross-listings loaded silently
         except Exception:
-            pass  # Silently fall back to hardcoded cross-listings
+            # Fall back to hardcoded cross-listings
+            try:
+                session.rollback()
+            except Exception:
+                pass
 
     def _extract_course_numbers(self, number_str: str) -> List[str]:
         """
@@ -215,7 +359,7 @@ class CourseNormalizer:
         dept, number = match.groups()
 
         # Normalize department name
-        normalized_dept = self.dept_aliases.get(dept, dept)
+        normalized_dept = self.normalize_department(dept)
 
         # Extract all possible course numbers (handles cases like 221222 -> [221, 222])
         course_numbers = self._extract_course_numbers(number)
@@ -332,109 +476,204 @@ class CourseNormalizer:
         professor_id: Optional[str] = None,
         professor_dept: Optional[str] = None,
     ) -> Optional[str]:
+        """Department code for a bare course number such as "202", or None."""
+        dept, _source = self.infer_department_with_source(
+            course_number, professor_id, professor_dept
+        )
+        return dept
+
+    def infer_department_with_source(
+        self,
+        course_number: str,
+        professor_id: Optional[str] = None,
+        professor_dept: Optional[str] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
         """
-        Infer department for a course number when only number is provided.
+        Infer the department for a course number given without one.
 
         Priority:
-        1. professor_dept parameter
-        2. Professor's department from database
-        3. Most common department from professor's other reviews
+        1. "taught": the registrar's grade/section data shows this professor
+           teaching that number in exactly one subject (or one cross-listing)
+        1b. "taught_subject": of the subjects offering this number, only one
+           is a subject they teach under other numbers
+        2. "department": the professor's department name, mapped to a code
+           (fuzzy names only match subjects that offer this number)
+        3. "reviews": the most common department in the professor's other reviews
 
-        Args:
-            course_number: Just the course number (e.g., "202")
-            professor_id: Professor ID
-            professor_dept: Professor's department (if known)
+        When the grade/section data lists several subjects for the number, the
+        later steps may only pick one of those.
+
+        The catalog alone is never enough: it lacks retired courses, so "218"
+        for a physics professor would otherwise become SPAN218, not PHYS218.
 
         Returns:
-            Department code (e.g., "ECON") or None if can't infer
+            (department code, source) or (None, None) if it can't be inferred
         """
-        # First priority: use provided department
+        # Only 3-digit numbers ("119", "119H") or two run together ("221222");
+        # "1", "4063" and "32089" are typos or CRNs, not course numbers.
+        digits = re.match(r"^\d+", course_number.strip())
+        if not digits or len(digits.group()) not in (3, 6):
+            return None, None
+        numbers = self._extract_course_numbers(course_number)
+        if not numbers:
+            return None, None
+        number = numbers[0]
+        offered = self.subjects_by_number.get(number, set())
+
+        taught: set[str] = set()
+        if professor_id:
+            taught = self._subjects_taught_by(professor_id).get(number, set())
+            canonical = {
+                self.cross_listings.get(f"{dept}{number}", f"{dept}{number}")
+                for dept in taught
+            }
+            if taught and len(canonical) == 1:
+                return min(taught), "taught"
+
+        if professor_dept is None and professor_id:
+            professor_dept = self.professor_department(professor_id)
+        exact = self._exact_department(professor_dept) if professor_dept else None
+        if exact and (not taught or exact in taught):
+            return exact, "department"
+
+        # They never taught this number, but teach in exactly one subject that
+        # offers it (e.g. a VIST professor's "105" is VIST105). Weaker than an
+        # exact department: grade data names instructors like "WANG P".
+        if professor_id and not taught:
+            subjects = {
+                dept
+                for depts in self._subjects_taught_by(professor_id).values()
+                for dept in depts
+            }
+            if len(subjects & offered) == 1:
+                return min(subjects & offered), "taught_subject"
+
         if professor_dept:
-            dept = professor_dept.upper().strip()
-            # If it looks like a department code (just uppercase letters), use it
-            if re.match(r"^[A-Z]+$", dept):
-                return dept
-            # Otherwise, try to find department code in database
-            if self.session:
-                try:
-                    from aggiermp.database.base import DepartmentDB
+            dept = self._fuzzy_department(professor_dept, taught or offered)
+            if dept:
+                return dept, "department"
 
-                    dept_db = (
-                        self.session.query(DepartmentDB)
-                        .filter(
-                            (DepartmentDB.title.ilike(f"%{dept}%"))
-                            | (DepartmentDB.id == dept)
-                        )
-                        .first()
-                    )
-                    if dept_db:
-                        return str(dept_db.id).upper()
-                except Exception:
-                    pass
+        if professor_id:
+            dept = self._most_common_review_department(professor_id)
+            known = not self.department_codes or dept in self.department_codes
+            if dept and known and (not taught or dept in taught):
+                return dept, "reviews"
 
-        # Second priority: get from database if we have session and professor_id
-        if professor_id and self.session:
+        return None, None
+
+    def _exact_department(self, name: str) -> Optional[str]:
+        """Code for a department name or code ("Chemistry", "ECON"), if exact."""
+        cleaned = name.upper().strip()
+        if not self.department_codes:
+            # No department table (e.g. no DB): trust single-word names as given
+            if re.match(r"^[A-Z]+$", cleaned):
+                return self.normalize_department(cleaned)
+            return None
+        code = self.normalize_department(re.sub(r"[^A-Z]", "", cleaned))
+        return code if code in self.department_codes else None
+
+    def _fuzzy_department(self, name: str, candidates: set[str]) -> Optional[str]:
+        """
+        The one candidate whose name best shares words with name, e.g.
+        "Computer Science" ~ "Computer Sci & Engr".
+        """
+        words = _name_tokens(name)
+        if not words or not candidates:
+            return None
+        scores = {
+            dept: _tokens_overlap(words, self.department_tokens.get(dept, set()))
+            for dept in candidates
+        }
+        best = max(scores.values(), default=0)
+        winners = [dept for dept, score in scores.items() if score == best]
+        if best > 0 and len(winners) == 1:
+            return winners[0]
+        return None
+
+    def professor_department(self, professor_id: str) -> Optional[str]:
+        if not self.session:
+            return None
+        try:
+            from aggiermp.database.base import ProfessorDB
+
+            professor = (
+                self.session.query(ProfessorDB).filter_by(id=professor_id).first()
+            )
+            return professor.department if professor else None
+        except Exception:
+            self._rollback()
+            return None
+
+    def _subjects_taught_by(self, professor_id: str) -> Dict[str, set[str]]:
+        """Course number -> subjects this professor taught, per grade/section data."""
+        if professor_id in self._taught_cache:
+            return self._taught_cache[professor_id]
+        taught: Dict[str, set[str]] = {}
+        if self.session:
             try:
+                from aggiermp.core.name_matching import professor_names_match
                 from aggiermp.database.base import ProfessorDB
 
                 professor = (
                     self.session.query(ProfessorDB).filter_by(id=professor_id).first()
                 )
-
-                if professor and professor.department:
-                    # Extract department code (might be full name, so try to extract code)
-                    dept = professor.department.upper().strip()
-                    # If it looks like just letters, use it
-                    if re.match(r"^[A-Z]+$", dept):
-                        return str(dept)
-                    # Otherwise, try to find department code in database
-                    from aggiermp.database.base import DepartmentDB
-
-                    dept_db = (
-                        self.session.query(DepartmentDB)
-                        .filter(
-                            (DepartmentDB.title.ilike(f"%{dept}%"))
-                            | (DepartmentDB.id == dept)
-                        )
-                        .first()
-                    )
-                    if dept_db:
-                        return str(dept_db.id).upper()
-            except Exception:
-                pass
-
-        # Third priority: look at professor's other reviews to find most common department
-        if professor_id and self.session:
-            try:
-                from aggiermp.database.base import ReviewDB
-
-                # Get all reviews for this professor with course codes
-                reviews = (
-                    self.session.query(ReviewDB.course_code)
-                    .filter_by(professor_id=professor_id)
-                    .filter(
-                        ReviewDB.course_code.isnot(None), ReviewDB.course_code != ""
-                    )
-                    .all()
+                surname_tokens = (
+                    re.findall(r"[A-Za-z]+", professor.last_name or "")
+                    if professor
+                    else []
                 )
-
-                # Extract departments from course codes
-                dept_counts: Dict[str, int] = {}
-                for (course_code,) in reviews:
-                    if course_code:
-                        # Try to extract department (letters before number)
-                        match = re.match(r"^([A-Z]+)", course_code.upper())
-                        if match:
-                            dept = match.group(1)
-                            dept_counts[dept] = dept_counts.get(dept, 0) + 1
-
-                # Return most common department
-                if dept_counts:
-                    return max(dept_counts.items(), key=lambda x: x[1])[0]
+                if surname_tokens:
+                    full_name = f"{professor.first_name} {professor.last_name}"
+                    rows = self.session.execute(
+                        text("""
+                            SELECT DISTINCT dept, course_number, professor AS name
+                            FROM gpa_data
+                            WHERE professor ILIKE :pattern
+                            UNION
+                            SELECT DISTINCT s.dept, s.course_number, si.instructor_name
+                            FROM section_instructors si
+                            JOIN sections s ON s.id = si.section_id
+                            WHERE si.instructor_name ILIKE :pattern
+                        """),
+                        {"pattern": f"%{max(surname_tokens, key=len)}%"},
+                    ).fetchall()
+                    for row in rows:
+                        if professor_names_match(full_name, row.name):
+                            number = str(row.course_number).upper().strip()
+                            taught.setdefault(number, set()).add(
+                                str(row.dept).upper().strip()
+                            )
             except Exception:
-                pass
+                self._rollback()
+        self._taught_cache[professor_id] = taught
+        return taught
 
-        return None
+    def _most_common_review_department(self, professor_id: str) -> Optional[str]:
+        """Most common department prefix among the professor's other reviews."""
+        if not self.session:
+            return None
+        try:
+            from aggiermp.database.base import ReviewDB
+
+            reviews = (
+                self.session.query(ReviewDB.course_code)
+                .filter_by(professor_id=professor_id)
+                .filter(ReviewDB.course_code.isnot(None), ReviewDB.course_code != "")
+                .all()
+            )
+        except Exception:
+            self._rollback()
+            return None
+
+        dept_counts: Dict[str, int] = {}
+        for (course_code,) in reviews:
+            match = re.match(r"^([A-Z]+)", course_code.upper())
+            if match:
+                dept = self.normalize_department(match.group(1))
+                dept_counts[dept] = dept_counts.get(dept, 0) + 1
+        if not dept_counts:
+            return None
+        return max(dept_counts.items(), key=lambda x: x[1])[0]
 
     def group_reviews_by_normalized_course(
         self, reviews: list, course_code_key: str = "course_code"

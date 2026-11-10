@@ -2,8 +2,25 @@
 Output schemas for hierarchical summarization system.
 """
 
-from dataclasses import dataclass
-from typing import List, Optional, Dict
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Dict
+
+
+@dataclass
+class SummaryClaim:
+    """One generated claim with source-review provenance and verification."""
+
+    text: str
+    evidence_review_ids: List[str]
+    topic: str = "other"
+    support_probability: Optional[float] = None
+    overgeneralization_probability: Optional[float] = None
+    disagreement_erasure_probability: Optional[float] = None
+    sentiment: Optional[str] = None
+    sentiment_confidence: Optional[float] = None
+    importance: Optional[float] = None
+    importance_confidence: Optional[float] = None
+    accepted: bool = True
 
 
 @dataclass
@@ -15,6 +32,10 @@ class ClusterSummary:
     review_count: int
     sentiment: str  # "positive", "negative", "mixed"
     confidence: float
+    claims: List[SummaryClaim] = field(default_factory=list)
+    topics: List[str] = field(default_factory=list)
+    disagreement_probability: float = 0.0
+    importance: float = 0.0
 
 
 @dataclass
@@ -36,6 +57,11 @@ class CourseSummary:
     avg_difficulty: Optional[float] = None
     common_tags: Optional[List[str]] = None
     tag_frequencies: Optional[Dict[str, int]] = None
+    # Structured-summary fields (single-request pipeline)
+    tips: Optional[List[str]] = None
+    review_stats: Optional[Dict[str, Any]] = None
+    # Field name -> one list of cited RMP review IDs per claim
+    citations: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -55,6 +81,12 @@ class ProfessorSummary:
     avg_difficulty: Optional[float] = None
     common_tags: Optional[List[str]] = None
     tag_frequencies: Optional[Dict[str, int]] = None
+    # Structured-summary fields (single-request pipeline)
+    tldr: Optional[str] = None
+    review_stats: Optional[Dict[str, Any]] = None
+    citations: Optional[Dict[str, Any]] = None
+    # Request and claim counters for logging; not stored
+    generation_stats: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

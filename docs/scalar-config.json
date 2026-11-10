@@ -15,7 +15,7 @@
     },
     "servers": [
         {
-            "url": "https://api-aggiesbp.servehttp.com",
+            "url": "https://api-aggiesbp.nitheeshk.com",
             "description": "Production server"
         },
         {

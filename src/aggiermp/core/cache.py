@@ -87,7 +87,10 @@ def _serialize_for_cache(obj: Any) -> Any:
     return obj
 
 
-def cached(ttl: int = TTL_STANDARD) -> Callable:
+def cached(
+    ttl: int = TTL_STANDARD,
+    ttl_for: Optional[Callable[[Request], int]] = None,
+) -> Callable:
     """
     Decorator to cache endpoint responses in Redis.
 
@@ -99,6 +102,7 @@ def cached(ttl: int = TTL_STANDARD) -> Callable:
 
     Args:
         ttl: Time to live in seconds
+        ttl_for: Optional per-request TTL (e.g. shorter when filtering on seat status)
 
     Returns:
         Decorated function with caching
@@ -143,11 +147,15 @@ def cached(ttl: int = TTL_STANDARD) -> Callable:
                 result = await func(*args, **kwargs)
 
                 # Store in cache - convert Pydantic models to dicts first
+                # Don't cache empty lists so stale-empty results don't persist.
                 try:
                     serializable = _serialize_for_cache(result)
-                    await redis_client.setex(
-                        cache_key, ttl, json.dumps(serializable, default=str)
-                    )
+                    if serializable != [] and serializable is not None:
+                        await redis_client.setex(
+                            cache_key,
+                            ttl_for(request) if ttl_for else ttl,
+                            json.dumps(serializable, default=str),
+                        )
                 except (TypeError, ValueError):
                     # Result not JSON serializable, skip caching
                     pass

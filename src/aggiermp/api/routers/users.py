@@ -1,20 +1,141 @@
-from typing import List, Optional, Union
+import logging
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import json
+
+logger = logging.getLogger(__name__)
+
+
+def _db_error(e: Exception, context: str = "") -> HTTPException:
+    msg = f"DB error in {context}: {e}" if context else f"DB error: {e}"
+    logger.error(msg, exc_info=True)
+    return HTTPException(status_code=500, detail="An internal server error occurred.")
 
 from supertokens_python.recipe.session import SessionContainer
 from supertokens_python.recipe.session.framework.fastapi import verify_session
+from supertokens_python.asyncio import get_user as st_get_user
 import uuid
 from pydantic import ConfigDict
 
-from ...database.base import get_session, UserSubscriptionDB
+from typing import Iterator
+from sqlalchemy.orm import Session as _Session
+
+from ...database.base import get_session as _get_session_raw, UserSubscriptionDB
 from ...models.schema import UserSchedule, UserTrackedSection, UserSubscription
 from ...core.notifications import NotificationService
+from ...core.config import settings
+from ...core.push_endpoints import is_allowed_push_endpoint
+
+
+def get_session() -> Iterator[_Session]:
+    """FastAPI dependency that always closes the session on exit."""
+    db = _get_session_raw()
+    try:
+        yield db
+    finally:
+        db.close()
 
 router: APIRouter = APIRouter(prefix="/users", tags=["users"])
+
+
+def _extract_crn(section_id: str) -> Optional[str]:
+    """Extract CRN from a section_id.
+
+    Handles two known formats:
+      - Extension format: ``TERMCODE-CRN-DEPT-NUM-SEC``  →  second dash-segment
+      - DB format: ``TERMCODE_CRN``  →  second underscore-segment
+    Returns None when the format is unrecognised.
+    """
+    if "-" in section_id:
+        parts = section_id.split("-")
+        return parts[1] if len(parts) >= 2 else None
+    if "_" in section_id:
+        parts = section_id.split("_")
+        return parts[1] if len(parts) >= 2 else None
+    return None
+
+
+class SignInMethodPublic(BaseModel):
+    recipe: str
+    label: str
+    email: Optional[str] = None
+    provider: Optional[str] = None
+
+
+class AccountSummaryResponse(BaseModel):
+    user_id: str
+    emails: List[str]
+    primary_email: Optional[str] = None
+    sign_in_methods: List[SignInMethodPublic]
+
+
+def _third_party_label(third_party_id: str) -> str:
+    known = {
+        "google": "Google",
+        "github": "GitHub",
+        "apple": "Apple",
+        "facebook": "Facebook",
+    }
+    return known.get(third_party_id.lower(), third_party_id.replace("_", " ").title())
+
+
+@router.get("/me", response_model=AccountSummaryResponse)
+async def get_my_account(session: SessionContainer = Depends(verify_session())):
+    """
+    Current user's email(s) and linked sign-in methods (email/password vs Google, etc.).
+    """
+    user_id = session.get_user_id()
+    user = await st_get_user(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    methods: List[SignInMethodPublic] = []
+    for lm in user.login_methods:
+        if lm.recipe_id == "emailpassword":
+            methods.append(
+                SignInMethodPublic(
+                    recipe="emailpassword",
+                    label="Email & password",
+                    email=lm.email,
+                )
+            )
+        elif lm.recipe_id == "thirdparty" and lm.third_party is not None:
+            pid = lm.third_party.id
+            methods.append(
+                SignInMethodPublic(
+                    recipe="thirdparty",
+                    label=_third_party_label(pid),
+                    email=lm.email,
+                    provider=pid,
+                )
+            )
+        else:
+            methods.append(
+                SignInMethodPublic(
+                    recipe=str(lm.recipe_id),
+                    label=str(lm.recipe_id).replace("_", " ").title(),
+                    email=lm.email,
+                )
+            )
+
+    emails_list = list(user.emails) if user.emails else []
+    primary: Optional[str] = emails_list[0] if emails_list else None
+    if primary is None:
+        for m in methods:
+            if m.email:
+                primary = m.email
+                break
+
+    return AccountSummaryResponse(
+        user_id=user_id,
+        emails=emails_list,
+        primary_email=primary,
+        sign_in_methods=methods,
+    )
+
 
 # Request Models
 class PushSubscriptionRequest(BaseModel):
@@ -26,10 +147,18 @@ class PushSubscriptionRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    @field_validator("endpoint")
+    @classmethod
+    def _endpoint_is_push_service(cls, value: str) -> str:
+        # The server POSTs to this URL, so only accept real browser push services.
+        if not is_allowed_push_endpoint(value):
+            raise ValueError("endpoint must be an https URL on a browser push service")
+        return value
+
 class CreateScheduleRequest(BaseModel):
     name: str
     term_code: str
-    courses: List[Union[str, int]] = []
+    courses: List[str] = []
 
 class CreateTrackingRequest(BaseModel):
     section_id: str
@@ -113,7 +242,7 @@ async def save_push_subscription(
         
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @router.delete("/push-subscription")
@@ -189,7 +318,7 @@ async def list_push_subscriptions(
         ]
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @router.post("/schedules", response_model=UserSchedule)
@@ -221,7 +350,7 @@ async def create_schedule(
         
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 @router.get("/schedules", response_model=List[UserSchedule])
 async def get_schedules(
@@ -245,7 +374,7 @@ async def get_schedules(
         return [UserSchedule(**row._mapping) for row in rows]
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 @router.post("/tracking", response_model=UserTrackedSection)
 async def track_section(
@@ -255,9 +384,27 @@ async def track_section(
 ):
     """Track a section for the authenticated user."""
     user_id = session.get_user_id()
-    
+
     try:
-        # Optimized: atomic insert with conflict handling (id required by table)
+        # Enforce per-user cap before inserting
+        count_row = db.execute(
+            text(
+                "SELECT COUNT(*) FROM user_tracked_sections "
+                "WHERE user_id = :user_id AND status = 'active'"
+            ),
+            {"user_id": user_id},
+        ).fetchone()
+        current_count = count_row[0] if count_row else 0
+        if current_count >= settings.max_tracked_sections_per_user:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"You can track at most {settings.max_tracked_sections_per_user} "
+                    "sections at a time. Please remove some before adding more."
+                ),
+            )
+
+        # Atomic insert with conflict handling (id required by table)
         new_id = str(uuid.uuid4())
         query = text("""
             INSERT INTO user_tracked_sections (id, user_id, section_id, term_code, status)
@@ -281,19 +428,13 @@ async def track_section(
             from ..core.cache import get_redis
             redis_client = await get_redis()
             if redis_client:
-                # Parse CRN from section_id (e.g., 202631-12345-ACCT-209-500)
-                # Assuming format is always {term}-{crn}-...
-                parts = request.section_id.split('-')
-                if len(parts) >= 2:
-                    crn = parts[1]
+                crn = _extract_crn(request.section_id)
+                if crn:
                     term = request.term_code
-                    # Add to master list of sections to poll
                     await redis_client.sadd("tracked_sections", f"{term}:{crn}")
-                    # Add user to list of listeners for this section
                     await redis_client.sadd(f"trackers:{term}:{crn}", user_id)
         except Exception as e:
-            # Don't fail request if Redis fails, just log it
-            print(f"Redis tracking error: {e}")
+            logger.warning("Redis tracking error: %s", e)
 
         if not row:
             # If no row returned, it means conflict (already exists).
@@ -301,10 +442,13 @@ async def track_section(
             return await get_tracked_section(request.section_id, session, db)
             
         return UserTrackedSection(**row._mapping)
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
+
 
 @router.get("/tracking", response_model=List[UserTrackedSection])
 async def get_tracked_sections(
@@ -328,7 +472,7 @@ async def get_tracked_sections(
         return [UserTrackedSection(**row._mapping) for row in rows]
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 @router.delete("/tracking/{section_id}")
 async def stop_tracking(
@@ -357,7 +501,7 @@ async def stop_tracking(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 async def get_tracked_section(section_id: str, session, db):
     user_id = session.get_user_id()
@@ -375,25 +519,28 @@ async def get_tracked_section(section_id: str, session, db):
 
 
 @router.post("/test-notification")
-async def send_test_notification(
+def send_test_notification(
     session: SessionContainer = Depends(verify_session()),
     db: Session = Depends(get_session),
 ):
     """
     Send a simple test push notification to the current user's active subscriptions.
+
+    Plain ``def`` so FastAPI runs the blocking push sends in its threadpool
+    instead of on the event loop.
     """
     user_id = session.get_user_id()
 
     message = {
         "title": "AggieSB+ Test Alert",
         "body": "If you see this, push notifications are working on this device.",
-        "url": "/",
+        "url": "https://tamu.collegescheduler.com/terms",
     }
 
     try:
         sent = NotificationService.send_push_to_user(user_id, message, db)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send notification: {str(e)}")
+        raise _db_error(e, "send_test_notification")
 
     if not sent:
         raise HTTPException(

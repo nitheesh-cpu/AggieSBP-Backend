@@ -409,7 +409,7 @@ async def _fetch_all_details_for_section(
 
 async def fetch_section_details_batch(
     sections: List[SectionSchema],
-    max_concurrent: int = 50,
+    max_concurrent: int = 25,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> List[SectionDetailsSchema]:
     """

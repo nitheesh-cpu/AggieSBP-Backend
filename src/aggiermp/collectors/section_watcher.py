@@ -33,12 +33,26 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List
+from urllib.parse import quote
 
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
+
+# Add project src to path so we can import 'aggiermp'
+project_root = Path(__file__).resolve().parent.parent.parent.parent
+src_dir = project_root / "src"
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
+# Load .env explicitly from the backend root
+env_path = project_root / ".env"
+load_dotenv(dotenv_path=env_path)
+
 from pywebpush import WebPushException, webpush
 from sqlalchemy import text
 
-load_dotenv()
+from aggiermp.core.push_endpoints import PUSH_TIMEOUT_SECONDS, is_allowed_push_endpoint
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -113,7 +127,8 @@ _WATCH_QUERY = text("""
         s.section_number,
         s.course_title,
         s.crn,
-        s.term_code
+        s.term_code,
+        term.term_desc   AS term_desc
     FROM user_tracked_sections uts
     JOIN sections s ON (
         -- section_id format: TERMCODE-CRN-DEPT-COURSENUM-SECNUM
@@ -122,6 +137,7 @@ _WATCH_QUERY = text("""
         OR s.id = uts.section_id
         OR s.id = uts.term_code || '_' || uts.section_id
     )
+    LEFT JOIN terms term ON term.term_code = s.term_code
     WHERE uts.status = 'active'
 """)
 
@@ -131,6 +147,9 @@ _WATCH_QUERY = text("""
 # ---------------------------------------------------------------------------
 def _send_push(sub_row: Any, payload: str) -> tuple[str, bool]:
     """Send one push notification. Returns (endpoint, success)."""
+    if not is_allowed_push_endpoint(sub_row.endpoint):
+        logger.warning("Skipping non-push-service endpoint")
+        return sub_row.endpoint, False
     subscription_info = {
         "endpoint": sub_row.endpoint,
         "keys": {"p256dh": sub_row.p256dh, "auth": sub_row.auth},
@@ -141,6 +160,7 @@ def _send_push(sub_row: Any, payload: str) -> tuple[str, bool]:
             data=payload,
             vapid_private_key=VAPID_PRIVATE_KEY,
             vapid_claims={"sub": VAPID_CONTACT},
+            timeout=PUSH_TIMEOUT_SECONDS,
         )
         return sub_row.endpoint, True
     except WebPushException as exc:
@@ -152,6 +172,23 @@ def _send_push(sub_row: Any, payload: str) -> tuple[str, bool]:
         return sub_row.endpoint, False
 
 
+# Seat-alert taps open College Scheduler (see _scheduler_cart_url).
+_COLLEGE_SCHEDULER_TERMS_URL = "https://tamu.collegescheduler.com/terms"
+_COLLEGE_SCHEDULER_ORIGIN = "https://tamu.collegescheduler.com"
+
+
+def _scheduler_cart_url(row: Any) -> str:
+    """Cart page for this term, e.g. /terms/Fall%202026%20-%20College%20Station/cart."""
+    desc = getattr(row, "term_desc", None)
+    if desc is None:
+        return _COLLEGE_SCHEDULER_TERMS_URL
+    desc = str(desc).strip()
+    if not desc:
+        return _COLLEGE_SCHEDULER_TERMS_URL
+    segment = quote(desc, safe="")
+    return f"{_COLLEGE_SCHEDULER_ORIGIN}/terms/{segment}/cart"
+
+
 def _build_payload(row: Any) -> str:
     return json.dumps(
         {
@@ -160,7 +197,7 @@ def _build_payload(row: Any) -> str:
                 f"{row.dept} {row.course_number}.{row.section_number} "
                 f"({row.course_title}) just opened up!"
             ),
-            "url": f"/sections/{row.term_code}",
+            "url": _scheduler_cart_url(row),
             "crn": row.crn,
             "sectionId": row.section_id,
         }

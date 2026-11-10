@@ -2,8 +2,9 @@
 Hierarchical summarization module using BART.
 """
 
+import logging
 import re
-from typing import List, Dict
+from typing import Dict, List, Mapping, Optional
 import torch
 from transformers import BartForConditionalGeneration, BartTokenizer
 
@@ -13,14 +14,34 @@ from pipelines.professors.hierarchical_summarization.config import (
 from pipelines.professors.schemas import (
     ProcessedReview,
     ClusterSummary,
+    SummaryClaim,
 )
+from pipelines.professors.hierarchical_summarization.ai_clients import (
+    TamuAIChatClient,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class HierarchicalSummarizer:
     """Generates summaries using BART in a hierarchical manner"""
 
     def __init__(self) -> None:
-        # Check CUDA availability BEFORE loading model
+        self.tamu_client = TamuAIChatClient.from_env()
+        self.tokenizer: Optional[BartTokenizer] = None
+        self.model: Optional[BartForConditionalGeneration] = None
+        self.device = torch.device("cpu")
+        self.fallback_clusters = 0
+
+        # Avoid loading the large local model when TAMU generation is configured.
+        if self.tamu_client is None:
+            self._load_local_model()
+
+    def _load_local_model(self) -> None:
+        """Load BART lazily for local generation and API fallbacks."""
+        if self.model is not None and self.tokenizer is not None:
+            return
+
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         else:
@@ -75,6 +96,9 @@ class HierarchicalSummarizer:
             return text
 
         try:
+            self._load_local_model()
+            assert self.tokenizer is not None
+            assert self.model is not None
             # Tokenize
             inputs = self.tokenizer(
                 text,
@@ -105,7 +129,7 @@ class HierarchicalSummarizer:
             return summary.strip()
 
         except Exception as e:
-            print(f"Error summarizing text: {e}")
+            logger.warning("Local summarization failed: %s", e)
             # Fallback: return first few sentences from actual text
             sentences = re.split(r"[.!?]+", text)
             return ". ".join(sentences[:3]) + "."
@@ -151,8 +175,18 @@ class HierarchicalSummarizer:
         selected = all_sentences[:max_sentences]
         return ". ".join(selected) + "." if selected else "No review text available."
 
+    def extractive_summary(
+        self, reviews: List[ProcessedReview], max_sentences: int = 3
+    ) -> str:
+        """Public evidence-preserving fallback used by the verifier."""
+        return self._extractive_summary(reviews, max_sentences=max_sentences)
+
     def summarize_cluster(
-        self, cluster_reviews: List[ProcessedReview], cluster_type: str
+        self,
+        cluster_reviews: List[ProcessedReview],
+        cluster_type: str,
+        sentiment_override: Optional[str] = None,
+        generated_claims: Optional[List[SummaryClaim]] = None,
     ) -> ClusterSummary:
         """
         Summarize a single cluster of reviews.
@@ -176,8 +210,10 @@ class HierarchicalSummarizer:
         # Combine review texts (needed for sentiment analysis)
         combined_text = " ".join([review.text for review in cluster_reviews])
 
+        if generated_claims:
+            summary = " ".join(claim.text for claim in generated_claims)
         # For very small clusters (< 3 reviews), use extractive summarization
-        if len(cluster_reviews) < 3:
+        elif len(cluster_reviews) < 3:
             summary = self._extractive_summary(cluster_reviews, max_sentences=3)
         else:
             # Chunk if necessary (BART max input is 1024 tokens, roughly 3000-4000 chars)
@@ -200,12 +236,12 @@ class HierarchicalSummarizer:
                 "introduction to",
             ]
             if any(phrase in summary.lower() for phrase in academic_phrases):
-                print(
-                    "Warning: Summary contains academic phrases, using extractive fallback"
+                logger.warning(
+                    "Summary contains academic phrasing; using extractive fallback"
                 )
                 summary = self._extractive_summary(cluster_reviews, max_sentences=4)
 
-        # Determine sentiment (simple heuristic)
+        # Determine sentiment. TypeSafe supplies the override when configured.
         text_lower = combined_text.lower()
         positive_words = [
             "good",
@@ -231,7 +267,9 @@ class HierarchicalSummarizer:
         positive_count = sum(1 for word in positive_words if word in text_lower)
         negative_count = sum(1 for word in negative_words if word in text_lower)
 
-        if positive_count > negative_count * 1.5:
+        if sentiment_override in {"positive", "negative", "mixed", "unclear"}:
+            sentiment = sentiment_override
+        elif positive_count > negative_count * 1.5:
             sentiment = "positive"
         elif negative_count > positive_count * 1.5:
             sentiment = "negative"
@@ -247,10 +285,18 @@ class HierarchicalSummarizer:
             review_count=len(cluster_reviews),
             sentiment=sentiment,
             confidence=confidence,
+            claims=generated_claims or [],
         )
 
     def summarize_clusters(
-        self, clusters: Dict[int, List[ProcessedReview]], cluster_types: Dict[int, str]
+        self,
+        clusters: Dict[int, List[ProcessedReview]],
+        cluster_types: Dict[int, str],
+        sentiments: Optional[Mapping[int, str]] = None,
+        cluster_topics: Optional[Mapping[int, List[str]]] = None,
+        preserve_disagreement: Optional[Mapping[int, bool]] = None,
+        *,
+        generated: Optional[Dict[int, List[SummaryClaim]]] = None,
     ) -> List[ClusterSummary]:
         """
         Summarize multiple clusters.
@@ -262,11 +308,19 @@ class HierarchicalSummarizer:
         Returns:
             List of ClusterSummary objects
         """
+        # TAMU generation runs per professor in the pipeline's structured path;
+        # this local path covers runs without TAMU credentials.
+        generated = generated or {}
         summaries = []
 
         for cluster_id, cluster_reviews in clusters.items():
             cluster_type = cluster_types.get(cluster_id, "other")
-            summary = self.summarize_cluster(cluster_reviews, cluster_type)
+            summary = self.summarize_cluster(
+                cluster_reviews,
+                cluster_type,
+                sentiment_override=(sentiments or {}).get(cluster_id),
+                generated_claims=generated.get(cluster_id),
+            )
             summaries.append(summary)
 
         return summaries

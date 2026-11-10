@@ -5,6 +5,7 @@ Embedding generation module with caching.
 import os
 import pickle
 import hashlib
+import logging
 from typing import List, Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -15,20 +16,22 @@ from pipelines.professors.hierarchical_summarization.config import (
     EMBEDDINGS_CACHE_DIR,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class EmbeddingGenerator:
     """Generates and caches sentence embeddings"""
 
     def __init__(self) -> None:
-        print(f"Loading embedding model: {EMBEDDING_MODEL}")
+        logger.debug("Loading embedding model: %s", EMBEDDING_MODEL)
         import torch
 
-        print(f"CUDA available: {torch.cuda.is_available()}")
+        logger.debug("CUDA available: %s", torch.cuda.is_available())
         if torch.cuda.is_available():
-            print(f"CUDA device: {torch.cuda.get_device_name(0)}")
+            logger.debug("CUDA device: %s", torch.cuda.get_device_name(0))
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = SentenceTransformer(EMBEDDING_MODEL, device=device)
-        print(f"Embedding model loaded on {device}")
+        logger.debug("Embedding model loaded on %s", device)
 
         # Ensure cache directory exists
         os.makedirs(EMBEDDINGS_CACHE_DIR, exist_ok=True)
@@ -49,7 +52,9 @@ class EmbeddingGenerator:
 
                     return cast(np.ndarray, pickle.load(f))
             except Exception as e:
-                print(f"Error loading cache for {review_id}: {e}")
+                logger.warning(
+                    "Could not load embedding cache for %s: %s", review_id, e
+                )
                 return None
         return None
 
@@ -60,7 +65,7 @@ class EmbeddingGenerator:
             with open(cache_path, "wb") as f:
                 pickle.dump(embedding, f)
         except Exception as e:
-            print(f"Error saving cache for {review_id}: {e}")
+            logger.warning("Could not save embedding cache for %s: %s", review_id, e)
 
     def generate_embeddings(
         self, texts: List[str], review_ids: List[str], use_cache: bool = True
@@ -106,7 +111,7 @@ class EmbeddingGenerator:
             new_embeddings = self.model.encode(
                 texts_to_encode,
                 batch_size=EMBEDDING_BATCH_SIZE,
-                show_progress_bar=True,
+                show_progress_bar=logger.isEnabledFor(logging.DEBUG),
                 convert_to_numpy=True,
             )
 

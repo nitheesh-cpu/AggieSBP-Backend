@@ -7,10 +7,11 @@ import asyncio
 import ast
 import json
 import logging
+import secrets
 import time
 from typing import Any, Dict, List, Optional, Tuple, cast, Iterator
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -33,8 +34,17 @@ from ..core.cache import (
     TTL_15MIN,
     TTL_WEEK,
 )
+from .structured_summaries import (
+    STRUCTURED_SUMMARY_COLUMNS,
+    structured_course_fields,
+    structured_overall_fields,
+    structured_summary_columns_present,
+)
 from .routers.discover import router as discover_router
 from .routers.users import router as users_router
+from .routers.professors import router as professors_router
+from .routers.prereqs import router as prereqs_router
+from .routers.planner import router as planner_router
 from ..core.config import settings
 from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
 from supertokens_python.recipe import (
@@ -78,13 +88,13 @@ init(
                             name="Google",
                             clients=[
                                 ProviderClientConfig(
-                                    client_id=str(settings.google_oauth_client_id),
-                                    client_secret=str(settings.google_oauth_client_secret),
+                                    client_id=settings.google_oauth_client_id,
+                                    client_secret=settings.google_oauth_client_secret,
                                 )
                             ]
                         )
                     )
-                ] if settings.google_oauth_client_id else []
+                ] if settings.google_oauth_client_id and settings.google_oauth_client_secret else []
             )
         ),
         dashboard.init()
@@ -230,6 +240,20 @@ class Professor(BaseModel):
     total_courses: int
 
 
+def _review_quality(review: Any) -> Optional[float]:
+    """A review's quality rating (1-5) as RateMyProfessor shows it.
+
+    RMP stores quality in clarity_rating and helpful_rating. Difficulty is a
+    separate scale and must not be mixed in. None when the review has neither.
+    """
+    parts = [
+        float(r)
+        for r in (review.clarity_rating, review.helpful_rating)
+        if r is not None and r > 0
+    ]
+    return round(sum(parts) / len(parts), 1) if parts else None
+
+
 class Review(BaseModel):
     """Review information model"""
 
@@ -260,6 +284,14 @@ class HealthCheck(BaseModel):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _db_error(e: Exception, context: str = "") -> HTTPException:
+    """Log the full exception and return a safe 500 that doesn't leak internals."""
+    msg = f"DB error in {context}: {e}" if context else f"DB error: {e}"
+    logger.error(msg, exc_info=True)
+    return HTTPException(status_code=500, detail="An internal server error occurred.")
+
+
 app = FastAPI(
     title="AggieSBP API",
     description="**Texas A&M University Course and Professor Rating API**<br>This API provides comprehensive data about Texas A&M University courses, professors, and student ratings.<br><br>**Features:**<br>- **Departments**: Browse and search university departments<br>- **Courses**: Detailed course information with GPA data and ratings<br>- **Professors**: Professor profiles with reviews and ratings<br>- **Reviews**: Student reviews and ratings for courses and professors- **Comparisons**: Compare multiple courses side by side<br><br>**Data Sources:**<br>- Rate My Professor reviews and ratings<br>- Official university GPA data<br>- Course enrollment statistics<br><br>All endpoints support filtering, pagination, and detailed search capabilities.<br>",
@@ -275,7 +307,7 @@ app = FastAPI(
     },
     servers=[
         {
-            "url": "https://api-aggiesbp.servehttp.com",
+            "url": "https://api-aggiesbp.nitheeshk.com",
             "description": "Production server",
         },
         {"url": "http://localhost:8000", "description": "Development server"},
@@ -305,7 +337,14 @@ def _build_cors_origins() -> List[str]:
         o = part.strip().rstrip("/")
         if o and o not in origins:
             origins.append(o)
-    for loc in ("http://localhost:3000", "http://127.0.0.1:3000"):
+    for loc in (
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://localhost:3000",
+        "https://127.0.0.1:3000",
+        # Extension content script on Howdy needs to POST to local dev server
+        "https://howdy.tamu.edu",
+    ):
         if loc not in origins:
             origins.append(loc)
     # Never use ["*"] with allow_credentials=True — browsers will block it.
@@ -361,25 +400,36 @@ def _normalize_days_of_week(value: Any) -> list[str]:
 _cors_origins = _build_cors_origins()
 _cors_kwargs = dict(
     allow_origins=_cors_origins,
+    # Also allow requests from the browser extension (origin = chrome-extension://<id>
+    # or moz-extension://<id>). The ID is unpredictable so we use regex.
+    # Starlette echoes back the matched origin rather than "*", so credentials work.
+    allow_origin_regex=r"(chrome-extension|moz-extension)://[a-z0-9]+",
     allow_credentials=True,
-    allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["Content-Type"] + get_all_cors_headers(),
+    allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH", "HEAD"],
+    allow_headers=["Content-Type", "Authorization"] + get_all_cors_headers(),
+)
+# Local dev: http(s) + localhost / 127.0.0.1 / IPv6 loopback, any port.
+_LOCAL_ORIGIN_REGEX = (
+    r"^http://localhost(:\d+)?$"
+    r"|^http://127\.0\.0\.1(:\d+)?$"
+    r"|^https://localhost(:\d+)?$"
+    r"|^https://127\.0\.0\.1(:\d+)?$"
+    r"|^http://\[::1\](:\d+)?$"
+    r"|^https://\[::1\](:\d+)?$"
 )
 # Vercel preview deployments use unique subdomains; regex allows them without
 # listing each preview URL in env.
 if getattr(settings, "cors_allow_vercel_previews", False):
     _cors_kwargs["allow_origin_regex"] = (
-        r"^https://.*\.vercel\.app$|^http://localhost(:\d+)?$|^http://127\.0\.0\.1(:\d+)?$"
+        r"^https://.*\.vercel\.app$|" + _LOCAL_ORIGIN_REGEX
     )
 else:
-    _cors_kwargs["allow_origin_regex"] = (
-        r"^http://localhost(:\d+)?$|^http://127\.0\.0\.1(:\d+)?$"
-    )
+    _cors_kwargs["allow_origin_regex"] = _LOCAL_ORIGIN_REGEX
 
-app.add_middleware(CORSMiddleware, **_cors_kwargs)
-
-# Add GZip middleware
+# GZip before CORS so CORSMiddleware is outermost: OPTIONS preflight must not
+# pass through GZipResponder (can confuse the browser with CORS failures).
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 
 # Redis lifecycle events
@@ -675,7 +725,7 @@ async def get_data_stats(
 
     except Exception as e:
         logger.error(f"Error in get_data_stats: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -743,7 +793,7 @@ async def get_terms(
 
     except Exception as e:
         logger.error(f"Error in get_terms: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -804,13 +854,15 @@ async def get_sections(
     Supports pagination with skip and limit parameters.
     Use limit=-1 to retrieve all sections (use with caution for large datasets).
     """
-    try:
-        # Build the query with optional limit
-        limit_clause = "" if limit == -1 else f"LIMIT {limit}"
-        offset_clause = f"OFFSET {skip}" if skip > 0 else ""
+    # Guard: cap unlimited requests to prevent full-table dumps
+    if limit == -1:
+        limit = 5000
+    if limit <= 0:
+        limit = 500
 
-        sections_query = text(f"""
-            SELECT 
+    try:
+        sections_query = text("""
+            SELECT
                 s.id,
                 s.term_code,
                 s.crn,
@@ -833,10 +885,10 @@ async def get_sections(
                 s.attributes_text
             FROM sections s
             ORDER BY s.term_code DESC, s.dept, s.course_number, s.section_number
-            {limit_clause} {offset_clause}
+            LIMIT :limit OFFSET :skip
         """)
 
-        sections_result = db.execute(sections_query)
+        sections_result = db.execute(sections_query, {"limit": limit, "skip": skip})
         section_rows = sections_result.fetchall()
 
         if not section_rows:
@@ -944,7 +996,7 @@ async def get_sections(
 
     except Exception as e:
         logger.error(f"Error in get_sections: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -1000,13 +1052,14 @@ async def get_sections_by_term(
     Term codes follow the format: YYYYSS where YYYY is year and SS is semester code.
     Example: 202611 = Spring 2026 College Station
     """
-    try:
-        # Build the query with optional limit
-        limit_clause = "" if limit == -1 else f"LIMIT {limit}"
-        offset_clause = f"OFFSET {skip}" if skip > 0 else ""
+    if limit == -1:
+        limit = 5000
+    if limit <= 0:
+        limit = 500
 
-        sections_query = text(f"""
-            SELECT 
+    try:
+        sections_query = text("""
+            SELECT
                 s.id,
                 s.term_code,
                 s.crn,
@@ -1030,10 +1083,10 @@ async def get_sections_by_term(
             FROM sections s
             WHERE s.term_code = :term_code
             ORDER BY s.dept, s.course_number, s.section_number
-            {limit_clause} {offset_clause}
+            LIMIT :limit OFFSET :skip
         """)
 
-        sections_result = db.execute(sections_query, {"term_code": term_code})
+        sections_result = db.execute(sections_query, {"term_code": term_code, "limit": limit, "skip": skip})
         section_rows = sections_result.fetchall()
 
         if not section_rows:
@@ -1145,7 +1198,7 @@ async def get_sections_by_term(
         raise
     except Exception as e:
         logger.error(f"Error in get_sections_by_term: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -1367,7 +1420,7 @@ async def get_sections_by_term_and_course(
         raise
     except Exception as e:
         logger.error(f"Error in get_sections_by_term_and_course: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -1486,7 +1539,7 @@ async def get_course_professors_by_term(
         raise
     except Exception as e:
         logger.error(f"Error in get_course_professors_by_term: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -1542,6 +1595,7 @@ async def get_course_professors_details(
     term_code: str,
     course_code: str,
     db: Session = Depends(get_db_session),
+    campus: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
     """
     Get comprehensive professor data for a course in a term.
@@ -1553,17 +1607,38 @@ async def get_course_professors_details(
     - otherCourseSummaries: summaries for other courses they teach
     """
     import re
-    from difflib import SequenceMatcher
     from aggiermp.database.base import (
         SectionDB,
         SectionInstructorDB,
         ProfessorDB,
         ProfessorSummaryNewDB,
         GpaDataDB,
+        TermDB,
     )
-    from sqlalchemy import func, or_
+    from aggiermp.core.name_matching import parse_person_name, professor_name_score
+    from aggiermp.core.campuses import (
+        TEXAS_AM_ID, university_id_for_campus, campus_from_term_description,
+    )
+    from sqlalchemy import or_, func
+    from sqlalchemy.orm import undefer
+    from aggiermp.api.structured_summaries import (
+        STRUCTURED_SUMMARY_COLUMNS,
+        structured_course_fields,
+        structured_overall_fields,
+        structured_summary_columns_present,
+    )
 
     try:
+        structured = structured_summary_columns_present(db)
+        summary_options = (
+            [
+                undefer(getattr(ProfessorSummaryNewDB, column))
+                for column in STRUCTURED_SUMMARY_COLUMNS
+            ]
+            if structured
+            else []
+        )
+
         # Parse course_code (e.g., "CSCE121" -> dept="CSCE", course_num="121")
         match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", course_code.upper())
         if not match:
@@ -1575,18 +1650,28 @@ async def get_course_professors_details(
         dept = match.group(1)
         course_num = match.group(2)
         target_course_code = course_code.upper()
+        term = db.query(TermDB).filter(TermDB.term_code == term_code).first()
+        term_campus = campus_from_term_description(term.term_desc if term else None)
+        campus_filters = []
+        if campus:
+            campus_match = func.lower(func.trim(SectionDB.campus)) == campus.strip().lower()
+            if (term_campus or "").casefold() == campus.strip().casefold():
+                campus_match = or_(campus_match, SectionDB.campus.is_(None), func.trim(SectionDB.campus) == "")
+            campus_filters.append(campus_match)
 
         # Step 1: Get all instructors teaching this course in this term
         instructor_rows = (
             db.query(
                 SectionInstructorDB.instructor_name,
                 SectionDB.section_number,
+                SectionDB.campus,
             )
             .join(SectionDB, SectionInstructorDB.section_id == SectionDB.id)
             .filter(
                 SectionInstructorDB.term_code == term_code,
                 SectionDB.dept == dept,
                 SectionDB.course_number == course_num,
+                *campus_filters,
             )
             .distinct()
             .all()
@@ -1599,39 +1684,22 @@ async def get_course_professors_details(
             )
 
         # Build unique instructor names and their sections
-        instructor_sections: Dict[str, List[str]] = {}
+        instructor_sections: Dict[Tuple[str, Optional[str]], List[str]] = {}
         for row in instructor_rows:
-            name = row.instructor_name
-            if name not in instructor_sections:
-                instructor_sections[name] = []
-            if row.section_number not in instructor_sections[name]:
-                instructor_sections[name].append(row.section_number)
+            identity = (row.instructor_name, (row.campus or "").strip() or term_campus)
+            if identity not in instructor_sections:
+                instructor_sections[identity] = []
+            if row.section_number not in instructor_sections[identity]:
+                instructor_sections[identity].append(row.section_number)
 
         # Step 2: Match instructor names to professor IDs and get summaries
         result_professors = []
 
-        def normalize_name_part(value: str) -> str:
-            return re.sub(r"[^a-z]", "", value.lower())
-
-        def parse_name(full_name: str) -> tuple[str, List[str]]:
-            raw_parts = [p for p in full_name.strip().split() if p]
-            if not raw_parts:
-                return ("", [])
-            # Drop common suffixes and punctuation-only tokens.
-            suffixes = {"jr", "sr", "ii", "iii", "iv", "phd", "md"}
-            parts = [
-                normalize_name_part(p)
-                for p in raw_parts
-                if normalize_name_part(p) and normalize_name_part(p) not in suffixes
-            ]
-            if not parts:
-                return ("", [])
-            first = parts[0]
-            surname_tokens = parts[1:] if len(parts) > 1 else [parts[-1]]
-            return (first, surname_tokens)
-
-        for instructor_name, sections in instructor_sections.items():
-            first_name, surname_tokens = parse_name(instructor_name)
+        for (instructor_name, instructor_campus), sections in instructor_sections.items():
+            university_id = university_id_for_campus(instructor_campus)
+            parsed_instructor = parse_person_name(instructor_name)
+            first_name = parsed_instructor.given[0] if parsed_instructor.given else ""
+            surname_tokens = list(parsed_instructor.surname)
             if not surname_tokens:
                 continue
 
@@ -1642,6 +1710,7 @@ async def get_course_professors_details(
                 if token
             ]
             prof_query = db.query(ProfessorDB)
+            prof_query = prof_query.filter(ProfessorDB.university_id == university_id)
             if surname_filters:
                 prof_query = prof_query.filter(or_(*surname_filters))
             if first_name:
@@ -1650,61 +1719,42 @@ async def get_course_professors_details(
                 )
             candidates = prof_query.limit(200).all()
 
-            professor = None
-            best_score = 0.0
+            from aggiermp.database.base import ReviewDB
+
+            finalists = []
+            best_score = 0.82
             for candidate in candidates:
-                cand_first = normalize_name_part(candidate.first_name or "")
-                cand_last = normalize_name_part(candidate.last_name or "")
-                if not cand_last:
-                    continue
+                candidate_name = f"{candidate.first_name} {candidate.last_name}"
+                identity_score = professor_name_score(instructor_name, candidate_name)
+                if identity_score > best_score:
+                    best_score = identity_score
+                    finalists = [candidate]
+                elif identity_score == best_score:
+                    finalists.append(candidate)
 
-                last_score = max(
-                    (
-                        SequenceMatcher(None, surname_token, cand_last).ratio()
-                        for surname_token in surname_tokens
-                    ),
-                    default=0.0,
-                )
-                first_score = (
-                    SequenceMatcher(None, first_name, cand_first).ratio()
-                    if first_name and cand_first
-                    else 0.0
-                )
-                bonus = 0.0
-                if first_name and cand_first and cand_first.startswith(first_name[:1]):
-                    bonus += 0.05
-                if any(
-                    cand_last.startswith(surname_token[:3])
-                    for surname_token in surname_tokens
-                    if len(surname_token) >= 3
-                ):
-                    bonus += 0.05
-
-                review_signal = min(float(candidate.num_ratings or 0), 50.0) / 50.0
-                score = (last_score * 0.72) + (first_score * 0.2) + bonus + (
-                    review_signal * 0.08
-                )
-                if score > best_score:
-                    best_score = score
-                    professor = candidate
-
-            # Fallback to stricter lookup when candidate pool is empty.
-            if not professor:
-                fallback_token = surname_tokens[-1]
-                fallback_query = db.query(ProfessorDB).filter(
-                    ProfessorDB.last_name.ilike(f"%{fallback_token}%")
-                )
-                if first_name:
-                    fallback_query = fallback_query.filter(
-                        ProfessorDB.first_name.ilike(f"{first_name}%")
-                    )
-                professor = fallback_query.first()
+            if len(finalists) > 1:
+                evidence = db.query(ReviewDB.professor_id, ReviewDB.course_code).filter(
+                    ReviewDB.professor_id.in_([candidate.id for candidate in finalists]),
+                    ReviewDB.course_code.ilike(f"{dept}%"),
+                ).distinct().all()
+                exact_ids = set()
+                subject_ids = set()
+                for profile_id, reviewed_course in evidence:
+                    normalized = re.sub(r"[^A-Z0-9]", "", reviewed_course.upper())
+                    if normalized == target_course_code:
+                        exact_ids.add(profile_id)
+                    if re.match(rf"^{dept}\d", normalized):
+                        subject_ids.add(profile_id)
+                eligible = exact_ids or subject_ids
+                finalists = [candidate for candidate in finalists if candidate.id in eligible]
+            professor = finalists[0] if len(finalists) == 1 else None
 
             # Get overall summary for totalReviews
             overall_summary = None
             if professor:
                 overall_summary = (
                     db.query(ProfessorSummaryNewDB)
+                    .options(*summary_options)
                     .filter(
                         ProfessorSummaryNewDB.professor_id == professor.id,
                         ProfessorSummaryNewDB.course_code.is_(None),
@@ -1715,7 +1765,14 @@ async def get_course_professors_details(
             prof_data: Dict[str, Any] = {
                 "id": professor.id if professor else None,
                 "name": instructor_name,
+                "campus": instructor_campus,
+                "universityId": university_id,
                 "rating": professor.avg_rating if professor else None,
+                "overallRating": professor.avg_rating if professor else None,
+                "overallReviewCount": professor.num_ratings if professor else 0,
+                "rmpId": professor.legacy_id if professor else None,
+                "courseRating": None,
+                "courseReviewCount": 0,
                 "totalReviews": overall_summary.total_reviews if overall_summary else 0,
                 "courseSummary": None,
                 "overallSummary": None,
@@ -1727,6 +1784,7 @@ async def get_course_professors_details(
                 # Get ALL course summaries for this professor
                 all_course_summaries = (
                     db.query(ProfessorSummaryNewDB)
+                    .options(*summary_options)
                     .filter(
                         ProfessorSummaryNewDB.professor_id == professor.id,
                         ProfessorSummaryNewDB.course_code.isnot(None),
@@ -1738,6 +1796,7 @@ async def get_course_professors_details(
                 def format_course_summary(s: Any) -> Dict[str, Any]:
                     return {
                         "courseCode": s.course_code,
+                        "rating": s.avg_rating,
                         "teaching": s.teaching,
                         "exams": s.exams,
                         "grading": s.grading,
@@ -1747,12 +1806,15 @@ async def get_course_professors_details(
                         "other": s.other,
                         "reviewCount": s.total_reviews,
                         "confidence": s.confidence,
+                        **structured_course_fields(s, structured),
                     }
 
                 for cs in all_course_summaries:
                     if cs.course_code == target_course_code:
                         # This is the target course
                         prof_data["courseSummary"] = format_course_summary(cs)
+                        prof_data["courseRating"] = cs.avg_rating
+                        prof_data["courseReviewCount"] = cs.total_reviews
                     else:
                         prof_data["otherCourseSummaries"].append(format_course_summary(cs))
 
@@ -1772,50 +1834,53 @@ async def get_course_professors_details(
                         "consistency": overall_summary.consistency,
                         "reviewCount": overall_summary.total_reviews,
                         "confidence": overall_summary.confidence,
+                        **structured_overall_fields(overall_summary, structured),
                     }
 
-                # Get grade distribution for this course + professor
-                gpa_last_names: List[str] = []
-                if professor and professor.last_name:
-                    gpa_last_names.append(str(professor.last_name))
-                gpa_last_names.extend(surname_tokens)
-                gpa_last_names = [n for n in {name.strip() for name in gpa_last_names} if n]
-
-                gpa_last_name_filters = [
-                    GpaDataDB.professor.ilike(f"%{name}%") for name in gpa_last_names
-                ]
-                gpa_rows = (
-                    db.query(
-                        func.avg(GpaDataDB.gpa).label("avg_gpa"),
-                        func.sum(GpaDataDB.grade_a).label("total_a"),
-                        func.sum(GpaDataDB.grade_b).label("total_b"),
-                        func.sum(GpaDataDB.grade_c).label("total_c"),
-                        func.sum(GpaDataDB.grade_d).label("total_d"),
-                        func.sum(GpaDataDB.grade_f).label("total_f"),
-                        func.sum(GpaDataDB.total_students).label("total_students"),
-                    )
+                # Match individual GPA rows by identity. Last-name-only SQL matching
+                # can merge two instructors who happen to share a surname.
+                canonical_name = f"{professor.first_name} {professor.last_name}"
+                course_gpa_rows = (
+                    db.query(GpaDataDB)
                     .filter(
                         GpaDataDB.dept == dept,
                         GpaDataDB.course_number == course_num,
-                        or_(*gpa_last_name_filters)
-                        if gpa_last_name_filters
-                        else GpaDataDB.professor.isnot(None),
                     )
-                    .first()
-                )
+                    .all()
+                ) if university_id == TEXAS_AM_ID else []
+                matched_gpa_rows = [
+                    row
+                    for row in course_gpa_rows
+                    if max(
+                        professor_name_score(row.professor, instructor_name),
+                        professor_name_score(row.professor, canonical_name),
+                    )
+                    >= 0.82
+                ]
+                total_students = sum(row.total_students or 0 for row in matched_gpa_rows)
 
-                if gpa_rows and gpa_rows.total_students and gpa_rows.total_students > 0:
+                if total_students > 0:
+                    gpa_students = sum(
+                        row.total_students or 0
+                        for row in matched_gpa_rows
+                        if row.gpa is not None
+                    )
+                    weighted_gpa_points = sum(
+                        (row.gpa or 0) * (row.total_students or 0)
+                        for row in matched_gpa_rows
+                        if row.gpa is not None
+                    )
                     prof_data["grades"] = {
-                        "avgGpa": round(gpa_rows.avg_gpa, 2)
-                        if gpa_rows.avg_gpa
+                        "avgGpa": round(weighted_gpa_points / gpa_students, 2)
+                        if gpa_students
                         else None,
-                        "totalStudents": gpa_rows.total_students,
+                        "totalStudents": total_students,
                         "distribution": {
-                            "A": gpa_rows.total_a or 0,
-                            "B": gpa_rows.total_b or 0,
-                            "C": gpa_rows.total_c or 0,
-                            "D": gpa_rows.total_d or 0,
-                            "F": gpa_rows.total_f or 0,
+                            "A": sum(row.grade_a or 0 for row in matched_gpa_rows),
+                            "B": sum(row.grade_b or 0 for row in matched_gpa_rows),
+                            "C": sum(row.grade_c or 0 for row in matched_gpa_rows),
+                            "D": sum(row.grade_d or 0 for row in matched_gpa_rows),
+                            "F": sum(row.grade_f or 0 for row in matched_gpa_rows),
                         },
                     }
 
@@ -1833,7 +1898,7 @@ async def get_course_professors_details(
         raise
     except Exception as e:
         logger.error(f"Error in get_course_professors_details: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -1898,7 +1963,14 @@ async def get_departments_info(
                         2
                     ) as weighted_avg_gpa
                 FROM gpa_data 
-                WHERE year = '2025' AND semester = 'SPRING'
+                WHERE (year, semester) IN (
+                    SELECT year, semester FROM gpa_data
+                    WHERE gpa IS NOT NULL AND total_students > 0
+                    GROUP BY year, semester
+                    ORDER BY (year::int) DESC,
+                             CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
+                    LIMIT 4
+                )
                   AND gpa IS NOT NULL AND total_students > 0
                 GROUP BY dept
             ),
@@ -1919,8 +1991,8 @@ async def get_departments_info(
                     d.long_name as name,
                     COALESCE(gs.course_count, 0) as courses,
                     COALESCE(gs.professor_count, 0) as professors,
-                    COALESCE(gs.weighted_avg_gpa, 3.0) as avg_gpa,
-                    COALESCE(rr.avg_professor_rating, 3.0) as rating
+                    gs.weighted_avg_gpa as avg_gpa,
+                    rr.avg_professor_rating as rating
                 FROM departments d
                 LEFT JOIN gpa_stats gs ON d.id = gs.dept
                 LEFT JOIN review_ratings rr ON d.id = rr.dept_code
@@ -1930,8 +2002,8 @@ async def get_departments_info(
                     COUNT(*) as total_departments,
                     COALESCE(SUM(courses), 0) as total_courses,
                     COALESCE(SUM(professors), 0) as total_professors,
-                    ROUND(AVG(NULLIF(avg_gpa, 3.0))::numeric, 2) as overall_avg_gpa,
-                    ROUND(AVG(NULLIF(rating, 3.0))::numeric, 1) as overall_avg_rating
+                    ROUND(AVG(avg_gpa)::numeric, 2) as overall_avg_gpa,
+                    ROUND(AVG(rating)::numeric, 1) as overall_avg_rating
                 FROM dept_data
             ),
             top_depts AS (
@@ -1987,10 +2059,10 @@ async def get_departments_info(
         overall_avg_gpa = (
             float(agg_row.rating_or_overall_gpa)
             if agg_row.rating_or_overall_gpa
-            else 3.0
+            else None
         )
         overall_avg_rating = (
-            float(agg_row.overall_rating) if agg_row.overall_rating else 3.0
+            float(agg_row.overall_rating) if agg_row.overall_rating else None
         )
 
         # Parse top departments
@@ -2008,7 +2080,7 @@ async def get_departments_info(
                     else 0,
                     "avgGpa": float(dept_row.avg_gpa_or_total_professors)
                     if dept_row.avg_gpa_or_total_professors
-                    else 3.0,
+                    else None,
                     "rating": float(dept_row.rating_or_overall_gpa)
                     if dept_row.rating_or_overall_gpa
                     else None,
@@ -2071,7 +2143,7 @@ async def get_departments_info(
 
     except Exception as e:
         logger.error(f"Error in departments_info: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -2144,8 +2216,8 @@ async def get_departments(
                 d.long_name as name,
                 COALESCE(last_sem.course_count, 0) as courses,
                 COALESCE(last_sem.professor_count, 0) as professors,
-                COALESCE(last_sem.weighted_avg_gpa, 3.0) as avgGpa,
-                COALESCE(review_ratings.avg_professor_rating, 3.0) as rating,
+                last_sem.weighted_avg_gpa as avgGpa,
+                review_ratings.avg_professor_rating as rating,
                 d.title as description
             FROM departments d
             LEFT JOIN (
@@ -2158,7 +2230,14 @@ async def get_departments(
                         2
                     ) as weighted_avg_gpa
                 FROM gpa_data 
-                WHERE year = '2025' AND semester = 'SPRING'
+                WHERE (year, semester) IN (
+                    SELECT year, semester FROM gpa_data
+                    WHERE gpa IS NOT NULL AND total_students > 0
+                    GROUP BY year, semester
+                    ORDER BY (year::int) DESC,
+                             CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
+                    LIMIT 4
+                )
                   AND gpa IS NOT NULL AND total_students > 0
                 GROUP BY dept
             ) last_sem ON d.id = last_sem.dept
@@ -2227,7 +2306,7 @@ async def get_departments(
                     "name": row.name,
                     "courses": int(row.courses) if row.courses else 0,
                     "professors": int(row.professors) if row.professors else 0,
-                    "avgGpa": float(row.avggpa) if row.avggpa else 3.0,
+                    "avgGpa": float(row.avggpa) if row.avggpa else None,
                     "rating": float(row.rating) if row.rating else None,
                     "topCourses": top_courses_by_dept.get(row.code, []),
                     "description": row.description,
@@ -2237,7 +2316,7 @@ async def get_departments(
         return departments
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -2308,7 +2387,7 @@ async def get_courses(
                 WHERE gpa IS NOT NULL AND total_students > 0
                 GROUP BY year, semester
                 ORDER BY (year::int) DESC,
-                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SPRING' THEN 2 WHEN 'SUMMER' THEN 3 ELSE 4 END
+                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
                 LIMIT 4
             ),
             last_4_semesters_gpa AS (
@@ -2390,7 +2469,7 @@ async def get_courses(
                 END as difficulty,
                 COALESCE(ed.total_enrollment, 0) as enrollment,
                 COALESCE(sd.section_count, 0) as sections,
-                COALESCE(cr.avg_professor_rating, 3.0) as rating,
+                cr.avg_professor_rating as rating,
                 c.description,
                 CASE 
                     WHEN c.course_number ~ '^[0-9]+$' AND c.course_number::int < 300 THEN ARRAY['Undergraduate']
@@ -2447,8 +2526,12 @@ async def get_courses(
                     sa.attribute_id,
                     sa.attribute_title
                 FROM section_attributes sa
-                WHERE sa.year = '2025' 
-                  AND sa.semester = 'Fall'
+                WHERE (sa.year, sa.semester) = (
+                    SELECT year, semester FROM section_attributes
+                    GROUP BY year, semester
+                    ORDER BY year DESC, CASE semester WHEN 'Fall' THEN 1 WHEN 'Summer' THEN 2 WHEN 'Spring' THEN 3 ELSE 4 END
+                    LIMIT 1
+                )
                 ORDER BY sa.dept, sa.course_number, sa.attribute_id
             """)
 
@@ -2483,7 +2566,7 @@ async def get_courses(
                     "difficulty": row.difficulty,
                     "enrollment": int(row.enrollment),
                     "sections": int(row.sections),
-                    "rating": float(row.rating),
+                    "rating": float(row.rating) if row.rating is not None else None,
                     "description": row.description
                     or f"Course in {row.department_name}",
                     "tags": row.tags,
@@ -2494,7 +2577,7 @@ async def get_courses(
         return courses
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -2571,7 +2654,7 @@ async def get_course_details(
                 WHERE gpa IS NOT NULL AND total_students > 0
                 GROUP BY year, semester
                 ORDER BY (year::int) DESC,
-                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SPRING' THEN 2 WHEN 'SUMMER' THEN 3 ELSE 4 END
+                         CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
                 LIMIT 4
             ),
             last_4_semesters_gpa AS (
@@ -2613,8 +2696,21 @@ async def get_course_details(
                 WHERE year = (SELECT MAX(year) FROM gpa_data WHERE total_students > 0)
                   AND total_students > 0
                 GROUP BY dept, course_number
+            ),
+            all_time_gpa AS (
+                -- Fallback for courses not taught in the recent window
+                -- (e.g. renumbered courses): every semester on record.
+                SELECT
+                    ROUND(
+                        SUM(gd.gpa::numeric * gd.total_students) / NULLIF(SUM(gd.total_students), 0),
+                        2
+                    ) as weighted_avg_gpa,
+                    MAX(gd.year) as last_year
+                FROM gpa_data gd
+                WHERE gd.dept = :dept AND gd.course_number = :course_num
+                  AND gd.gpa IS NOT NULL AND gd.total_students > 0
             )
-            SELECT 
+            SELECT
                 c.code as code,
                 c.name as name,
                 c.description,
@@ -2628,22 +2724,31 @@ async def get_course_details(
                 c.corequisites as corequisites_text,
                 c.corequisite_courses,
                 c.corequisite_groups,
+                c.prereq_tree,
+                c.coreq_tree,
+                c.prereq_parse,
                 c.cross_listings,
-                CASE 
-                    WHEN l4s.weighted_avg_gpa IS NOT NULL THEN l4s.weighted_avg_gpa
-                    ELSE -1
-                END as avgGPA,
-                CASE 
-                    WHEN l4s.weighted_avg_gpa IS NULL THEN 'Unknown'
-                    WHEN l4s.weighted_avg_gpa >= 3.7 THEN 'Light'
-                    WHEN l4s.weighted_avg_gpa >= 3.3 THEN 'Moderate'
-                    WHEN l4s.weighted_avg_gpa >= 2.7 THEN 'Challenging'
-                    WHEN l4s.weighted_avg_gpa >= 2.0 THEN 'Intensive'
+                COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa, -1) as avgGPA,
+                CASE
+                    WHEN l4s.weighted_avg_gpa IS NOT NULL THEN 'recent'
+                    WHEN atg.weighted_avg_gpa IS NOT NULL THEN 'all'
+                    ELSE NULL
+                END as gpa_scope,
+                atg.last_year as gpa_last_year,
+                CASE
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) IS NULL THEN 'Unknown'
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) >= 3.7 THEN 'Light'
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) >= 3.3 THEN 'Moderate'
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) >= 2.7 THEN 'Challenging'
+                    WHEN COALESCE(l4s.weighted_avg_gpa, atg.weighted_avg_gpa) >= 2.0 THEN 'Intensive'
                     ELSE 'Rigorous'
                 END as difficulty,
                 COALESCE(ed.total_enrollment, 0) as enrollment,
-                COALESCE(sd.section_count, 0) as sections
+                (SELECT MAX(year) FROM gpa_data WHERE total_students > 0) as enrollment_year,
+                COALESCE(sd.section_count, 0) as sections,
+                (SELECT term_code FROM current_term) as sections_term_code
             FROM courses c
+            CROSS JOIN all_time_gpa atg
             LEFT JOIN last_4_semesters_gpa l4s ON c.subject_id = l4s.dept AND c.course_number = l4s.course_number
             LEFT JOIN section_data sd ON c.subject_id = sd.dept AND c.course_number = sd.course_number
             LEFT JOIN enrollment_data ed ON c.subject_id = ed.dept AND c.course_number = ed.course_number
@@ -2666,9 +2771,14 @@ async def get_course_details(
             db.execute(check_query, {"course_code": course_id.upper()}).scalar() or 0
         )
 
+        structured = professors_count > 0 and structured_summary_columns_present(db)
+        structured_select = (
+            "ps.tips, ps.review_stats, ps.citations," if structured else ""
+        )
+
         if professors_count > 0:
             # Use full RMP + grade distribution query
-            professors_query = text("""
+            professors_query = text(f"""
                 WITH latest_semester_per_prof AS (
                     SELECT 
                         gd.professor,
@@ -2701,7 +2811,8 @@ async def get_course_details(
                         SUM(gd.grade_a + gd.grade_b + gd.grade_c + gd.grade_d + gd.grade_f) as total_grades,
                         p.id as professor_id
                     FROM professors p
-                    LEFT JOIN latest_semester_per_prof lsp ON lsp.professor = UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1))
+                    LEFT JOIN latest_semester_per_prof lsp ON p.university_id = 'U2Nob29sLTEwMDM='
+                        AND lsp.professor = UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1))
                         AND lsp.rn = 1
                     LEFT JOIN gpa_data gd ON gd.professor = lsp.professor
                         AND gd.dept = lsp.dept
@@ -2719,6 +2830,9 @@ async def get_course_details(
                     ps.professor_id,
                     p.first_name || ' ' || p.last_name as name,
                     COALESCE(p.avg_rating, NULL) as rating,
+                    p.legacy_id as rmp_id,
+                    p.num_ratings as overall_review_count,
+                    ps.avg_rating as course_rating,
                     ps.total_reviews,
                     ps.confidence,
                     ps.teaching,
@@ -2727,6 +2841,7 @@ async def get_course_details(
                     ps.workload,
                     ps.personality,
                     ps.policies,
+                    {structured_select}
                     CASE 
                         WHEN pg.total_grades > 0 THEN ROUND((pg.total_a::numeric / pg.total_grades) * 100)
                         ELSE NULL
@@ -2851,6 +2966,13 @@ async def get_course_details(
             if prof.professor_id:
                 professor_data["id"] = prof.professor_id
                 professor_data["rating"] = float(prof.rating) if prof.rating else None
+                professor_data["overallRating"] = professor_data["rating"]
+                professor_data["overallReviewCount"] = int(prof.overall_review_count or 0)
+                professor_data["rmpId"] = prof.rmp_id
+                professor_data["courseRating"] = (
+                    float(prof.course_rating) if prof.course_rating is not None else None
+                )
+                professor_data["courseReviewCount"] = int(prof.total_reviews or 0)
                 professor_data["totalReviews"] = (
                     int(prof.total_reviews) if prof.total_reviews else 0
                 )
@@ -2860,6 +2982,9 @@ async def get_course_details(
 
                 # Include detailed course summary fields
                 professor_data["courseSummary"] = {
+                    "courseCode": course_id.upper(),
+                    "rating": professor_data["courseRating"],
+                    "reviewCount": professor_data["courseReviewCount"],
                     "teaching": prof.teaching if hasattr(prof, "teaching") else None,
                     "exams": prof.exams if hasattr(prof, "exams") else None,
                     "grading": prof.grading if hasattr(prof, "grading") else None,
@@ -2868,6 +2993,7 @@ async def get_course_details(
                     if hasattr(prof, "personality")
                     else None,
                     "policies": prof.policies if hasattr(prof, "policies") else None,
+                    **structured_course_fields(prof, structured),
                 }
 
             # Only include gradeDistribution if we have actual data
@@ -2882,7 +3008,7 @@ async def get_course_details(
 
             professors.append(professor_data)
 
-        # Get section attributes for Fall 2025 (latest available data)
+        # Section attributes from the latest semester this course has data for
         section_attrs_query = text("""
             SELECT DISTINCT 
                 sa.attribute_id,
@@ -2890,8 +3016,12 @@ async def get_course_details(
             FROM section_attributes sa
             WHERE sa.dept = :dept 
               AND sa.course_number = :course_num
-              AND sa.year = '2025' 
-              AND sa.semester = 'Fall'
+              AND (sa.year, sa.semester) = (
+                  SELECT year, semester FROM section_attributes
+                  WHERE dept = :dept AND course_number = :course_num
+                  ORDER BY year DESC, CASE semester WHEN 'Fall' THEN 1 WHEN 'Summer' THEN 2 WHEN 'Spring' THEN 3 ELSE 4 END
+                  LIMIT 1
+              )
             ORDER BY sa.attribute_id
         """)
 
@@ -2947,9 +3077,19 @@ async def get_course_details(
             "labHours": course_result.lab_hours,
             "otherHours": course_result.other_hours,
             "avgGPA": float(course_result.avggpa) if course_result.avggpa != -1 else -1,
+            # "recent" = last 4 semesters; "all" = every semester on record,
+            # used when the course wasn't taught recently.
+            "gpaScope": course_result.gpa_scope,
+            "gpaLastYear": str(course_result.gpa_last_year)
+            if course_result.gpa_last_year
+            else None,
             "difficulty": course_result.difficulty,
             "enrollment": int(course_result.enrollment),
+            "enrollmentYear": str(course_result.enrollment_year)
+            if course_result.enrollment_year
+            else None,
             "sections": int(course_result.sections),
+            "sectionsTermCode": course_result.sections_term_code,
             "professors": professors,
             "prerequisites": {
                 "text": course_result.prerequisites_text,
@@ -2959,6 +3099,10 @@ async def get_course_details(
                 "groups": json.loads(course_result.prerequisite_groups)
                 if course_result.prerequisite_groups
                 else [],
+                # AND/OR tree (pipelines/courses/prereq_parser.py); prefer it
+                # over `groups`, which mis-parses "A and B".
+                "tree": course_result.prereq_tree,
+                "confidence": (course_result.prereq_parse or {}).get("confidence"),
             },
             "corequisites": {
                 "text": course_result.corequisites_text,
@@ -2968,6 +3112,7 @@ async def get_course_details(
                 "groups": json.loads(course_result.corequisite_groups)
                 if course_result.corequisite_groups
                 else [],
+                "tree": course_result.coreq_tree,
             },
             "crossListings": list(course_result.cross_listings)
             if course_result.cross_listings
@@ -2979,7 +3124,7 @@ async def get_course_details(
         return course_details
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -3240,25 +3385,7 @@ async def get_course_professors(
             if review.professor_id not in reviews_by_prof:
                 reviews_by_prof[review.professor_id] = []
 
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (6 - (review.difficulty_rating or 3))
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             tags = []
             if review.rating_tags:
@@ -3332,7 +3459,7 @@ async def get_course_professors(
         raise
     except Exception as e:
         logger.error(f"Error in get_course_professors: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -3640,26 +3767,7 @@ async def get_course_professor_reviews(
 
         reviews = []
         for review in reviews_result:
-            # Calculate overall rating from individual ratings
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (review.difficulty_rating or 0)
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             # Convert would_take_again to boolean
             would_take_again = (
@@ -3733,7 +3841,7 @@ async def get_course_professor_reviews(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.post(
@@ -3931,9 +4039,14 @@ async def compare_courses(
                             2
                         ) as weighted_avg_gpa
                     FROM gpa_data 
-                    WHERE ( year = '2025' AND semester IN ('FALL', 'SPRING', 'SUMMER')) 
-                          OR (year = '2024' AND semester IN ('FALL', 'SPRING', 'SUMMER')) 
-                          OR (year = '2023' AND semester = 'FALL'))
+                    WHERE (year, semester) IN (
+                        SELECT year, semester FROM gpa_data
+                        WHERE gpa IS NOT NULL AND total_students > 0
+                        GROUP BY year, semester
+                        ORDER BY (year::int) DESC,
+                                 CASE semester WHEN 'FALL' THEN 1 WHEN 'SUMMER' THEN 2 WHEN 'SPRING' THEN 3 ELSE 4 END
+                        LIMIT 4
+                    )
                       AND gpa IS NOT NULL AND total_students > 0
                     GROUP BY dept, course_number
                 ),
@@ -4021,7 +4134,7 @@ async def compare_courses(
                     {
                         "id": prof.professor_id,
                         "name": prof.name,
-                        "rating": float(prof.rating) if prof.rating else 3.0,
+                        "rating": float(prof.rating) if prof.rating else None,
                         "reviews": int(prof.reviews) if prof.reviews else 0,
                     }
                 )
@@ -4034,8 +4147,12 @@ async def compare_courses(
                 FROM section_attributes sa
                 WHERE sa.dept = :dept 
                   AND sa.course_number = :course_num
-                  AND sa.year = '2025' 
-                  AND sa.semester = 'Fall'
+                  AND (sa.year, sa.semester) = (
+                      SELECT year, semester FROM section_attributes
+                      WHERE dept = :dept AND course_number = :course_num
+                      ORDER BY year DESC, CASE semester WHEN 'Fall' THEN 1 WHEN 'Summer' THEN 2 WHEN 'Spring' THEN 3 ELSE 4 END
+                      LIMIT 1
+                  )
                 ORDER BY sa.attribute_id
             """)
 
@@ -4049,14 +4166,14 @@ async def compare_courses(
                 else:
                     section_attributes.append(attr.attribute_id)
 
-            # Calculate rating based on difficulty (6 - average difficulty from reviews)
+            # Course rating = average review quality for this course
             rating_query = text("""
                 SELECT 
-                    ROUND((6.0 - AVG(difficulty_rating))::numeric, 1) as course_rating,
+                    ROUND(AVG((COALESCE(clarity_rating, helpful_rating) + COALESCE(helpful_rating, clarity_rating)) / 2.0)::numeric, 1) as course_rating,
                     COUNT(*) as review_count
                 FROM reviews 
                 WHERE course_code = :course_code
-                  AND difficulty_rating IS NOT NULL
+                  AND COALESCE(clarity_rating, helpful_rating) IS NOT NULL
             """)
 
             rating_result = db.execute(
@@ -4065,7 +4182,7 @@ async def compare_courses(
             course_rating = (
                 float(rating_result.course_rating)
                 if rating_result and rating_result.course_rating
-                else 3.0
+                else None
             )
             review_count = (
                 int(rating_result.review_count)
@@ -4098,7 +4215,7 @@ async def compare_courses(
 
     except Exception as e:
         logger.error(f"Error in courses compare: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -4274,7 +4391,7 @@ async def get_professors(
                     "name": row.name,
                     "overall_rating": float(row.overall_rating)
                     if row.overall_rating
-                    else 3.0,
+                    else None,
                     "total_reviews": int(row.total_reviews) if row.total_reviews else 0,
                     "departments": list(row.departments) if row.departments else [],
                     "courses_taught": list(row.courses_taught)
@@ -4287,7 +4404,7 @@ async def get_professors(
 
     except Exception as e:
         logger.error(f"Error in get_professors: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -4706,24 +4823,57 @@ async def get_professor_profile(
             would_take_again_query, {"professor_id": professor_id}
         ).fetchone()
 
+        structured = structured_summary_columns_present(db)
+
         # Get courses taught by professor and overall tag frequencies
-        courses_query = text("""
-            SELECT 
+        # avg_rating is this course's rating, not the professor's overall one.
+        courses_query = text(f"""
+            SELECT
                 ps.course_code as course_id,
-                COALESCE(c.name, 'Course Title') as course_name,
+                c.name as course_name,
                 ps.total_reviews as reviews_count,
-                COALESCE(p.avg_rating, NULL) as avg_rating
+                {"ps.tips," if structured else ""}
+                ps.avg_rating as avg_rating
             FROM professor_summaries_new ps
             LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
-            LEFT JOIN professors p ON ps.professor_id = p.id
             WHERE ps.professor_id = :professor_id
+              AND ps.course_code IS NOT NULL
             ORDER BY ps.total_reviews DESC
         """)
 
         courses_result = db.execute(courses_query, {"professor_id": professor_id})
+
+        # Official grade data (anex) for this professor, keyed by course code.
+        # anex names professors "LASTNAME F".
+        gpa_by_course: Dict[str, Any] = {}
+        first_name = (professor_result.first_name or "").strip()
+        last_name = (professor_result.last_name or "").strip()
+        if first_name and last_name:
+            gpa_query = text("""
+                SELECT
+                    gd.dept || gd.course_number as course_code,
+                    ROUND(
+                        SUM(gd.gpa::numeric * gd.total_students)
+                        / NULLIF(SUM(gd.total_students), 0),
+                        2
+                    ) as avg_gpa,
+                    SUM(gd.total_students) as students,
+                    MAX(gd.year) as last_year
+                FROM gpa_data gd
+                WHERE gd.professor = :anex_name
+                  AND gd.gpa IS NOT NULL AND gd.total_students > 0
+                GROUP BY gd.dept, gd.course_number
+            """)
+            for row in db.execute(
+                gpa_query,
+                {"anex_name": f"{last_name.upper()} {first_name[0].upper()}"},
+            ):
+                gpa_by_course[row.course_code] = row
+
         courses = []
 
         for course in courses_result:
+            gpa_row = gpa_by_course.get(course.course_id)
             courses.append(
                 {
                     "course_id": course.course_id,
@@ -4733,18 +4883,29 @@ async def get_professor_profile(
                     else 0,
                     "avg_rating": float(course.avg_rating)
                     if course.avg_rating
-                    else 3.0,
+                    else None,
+                    "avg_gpa": float(gpa_row.avg_gpa)
+                    if gpa_row is not None and gpa_row.avg_gpa is not None
+                    else None,
+                    "gpa_students": int(gpa_row.students)
+                    if gpa_row is not None and gpa_row.students
+                    else 0,
+                    "gpa_last_year": str(gpa_row.last_year)
+                    if gpa_row is not None and gpa_row.last_year
+                    else None,
+                    "tips": structured_course_fields(course, structured)["tips"],
                 }
             )
 
         # Get overall professor summary (course_code IS NULL in new schema)
-        overall_summary_query = text("""
+        overall_summary_query = text(f"""
             SELECT 
                 ps.overall_sentiment,
                 ps.strengths,
                 ps.complaints,
                 ps.consistency,
                 ps.confidence,
+                {"ps.tldr, ps.review_stats, ps.citations," if structured else ""}
                 ps.total_reviews
             FROM professor_summaries_new ps
             WHERE ps.professor_id = :professor_id
@@ -4785,7 +4946,7 @@ async def get_professor_profile(
                 r.review_date,
                 r.course_code,
                 r.rating_tags,
-                COALESCE(c.name, 'Course') as course_name
+                c.name as course_name
             FROM reviews r
             LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
             WHERE r.professor_id = :professor_id
@@ -4801,26 +4962,7 @@ async def get_professor_profile(
         recent_reviews = []
 
         for review in recent_reviews_result:
-            # Calculate overall rating from individual ratings
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (6 - (review.difficulty_rating or 3))
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             # Parse rating tags
             tags = []
@@ -4842,6 +4984,9 @@ async def get_professor_profile(
                     "course_name": review.course_name,
                     "review_text": review.review_text,
                     "overall_rating": overall_rating,
+                    "difficulty_rating": float(review.difficulty_rating)
+                    if review.difficulty_rating
+                    else None,
                     "would_take_again": review.would_take_again == 1
                     if review.would_take_again is not None
                     else None,
@@ -4859,7 +5004,7 @@ async def get_professor_profile(
             "name": professor_result.name,
             "overall_rating": float(stats_result.overall_rating)
             if stats_result and stats_result.overall_rating
-            else 3.0,
+            else None,
             "total_reviews": int(stats_result.total_reviews)
             if stats_result and stats_result.total_reviews
             else 0,
@@ -4867,8 +5012,8 @@ async def get_professor_profile(
                 would_take_again_result.would_take_again_percent
             )
             if would_take_again_result
-            and would_take_again_result.would_take_again_percent
-            else 0.0,
+            and would_take_again_result.would_take_again_percent is not None
+            else None,
             "courses": courses,
             "departments": list(stats_result.departments)
             if stats_result and stats_result.departments and stats_result.departments[0]
@@ -4884,6 +5029,7 @@ async def get_professor_profile(
                 "confidence": float(overall_summary_result.confidence)
                 if overall_summary_result and overall_summary_result.confidence
                 else None,
+                **structured_overall_fields(overall_summary_result, structured),
             }
             if overall_summary_result
             else None,
@@ -4895,7 +5041,7 @@ async def get_professor_profile(
         raise
     except Exception as e:
         logger.error(f"Error in get_professor_profile: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -5174,26 +5320,7 @@ async def get_professor_reviews(
         reviews = []
 
         for review in result:
-            # Calculate overall rating from individual ratings
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (6 - (review.difficulty_rating or 3))
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             # Convert would_take_again to boolean
             would_take_again = (
@@ -5248,7 +5375,7 @@ async def get_professor_reviews(
         raise
     except Exception as e:
         logger.error(f"Error in get_professor_reviews: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -5477,7 +5604,7 @@ async def search_professors(
                 "name": row.name,
                 "overall_rating": float(row.overall_rating)
                 if row.overall_rating
-                else 3.0,
+                else None,
                 "total_reviews": int(row.total_reviews) if row.total_reviews else 0,
                 "would_take_again_percent": float(row.would_take_again_percent)
                 if row.would_take_again_percent
@@ -5508,7 +5635,7 @@ async def search_professors(
 
     except Exception as e:
         logger.error(f"Error in search_professors: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 @app.get(
@@ -5850,10 +5977,10 @@ async def compare_professors(
                 ps.course_code as course_id,
                 COALESCE(c.name, 'Course Title') as course_name,
                 ps.total_reviews as reviews_count,
-                p.avg_rating
+                -- This course's rating, not the professor's overall one.
+                ps.avg_rating
             FROM professor_summaries_new ps
             LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
-            LEFT JOIN professors p ON ps.professor_id = p.id
             WHERE ps.professor_id = ANY(:professor_ids)
               AND ps.course_code IS NOT NULL
             ORDER BY ps.professor_id, ps.total_reviews DESC
@@ -5873,7 +6000,7 @@ async def compare_professors(
                     "course_id": row.course_id,
                     "course_name": row.course_name,
                     "reviews_count": int(row.reviews_count) if row.reviews_count else 0,
-                    "avg_rating": float(row.avg_rating) if row.avg_rating else 3.0,
+                    "avg_rating": float(row.avg_rating) if row.avg_rating else None,
                 }
             )
             total_reviews_by_prof[row.professor_id] += (
@@ -5932,25 +6059,7 @@ async def compare_professors(
             if review.professor_id not in reviews_by_prof:
                 reviews_by_prof[review.professor_id] = []
 
-            overall_rating = (
-                round(
-                    (
-                        (review.clarity_rating or 0)
-                        + (6 - (review.difficulty_rating or 3))
-                        + (review.helpful_rating or 0)
-                    )
-                    / 3,
-                    1,
-                )
-                if any(
-                    [
-                        review.clarity_rating,
-                        review.difficulty_rating,
-                        review.helpful_rating,
-                    ]
-                )
-                else 0
-            )
+            overall_rating = _review_quality(review)
 
             tags = []
             if review.rating_tags:
@@ -5996,7 +6105,7 @@ async def compare_professors(
                     "name": prof.name,
                     "overall_rating": float(prof.avg_rating)
                     if prof.avg_rating
-                    else 3.0,
+                    else None,
                     "total_reviews": total_reviews_by_prof.get(prof_id, 0),
                     "would_take_again_percent": wta_by_prof.get(prof_id, 0.0),
                     "courses": courses_by_prof.get(prof_id, []),
@@ -6031,7 +6140,7 @@ async def compare_professors(
         raise
     except Exception as e:
         logger.error(f"Error in compare_professors: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise _db_error(e)
 
 
 # if __name__ == "__main__":
@@ -6065,6 +6174,17 @@ async def cache_status() -> Dict[str, Any]:
     return await get_cache_stats()
 
 
+def require_admin_key(x_admin_key: Optional[str] = Header(None)) -> None:
+    """Reject the request unless X-Admin-Key matches ADMIN_API_KEY."""
+    expected = settings.admin_api_key
+    if not expected:
+        raise HTTPException(status_code=503, detail="Admin endpoints are disabled.")
+    if not x_admin_key or not secrets.compare_digest(
+        x_admin_key.encode(), expected.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid admin key.")
+
+
 @app.delete(
     "/cache/clear",
     responses={
@@ -6075,13 +6195,17 @@ async def cache_status() -> Dict[str, Any]:
                     "example": {"message": "Cache cleared", "keys_deleted": 15}
                 }
             },
-        }
+        },
+        401: {"description": "Missing or invalid X-Admin-Key header"},
+        503: {"description": "ADMIN_API_KEY is not configured"},
     },
     summary="/cache/clear",
-    description="Clear all cached API responses. Use with caution.",
+    description="Clear all cached API responses. Requires the X-Admin-Key header. Use with caution.",
     tags=["Admin"],
+    dependencies=[Depends(require_admin_key)],
 )
-async def cache_clear() -> Dict[str, Any]:
+@limiter.limit("5/minute")
+async def cache_clear(request: Request) -> Dict[str, Any]:
     """Clear all cached API responses."""
     deleted = await clear_all_cache()
     return {"message": "Cache cleared", "keys_deleted": deleted}
@@ -6090,3 +6214,6 @@ async def cache_clear() -> Dict[str, Any]:
 # Force reload for UCC stats update
 app.include_router(users_router)
 app.include_router(discover_router)
+app.include_router(professors_router)
+app.include_router(prereqs_router)
+app.include_router(planner_router)

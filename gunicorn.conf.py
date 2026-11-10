@@ -5,7 +5,7 @@ bind = "0.0.0.0:8000"
 backlog = 2048
 
 # Worker processes
-workers = 4  # Adjust based on CPU cores (2 * cores + 1)
+workers = 2  # Adjust based on CPU cores (2 * cores + 1)
 worker_class = "uvicorn.workers.UvicornWorker"
 worker_connections = 1000
 max_requests = 1000
