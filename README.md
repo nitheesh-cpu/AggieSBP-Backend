@@ -23,16 +23,83 @@ Data currently in the database (from the `/data_stats` endpoint on a local copy,
 ## Architecture
 
 ```mermaid
-graph LR
-    Web[Next.js web app] -->|REST| API[FastAPI]
-    Ext[Browser extension] -->|REST| API
-    API --> PG[(PostgreSQL)]
-    API <--> Redis[(Redis cache)]
-    API <--> ST[SuperTokens]
-    Pipelines[Scrapers and upsert pipelines] --> PG
-    Pipelines -->|summaries| LLM[LLM API]
-    Watcher[Section watcher] --> PG
-    Watcher -->|Web Push| Web
+graph TD
+    %% -- Styling --
+    classDef external fill:#f9f,stroke:#333,stroke-width:2px,color:#000;
+    classDef storage fill:#555,stroke:#333,stroke-dasharray: 5 5,color:#fff;
+    classDef client fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff;
+    classDef auth fill:#2e7d32,stroke:#333,stroke-width:2px,color:#fff;
+    classDef default fill:#333,color:#fff,stroke:#111;
+
+    %% -- Entities --
+    User["TAMU Student (Browser)"]:::client
+
+    subgraph ExternalSources ["External Data Sources"]
+        direction LR
+        TAMU["TAMU Catalog + Sections"]:::external
+        RMP["RateMyProfessors"]:::external
+        Anex["Anex.us (GPA)"]:::external
+        LLM["LLM API"]:::external
+    end
+
+    subgraph ClientLayer ["Client Side"]
+        NextJS["Next.js Web App (Vercel)"]
+
+        subgraph Extension ["Browser Extension (Chrome / Firefox)"]
+            ContentScript["Content Scripts (College Scheduler, Howdy)"]
+            Popup["Extension Popup (UI)"]
+        end
+    end
+
+    subgraph AuthLayer ["Auth (SuperTokens)"]
+        SuperTokens["SuperTokens: sessions, email/password, JWT"]:::auth
+    end
+
+    subgraph ServiceLayer ["Application Layer"]
+        FastAPI["AggieSB+ API (FastAPI/Python)"]
+    end
+
+    subgraph WorkerLayer ["Data Pipelines (Scheduled)"]
+        Scrapers["Scraper Workers (TAMU, RMP, GPA)"]
+        Summarizer["Review Summarizer (cited LLM summaries)"]
+        SectionWatcher["Section Watcher: seat-open alerts + Web Push"]
+    end
+
+    subgraph StorageLayer ["Storage Layer"]
+        PostgreSQL[(PostgreSQL Main DB)]:::storage
+        Redis[(Redis: cache + tracked sections)]:::storage
+    end
+
+    %% -- Connections --
+
+    %% User to Clients
+    User -->|Interacts with| NextJS
+    User -->|Uses| Popup
+    ContentScript -.->|Injects UI into| User
+    ContentScript -->|Howdy course import| NextJS
+
+    %% Auth: sign-in and protected API
+    NextJS <-->|Auth APIs| SuperTokens
+    FastAPI <-->|verify_session + recipe| SuperTokens
+
+    %% Clients to Backend (REST; tracking requires session)
+    NextJS <-->|REST| FastAPI
+    Popup <-->|Fetch Stats| FastAPI
+    ContentScript <-->|Fetch Prof Metrics + Seat Alerts| FastAPI
+
+    %% Backend logic
+    FastAPI <-->|SQL Queries| PostgreSQL
+    FastAPI <-->|Cache / tracking sets| Redis
+
+    %% Pipeline Flow
+    Scrapers -.->|Scrape / Download| ExternalSources
+    Scrapers -->|ETL / Upsert| PostgreSQL
+    Summarizer -->|Reviews in| PostgreSQL
+    Summarizer -.->|Structured summaries| LLM
+
+    %% Section watcher: watches user_tracked_sections + sections.is_open, then pushes
+    SectionWatcher -->|Active watches + section status| PostgreSQL
+    SectionWatcher -.->|Web Push when seat opens| User
 ```
 
 The API is a single FastAPI app (`src/aggiermp/api/main.py`) plus routers for discover, professors, prerequisites, planner and users. Reads go to PostgreSQL through SQLAlchemy, with raw SQL where a query is complex. Responses are cached in Redis. Scheduled pipelines scrape the TAMU catalog, section listings, Anex grade data and RateMyProfessors into Postgres. A separate section-watcher job compares section open status against users' tracked sections and sends push notifications. The web app and the extension are both clients of the same API.
