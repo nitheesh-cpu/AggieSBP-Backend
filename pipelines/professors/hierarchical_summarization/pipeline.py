@@ -194,20 +194,8 @@ class HierarchicalSummarizationPipeline:
             ProfessorSummary object
         """
         # Get professor's department for smart course code inference
-        professor_dept = None
-        if self.course_normalizer.session:
-            try:
-                from aggiermp.database.base import ProfessorDB
-
-                professor = (
-                    self.course_normalizer.session.query(ProfessorDB)
-                    .filter_by(id=professor_id)
-                    .first()
-                )
-                if professor and professor.department:
-                    professor_dept = professor.department.upper().strip()
-            except Exception:
-                pass
+        # (rolls back on failure so one bad query can't break the whole batch)
+        professor_dept = self.course_normalizer.professor_department(professor_id)
 
         if self.structured_mode:
             return self._prepare_structured(raw_reviews, professor_id, professor_dept)

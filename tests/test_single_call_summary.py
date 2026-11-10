@@ -567,6 +567,107 @@ class SmallBugTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(normalizer.normalize_course_codes(raw), [expected])
 
+    def _catalog_normalizer(self, taught=None):
+        normalizer = CourseNormalizer()
+        normalizer.department_codes = {"CHEM", "PHYS", "ASTR", "CSCE", "POLS"}
+        normalizer.department_names = {
+            "CHEMISTRY": "CHEM",
+            "PHYSICSASTRONOMY": "PHYS",
+            "COMPUTERSCIENGR": "CSCE",
+            "POLITICALSCIENCE": "POLS",
+        }
+        normalizer.department_tokens = {
+            "CHEM": {"CHEMISTRY"},
+            "PHYS": {"PHYSICS"},
+            "ASTR": {"ASTRONOMY"},
+            "CSCE": {"COMPUTER", "SCI", "ENGR"},
+            "POLS": {"POLITICAL", "SCIENCE"},
+        }
+        normalizer.subjects_by_number = {
+            "119": {"ASTR", "CHEM", "PHYS"},
+            "221": {"CSCE"},
+            "206": {"POLS"},
+            "313": {"CSCE", "POLS"},
+        }
+        normalizer._taught_cache = {"prof": taught or {}}
+        return normalizer
+
+    def test_bare_number_uses_course_the_professor_taught(self):
+        normalizer = self._catalog_normalizer(taught={"119": {"CHEM"}})
+        self.assertEqual(
+            normalizer.infer_department_with_source(
+                "119", professor_id="prof", professor_dept="Physics"
+            ),
+            ("CHEM", "taught"),
+        )
+        self.assertEqual(
+            normalizer.normalize_course_codes(
+                "119", professor_id="prof", professor_dept="Physics"
+            ),
+            ["CHEM119"],
+        )
+
+    def test_bare_number_uses_subjects_taught_after_exact_department(self):
+        normalizer = self._catalog_normalizer(taught={"206": {"CSCE"}})
+        for dept, expected in [
+            ("Engineering", ("CSCE", "taught_subject")),
+            ("Political Science", ("POLS", "department")),
+        ]:
+            with self.subTest(dept=dept):
+                self.assertEqual(
+                    normalizer.infer_department_with_source(
+                        "313", professor_id="prof", professor_dept=dept
+                    ),
+                    expected,
+                )
+
+    def test_bare_number_maps_department_names_through_the_catalog(self):
+        normalizer = self._catalog_normalizer()
+        for dept, number, expected in [
+            ("Chemistry", "119", "CHEM"),
+            ("Computer Science", "313", "CSCE"),
+            ("Political Science", "313", "POLS"),
+        ]:
+            with self.subTest(dept=dept, number=number):
+                self.assertEqual(
+                    normalizer.infer_department_with_source(
+                        number, professor_id="prof", professor_dept=dept
+                    ),
+                    (expected, "department"),
+                )
+
+    def test_bare_number_keeps_exact_department_for_retired_courses(self):
+        # The catalog only lists SPAN218 now, but a physicist's "218" is PHYS218
+        normalizer = self._catalog_normalizer()
+        normalizer.subjects_by_number["218"] = {"SPAN"}
+        self.assertEqual(
+            normalizer.infer_department_with_source(
+                "218", professor_id="prof", professor_dept="Physics"
+            ),
+            ("PHYS", "department"),
+        )
+
+    def test_bare_number_is_left_alone_without_evidence(self):
+        normalizer = self._catalog_normalizer()
+        for number, dept in [
+            ("221", "Engineering"),
+            ("4063", "Chemistry"),
+            ("1", "Chemistry"),
+        ]:
+            with self.subTest(number=number):
+                self.assertEqual(
+                    normalizer.infer_department_with_source(
+                        number, professor_id="prof", professor_dept=dept
+                    ),
+                    (None, None),
+                )
+        self.assertEqual(
+            normalizer.normalize_course_codes(
+                "4063", professor_id="prof", professor_dept="Chemistry"
+            ),
+            ["4063"],
+        )
+
     def test_dangling_openers_are_made_self_contained(self):
         self.assertEqual(
             self_contained("Other students say the curve is generous."),

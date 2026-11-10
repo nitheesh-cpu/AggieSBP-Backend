@@ -1719,20 +1719,35 @@ async def get_course_professors_details(
                 )
             candidates = prof_query.limit(200).all()
 
-            professor = None
-            best_score = 0.0
+            from aggiermp.database.base import ReviewDB
+
+            finalists = []
+            best_score = 0.82
             for candidate in candidates:
                 candidate_name = f"{candidate.first_name} {candidate.last_name}"
                 identity_score = professor_name_score(instructor_name, candidate_name)
-                review_signal = min(float(candidate.num_ratings or 0), 50.0) / 50.0
-                score = identity_score + (review_signal * 0.02)
-                if score > best_score:
-                    best_score = score
-                    professor = candidate
+                if identity_score > best_score:
+                    best_score = identity_score
+                    finalists = [candidate]
+                elif identity_score == best_score:
+                    finalists.append(candidate)
 
-            # Avoid attaching data from a merely similar but different person.
-            if best_score < 0.82:
-                professor = None
+            if len(finalists) > 1:
+                evidence = db.query(ReviewDB.professor_id, ReviewDB.course_code).filter(
+                    ReviewDB.professor_id.in_([candidate.id for candidate in finalists]),
+                    ReviewDB.course_code.ilike(f"{dept}%"),
+                ).distinct().all()
+                exact_ids = set()
+                subject_ids = set()
+                for profile_id, reviewed_course in evidence:
+                    normalized = re.sub(r"[^A-Z0-9]", "", reviewed_course.upper())
+                    if normalized == target_course_code:
+                        exact_ids.add(profile_id)
+                    if re.match(rf"^{dept}\d", normalized):
+                        subject_ids.add(profile_id)
+                eligible = exact_ids or subject_ids
+                finalists = [candidate for candidate in finalists if candidate.id in eligible]
+            professor = finalists[0] if len(finalists) == 1 else None
 
             # Get overall summary for totalReviews
             overall_summary = None

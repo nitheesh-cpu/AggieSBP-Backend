@@ -101,6 +101,20 @@ class CampusMatchingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             campus_university_sql("user input")
 
+    def test_cs_course_selects_yu_zhang_with_cs_reviews(self):
+        profiles = [SimpleNamespace(id=pid, first_name="Yu", last_name="Zhang",
+                    university_id=TEXAS_AM_ID, num_ratings=count, avg_rating=4,
+                    legacy_id=count) for pid, count in [("ag", 90), ("cs", 5)]]
+        db = Mock()
+        db.query.side_effect = [
+            query(first=SimpleNamespace(term_desc="Fall 2026 - College Station")),
+            query([SimpleNamespace(instructor_name="Yu Zhang", section_number="1",
+                                   campus="College Station")]),
+            query(profiles), query([("cs", "CSCE 411")]), query(), query(), query(),
+        ]
+        result = asyncio.run(details_endpoint()(None, "202631", "CSCE411", db, None))
+        self.assertEqual(result["professors"][0]["id"], "cs")
+
 
 if __name__ == "__main__":
     unittest.main()
