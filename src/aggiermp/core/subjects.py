@@ -75,6 +75,28 @@ def normalize_course_code(raw: Optional[str]) -> str:
     return re.sub(r"[^A-Z0-9]", "", (raw or "").upper())
 
 
+_NUMBER_FIRST = re.compile(r"^(\d{3})([A-Z]{2,})$")
+_SUBJECT_FIRST = re.compile(r"^([A-Z]{2,})(\d{1,3})$")
+
+
+def course_search_key(raw: Optional[str]) -> str:
+    """Compact form of a course search for matching against codes without spaces.
+
+    ``"acct 327"``, ``"ACCT327"``, ``"acct-327"`` and ``"327 acct"`` all give
+    ``"ACCT327"``. Shorthand subjects are resolved when a number follows
+    (``"cs 121"`` -> ``"CSCE121"``). Anything else is just compacted.
+    """
+    key = normalize_course_code(raw)
+    number_first = _NUMBER_FIRST.match(key)
+    if number_first:
+        key = number_first.group(2) + number_first.group(1)
+    subject_first = _SUBJECT_FIRST.match(key)
+    if subject_first:
+        subject = SUBJECT_ALIASES.get(subject_first.group(1), subject_first.group(1))
+        key = subject + subject_first.group(2)
+    return key
+
+
 def parse_course_code(
     raw: Optional[str], valid_subjects: AbstractSet[str]
 ) -> Optional[tuple[str, str]]:

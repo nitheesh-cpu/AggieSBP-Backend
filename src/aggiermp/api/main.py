@@ -47,6 +47,7 @@ from .routers.prereqs import router as prereqs_router
 from .routers.planner import router as planner_router
 from ..core.config import settings
 from ..core.professor_identity import MATCHING_VERSION as PROFESSOR_MATCHING_VERSION
+from ..core.subjects import course_search_key
 from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
 from supertokens_python.recipe import (
     session,
@@ -2500,8 +2501,14 @@ async def get_courses(
             params["department"] = department.upper()
 
         if search:
-            where_conditions.append("(c.code ILIKE :search OR c.name ILIKE :search)")
-            params["search"] = f"%{search}%"
+            # Codes are stored as "ACCT 327"; also match "ACCT327", "327 acct".
+            search_conditions = ["c.code ILIKE :search", "c.name ILIKE :search"]
+            params["search"] = f"%{search.strip()}%"
+            code_key = course_search_key(search)
+            if code_key:
+                search_conditions.append("REPLACE(c.code, ' ', '') ILIKE :code_key")
+                params["code_key"] = f"%{code_key}%"
+            where_conditions.append("(" + " OR ".join(search_conditions) + ")")
 
         where_clause = ""
         if where_conditions:
