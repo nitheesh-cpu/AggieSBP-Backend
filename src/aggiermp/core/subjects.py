@@ -67,6 +67,18 @@ SUBJECT_ALIASES: dict[str, str] = {
     "BUSINESS": "BUSN",
 }
 
+# Subjects the registrar renamed. Old codes still turn up in links, saved
+# compare lists and what students type.
+RENAMED_SUBJECTS: dict[str, str] = {
+    "PSYC": "PBSI",  # Psychology -> Psychological & Brain Sciences
+}
+
+
+def current_subject(subject: str) -> str:
+    """``"PSYC"`` -> ``"PBSI"``; anything else unchanged."""
+    return RENAMED_SUBJECTS.get(subject.upper(), subject.upper())
+
+
 _COURSE_CODE = re.compile(r"^([A-Z]+?)(\d{3})[A-Z]?$")
 
 
@@ -93,7 +105,9 @@ def course_search_key(raw: Optional[str]) -> str:
     subject_first = _SUBJECT_FIRST.match(key)
     if subject_first:
         subject = SUBJECT_ALIASES.get(subject_first.group(1), subject_first.group(1))
-        key = subject + subject_first.group(2)
+        key = current_subject(subject) + subject_first.group(2)
+    elif key in RENAMED_SUBJECTS:
+        key = RENAMED_SUBJECTS[key]
     return key
 
 

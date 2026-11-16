@@ -8,12 +8,28 @@ from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
 
-BASE_URL = "https://catalog.tamu.edu/undergraduate/course-descriptions/"
+CATALOG_ROOT = "https://catalog.tamu.edu/"
+# Graduate courses (600+, e.g. CSCE 614) are only in the graduate catalog.
+CATALOG_LEVELS = ("undergraduate", "graduate")
+BASE_URL = f"{CATALOG_ROOT}undergraduate/course-descriptions/"
 
 
-def get_all_departments() -> List[Dict[str, Any]]:
+def get_all_catalog_departments() -> List[Dict[str, Any]]:
+    """Departments from every catalog level, undergraduate first.
+
+    A subject in both catalogs appears once per level (each has its own
+    course page), so callers dedupe by ``id`` where they need one row.
     """
-    Scrape all departments and their course catalog links from the base URL.
+    departments: List[Dict[str, Any]] = []
+    for level in CATALOG_LEVELS:
+        departments.extend(get_all_departments(level))
+    return departments
+
+
+def get_all_departments(level: str = "undergraduate") -> List[Dict[str, Any]]:
+    """
+    Scrape all departments and their course catalog links for one catalog
+    level ("undergraduate" or "graduate").
 
     Returns:
         list: List of dictionaries with department information:
@@ -29,7 +45,8 @@ def get_all_departments() -> List[Dict[str, Any]]:
             ]
     """
     try:
-        response = requests.get(BASE_URL, timeout=10)
+        base_url = f"{CATALOG_ROOT}{level}/course-descriptions/"
+        response = requests.get(base_url, timeout=10)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.content, "html.parser")
@@ -38,7 +55,7 @@ def get_all_departments() -> List[Dict[str, Any]]:
         # Find all links that match the department pattern
         # Example: <a href="/undergraduate/course-descriptions/aalo/">AALO - Arabic &amp; Asian Language (AALO)</a>
         department_links = soup.find_all(
-            "a", href=re.compile(r"/undergraduate/course-descriptions/[^/]+/$")
+            "a", href=re.compile(rf"/{level}/course-descriptions/[^/]+/$")
         )
 
         for link in department_links:
@@ -54,9 +71,9 @@ def get_all_departments() -> List[Dict[str, Any]]:
             if not text or "/" not in href:
                 continue
 
-            # Parse the text: "AALO - Arabic & Asian Language (AALO)"
-            # Pattern: CODE - Name (CODE)
-            match = re.match(r"^([A-Z]+)\s*-\s*(.+?)\s*\([A-Z]+\)$", text)
+            # Parse the text: "AALO - Arabic & Asian Language (AALO)".
+            # The graduate catalog leaves off the "(CODE)" suffix.
+            match = re.match(r"^([A-Z]+)\s*-\s*(.+?)(?:\s*\([A-Z]+\))?$", text)
 
             if match:
                 code = match.group(1)
@@ -66,7 +83,7 @@ def get_all_departments() -> List[Dict[str, Any]]:
                 name = unescape(name).replace("\u200b", "").strip()
 
                 # Build full URL
-                full_url = urljoin(BASE_URL, href)
+                full_url = urljoin(base_url, href)
 
                 # Format: id (code), title (name), long_name (code - name)
                 departments.append(
@@ -76,6 +93,7 @@ def get_all_departments() -> List[Dict[str, Any]]:
                         "long_name": f"{code} - {name}",
                         "url": full_url,
                         "path": href,
+                        "level": level,
                     }
                 )
 

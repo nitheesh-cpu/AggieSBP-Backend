@@ -7,6 +7,7 @@ import asyncio
 import ast
 import json
 import logging
+import re
 import secrets
 import time
 from typing import Any, Dict, List, Optional, Tuple, cast, Iterator
@@ -47,7 +48,9 @@ from .routers.prereqs import router as prereqs_router
 from .routers.planner import router as planner_router
 from ..core.config import settings
 from ..core.professor_identity import MATCHING_VERSION as PROFESSOR_MATCHING_VERSION
-from ..core.subjects import course_search_key
+from ..core.professor_identity import resolve_professor_id
+from ..core.name_search import professor_name_condition
+from ..core.subjects import course_search_key, current_subject
 from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
 from supertokens_python.recipe import (
     session,
@@ -693,7 +696,7 @@ async def get_data_stats(
         counts = {}
 
         # Reviews count & last updated
-        review_row = db.execute(text("SELECT COUNT(*) AS cnt FROM reviews")).fetchone()
+        review_row = db.execute(text("SELECT COUNT(*) AS cnt FROM reviews_merged")).fetchone()
         counts["reviews_count"] = review_row.cnt if review_row else 0
 
         # Courses count
@@ -709,7 +712,7 @@ async def get_data_stats(
 
         # Professors count
         professors_row = db.execute(
-            text("SELECT COUNT(*) AS cnt FROM professors")
+            text("SELECT COUNT(*) AS cnt FROM professors_merged")
         ).fetchone()
         counts["professors_count"] = professors_row.cnt if professors_row else 0
 
@@ -1619,7 +1622,7 @@ async def get_course_professors_details(
     )
     from aggiermp.core.name_matching import parse_person_name, professor_name_score
     from aggiermp.core.professor_identity import (
-        NAME_MATCH_THRESHOLD, choose_profile, load_people, load_profiles,
+        NAME_MATCH_THRESHOLD, choose_profile, load_aliases, load_people, load_profiles,
     )
     from aggiermp.core.campuses import (
         TEXAS_AM_ID, university_id_for_campus, campus_from_term_description,
@@ -1689,6 +1692,10 @@ async def get_course_professors_details(
                 detail=f"No professors found for {course_code} in term {term_code}",
             )
 
+        # Confirmed duplicate-profile merges: alias id -> canonical id.
+        aliases = load_aliases(db)
+        merged_ids = set(aliases.values())
+
         # Build unique instructors and their sections. The PIDM separates
         # different people who share a name.
         instructor_sections: Dict[Tuple[str, Optional[int], Optional[str]], List[str]] = {}
@@ -1745,12 +1752,28 @@ async def get_course_professors_details(
                 chosen = choose_profile(
                     instructor,
                     target_course_code,
-                    load_profiles(db, candidates),
+                    load_profiles(db, candidates, aliases),
                     namesakes,
                 )
-                professor = next(
-                    (c for c in candidates if chosen and c.id == chosen.id), None
-                )
+                if chosen:
+                    # The canonical row of a merge may not be a name candidate.
+                    professor = next(
+                        (c for c in candidates if c.id == chosen.id), None
+                    ) or db.get(ProfessorDB, chosen.id)
+
+            # Merged profiles show the ratings of every merged entry.
+            avg_rating = professor.avg_rating if professor else None
+            num_ratings = professor.num_ratings if professor else 0
+            if professor and professor.id in merged_ids:
+                merged_row = db.execute(
+                    text(
+                        "SELECT avg_rating, num_ratings FROM professors_merged "
+                        "WHERE id = :id"
+                    ),
+                    {"id": professor.id},
+                ).fetchone()
+                if merged_row:
+                    avg_rating, num_ratings = merged_row
 
             # Get overall summary for totalReviews
             overall_summary = None
@@ -1770,9 +1793,9 @@ async def get_course_professors_details(
                 "name": instructor_name,
                 "campus": instructor_campus,
                 "universityId": university_id,
-                "rating": professor.avg_rating if professor else None,
-                "overallRating": professor.avg_rating if professor else None,
-                "overallReviewCount": professor.num_ratings if professor else 0,
+                "rating": avg_rating,
+                "overallRating": avg_rating,
+                "overallReviewCount": num_ratings,
                 "rmpId": professor.legacy_id if professor else None,
                 "courseRating": None,
                 "courseReviewCount": 0,
@@ -1981,8 +2004,8 @@ async def get_departments_info(
                 SELECT 
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
                     ROUND(AVG(p.avg_rating::numeric), 1) as avg_professor_rating
-                FROM reviews r
-                JOIN professors p ON r.professor_id = p.id
+                FROM reviews_merged r
+                JOIN professors_merged p ON r.professor_id = p.id
                 WHERE p.avg_rating IS NOT NULL 
                   AND r.course_code IS NOT NULL
                   AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
@@ -2248,8 +2271,8 @@ async def get_departments(
                 SELECT 
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
                     ROUND(AVG(p.avg_rating::numeric), 1) as avg_professor_rating
-                FROM reviews r
-                JOIN professors p ON r.professor_id = p.id
+                FROM reviews_merged r
+                JOIN professors_merged p ON r.professor_id = p.id
                 WHERE p.avg_rating IS NOT NULL 
                   AND r.course_code IS NOT NULL
                   AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
@@ -2438,8 +2461,8 @@ async def get_courses(
                     SUBSTRING(course_code FROM '^[A-Z]+') as dept_code,
                     SUBSTRING(course_code FROM '[0-9]+') as course_num,
                     ROUND(AVG(p.avg_rating::numeric), 1) as avg_professor_rating
-                FROM reviews r
-                JOIN professors p ON r.professor_id = p.id
+                FROM reviews_merged r
+                JOIN professors_merged p ON r.professor_id = p.id
                 WHERE p.avg_rating IS NOT NULL 
                   AND r.course_code IS NOT NULL
                   AND SUBSTRING(r.course_code FROM '^[A-Z]+') IS NOT NULL
@@ -2508,6 +2531,22 @@ async def get_courses(
             if code_key:
                 search_conditions.append("REPLACE(c.code, ' ', '') ILIKE :code_key")
                 params["code_key"] = f"%{code_key}%"
+            # A pasted CRN finds its course. CRNs are reused across years,
+            # so only look in recent terms (a few semesters, every campus).
+            if re.fullmatch(r"\d{5}", search.strip()):
+                search_conditions.append(
+                    """EXISTS (
+                        SELECT 1 FROM sections crn_s
+                        WHERE crn_s.crn = :crn
+                          AND crn_s.dept = c.subject_id
+                          AND crn_s.course_number = c.course_number
+                          AND crn_s.term_code IN (
+                              SELECT DISTINCT term_code FROM sections
+                              ORDER BY term_code DESC LIMIT 12
+                          )
+                    )"""
+                )
+                params["crn"] = search.strip()
             where_conditions.append("(" + " OR ".join(search_conditions) + ")")
 
         where_clause = ""
@@ -2654,6 +2693,7 @@ async def get_course_details(
             )
 
         dept, course_num = match.groups()
+        dept = current_subject(dept)
 
         # Get course basic info with anex data
         course_query = text("""
@@ -2774,7 +2814,7 @@ async def get_course_details(
 
         # First, check if any professors exist in professor_summaries_new for this course
         check_query = text(
-            "SELECT COUNT(*) FROM professor_summaries_new WHERE course_code = :course_code"
+            "SELECT COUNT(*) FROM professor_summaries_merged WHERE course_code = :course_code"
         )
         professors_count = (
             db.execute(check_query, {"course_code": course_id.upper()}).scalar() or 0
@@ -2819,7 +2859,7 @@ async def get_course_details(
                         SUM(gd.grade_f) as total_f,
                         SUM(gd.grade_a + gd.grade_b + gd.grade_c + gd.grade_d + gd.grade_f) as total_grades,
                         p.id as professor_id
-                    FROM professors p
+                    FROM professors_merged p
                     LEFT JOIN latest_semester_per_prof lsp ON p.university_id = 'U2Nob29sLTEwMDM='
                         AND lsp.professor = UPPER(p.last_name) || ' ' || UPPER(LEFT(p.first_name, 1))
                         AND lsp.rn = 1
@@ -2830,7 +2870,7 @@ async def get_course_details(
                         AND gd.semester = lsp.semester
                     WHERE p.id IN (
                         SELECT ps.professor_id 
-                        FROM professor_summaries_new ps 
+                        FROM professor_summaries_merged ps 
                         WHERE ps.course_code = :course_code
                     )
                     GROUP BY p.id, p.first_name, p.last_name
@@ -2871,8 +2911,8 @@ async def get_course_details(
                         WHEN pg.total_grades > 0 THEN ROUND((pg.total_f::numeric / pg.total_grades) * 100)
                         ELSE NULL
                     END as grade_f_percent
-                FROM professor_summaries_new ps
-                JOIN professors p ON ps.professor_id = p.id
+                FROM professor_summaries_merged ps
+                JOIN professors_merged p ON ps.professor_id = p.id
                 LEFT JOIN professor_grades pg ON ps.professor_id = pg.professor_id
                 WHERE ps.course_code = :course_code
                 ORDER BY ps.total_reviews DESC
@@ -3132,6 +3172,8 @@ async def get_course_details(
 
         return course_details
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise _db_error(e)
 
@@ -3266,6 +3308,7 @@ async def get_course_professors(
             )
 
         dept, course_num = match.groups()
+        dept = current_subject(dept)
         course_code = course_id.upper()
 
         # Get professors who teach this course
@@ -3281,8 +3324,8 @@ async def get_course_professors(
                 ps.grading,
                 ps.workload,
                 ps.confidence
-            FROM professor_summaries_new ps
-            JOIN professors p ON ps.professor_id = p.id
+            FROM professor_summaries_merged ps
+            JOIN professors_merged p ON ps.professor_id = p.id
             WHERE ps.course_code = :course_code
             ORDER BY ps.total_reviews DESC
         """)
@@ -3306,7 +3349,7 @@ async def get_course_professors(
                     AVG(CASE WHEN would_take_again = 1 THEN 100.0 ELSE 0.0 END)::numeric, 
                     1
                 ) as would_take_again_percent
-            FROM reviews 
+            FROM reviews_merged 
             WHERE professor_id = ANY(:professor_ids)
               AND would_take_again IS NOT NULL
             GROUP BY professor_id
@@ -3329,9 +3372,9 @@ async def get_course_professors(
                 COALESCE(c.name, 'Course Title') as course_name,
                 ps.total_reviews as reviews_count,
                 COALESCE(p.avg_rating, NULL) as avg_rating
-            FROM professor_summaries_new ps
+            FROM professor_summaries_merged ps
             LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
-            LEFT JOIN professors p ON ps.professor_id = p.id
+            LEFT JOIN professors_merged p ON ps.professor_id = p.id
             WHERE ps.professor_id = ANY(:professor_ids)
             ORDER BY ps.professor_id, ps.total_reviews DESC
         """)
@@ -3374,7 +3417,7 @@ async def get_course_professors(
                     r.rating_tags,
                     COALESCE(c.name, 'Course') as course_name,
                     ROW_NUMBER() OVER (PARTITION BY r.professor_id ORDER BY r.review_date DESC) as rn
-                FROM reviews r
+                FROM reviews_merged r
                 LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
                 WHERE r.professor_id = ANY(:professor_ids)
                   AND r.course_code = :course_code
@@ -3702,6 +3745,8 @@ async def get_course_professor_reviews(
     - `skip`: Number of reviews to skip for pagination (default: 0)
     """
     try:
+        # A merged duplicate profile is shown under its canonical id.
+        professor_id = resolve_professor_id(db, professor_id)
         # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
         import re
 
@@ -3713,11 +3758,12 @@ async def get_course_professor_reviews(
             )
 
         dept, course_num = match.groups()
+        dept = current_subject(dept)
 
         # Get professor name for context
         professor_query = text("""
             SELECT first_name || ' ' || last_name as name
-            FROM professors 
+            FROM professors_merged 
             WHERE id = :professor_id
         """)
 
@@ -3748,7 +3794,7 @@ async def get_course_professor_reviews(
                 thumbs_down_total,
                 rating_tags,
                 teacher_note
-            FROM reviews 
+            FROM reviews_merged 
             WHERE professor_id = :professor_id 
               AND (course_code = :course_code_format1 
                    OR course_code = :course_code_format2 
@@ -3823,7 +3869,7 @@ async def get_course_professor_reviews(
         # Get total count for pagination
         count_query = text("""
             SELECT COUNT(*) as total
-            FROM reviews 
+            FROM reviews_merged 
             WHERE professor_id = :professor_id 
               AND (course_code = :course_code_format1 
                    OR course_code = :course_code_format2 
@@ -4036,6 +4082,7 @@ async def compare_courses(
                 continue
 
             dept, course_num = match.groups()
+            dept = current_subject(dept)
 
             # Get course basic info with anex data (reuse logic from /course/{course_id})
             course_query = text("""
@@ -4127,8 +4174,8 @@ async def compare_courses(
                     p.first_name || ' ' || p.last_name as name,
                     COALESCE(p.avg_rating, NULL) as rating,
                     ps.total_reviews as reviews
-                FROM professor_summaries_new ps
-                JOIN professors p ON ps.professor_id = p.id
+                FROM professor_summaries_merged ps
+                JOIN professors_merged p ON ps.professor_id = p.id
                 WHERE ps.course_code = :course_code
                 ORDER BY ps.total_reviews DESC
                 LIMIT 5
@@ -4180,7 +4227,7 @@ async def compare_courses(
                 SELECT 
                     ROUND(AVG((COALESCE(clarity_rating, helpful_rating) + COALESCE(helpful_rating, clarity_rating)) / 2.0)::numeric, 1) as course_rating,
                     COUNT(*) as review_count
-                FROM reviews 
+                FROM reviews_merged 
                 WHERE course_code = :course_code
                   AND COALESCE(clarity_rating, helpful_rating) IS NOT NULL
             """)
@@ -4339,14 +4386,13 @@ async def get_professors(
         params: Dict[str, Any] = {"limit": limit, "skip": skip}
 
         if search:
-            where_conditions.append(
-                "(p.first_name ILIKE :search OR p.last_name ILIKE :search OR (p.first_name || ' ' || p.last_name) ILIKE :search)"
-            )
-            params["search"] = f"%{search}%"
+            name_condition, name_params = professor_name_condition(search, "search")
+            where_conditions.append(name_condition)
+            params.update(name_params)
 
         if department:
             where_conditions.append(
-                "EXISTS (SELECT 1 FROM professor_summaries_new ps WHERE ps.professor_id = p.id AND SUBSTRING(ps.course_code FROM '^[A-Z]+') = :department)"
+                "EXISTS (SELECT 1 FROM professor_summaries_merged ps WHERE ps.professor_id = p.id AND SUBSTRING(ps.course_code FROM '^[A-Z]+') = :department)"
             )
             params["department"] = department.upper()
 
@@ -4366,12 +4412,17 @@ async def get_professors(
                 SELECT 
                     ps.professor_id,
                     COUNT(DISTINCT ps.course_code) as total_courses,
-                    SUM(ps.total_reviews) as total_reviews,
+                    -- The overall row (course_code NULL) already counts every
+                    -- review; adding the per-course rows counted them twice.
+                    COALESCE(
+                        MAX(ps.total_reviews) FILTER (WHERE ps.course_code IS NULL),
+                        SUM(ps.total_reviews)
+                    ) as total_reviews,
                     p.avg_rating as overall_rating,
-                    ARRAY_AGG(DISTINCT SUBSTRING(ps.course_code FROM '^[A-Z]+')) as departments,
-                    ARRAY_AGG(DISTINCT ps.course_code) as courses_taught
-                FROM professor_summaries_new ps
-                JOIN professors p ON ps.professor_id = p.id
+                    ARRAY_AGG(DISTINCT SUBSTRING(ps.course_code FROM '^[A-Z]+')) FILTER (WHERE ps.course_code IS NOT NULL) as departments,
+                    ARRAY_AGG(DISTINCT ps.course_code) FILTER (WHERE ps.course_code IS NOT NULL) as courses_taught
+                FROM professor_summaries_merged ps
+                JOIN professors_merged p ON ps.professor_id = p.id
                 GROUP BY ps.professor_id, p.avg_rating
             )
             SELECT DISTINCT
@@ -4383,7 +4434,7 @@ async def get_professors(
                 COALESCE(pst.total_reviews, 0) as total_reviews,
                 COALESCE(pst.departments, ARRAY[]::text[]) as departments,
                 COALESCE(pst.courses_taught, ARRAY[]::text[]) as courses_taught
-            FROM professors p
+            FROM professors_merged p
             LEFT JOIN professor_stats pst ON p.id = pst.professor_id
             {where_clause}
             ORDER BY COALESCE(pst.total_reviews, 0) DESC, p.last_name, p.first_name
@@ -4476,7 +4527,7 @@ async def find_professor(
                     p.legacy_id AS rmp_id,
                     p.num_ratings,
                     (similarity(LOWER(p.first_name || ' ' || p.last_name), LOWER(:search_name)) * 100) AS score
-                FROM professors p
+                FROM professors_merged p
                 WHERE p.legacy_id IS NOT NULL
                   AND similarity(LOWER(p.first_name || ' ' || p.last_name), LOWER(:search_name)) > (:min_score / 100.0)
             )
@@ -4539,7 +4590,7 @@ async def find_professor(
                     WHEN LOWER(p.first_name || ' ' || p.last_name) = LOWER(:exact_name) THEN 100.0
                     ELSE (({token_sum}) * 100.0 / :total_tokens)
                 END AS score
-            FROM professors p
+            FROM professors_merged p
             WHERE p.legacy_id IS NOT NULL
         )
         SELECT id, name, rmp_id, score
@@ -4770,6 +4821,8 @@ async def get_professor_profile(
 
     """
     try:
+        # A merged duplicate profile is shown under its canonical id.
+        professor_id = resolve_professor_id(db, professor_id)
         # Get professor basic info
         professor_query = text("""
             SELECT 
@@ -4777,7 +4830,7 @@ async def get_professor_profile(
                 p.first_name || ' ' || p.last_name as name,
                 p.first_name,
                 p.last_name
-            FROM professors p
+            FROM professors_merged p
             WHERE p.id = :professor_id
         """)
 
@@ -4798,9 +4851,9 @@ async def get_professor_profile(
                     c.name,
                     p.avg_rating,
                     p.avg_difficulty
-                FROM professor_summaries_new ps
+                FROM professor_summaries_merged ps
                 LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
-                JOIN professors p ON ps.professor_id = p.id
+                JOIN professors_merged p ON ps.professor_id = p.id
                 WHERE ps.professor_id = :professor_id
                   AND ps.course_code IS NOT NULL
             )
@@ -4823,7 +4876,7 @@ async def get_professor_profile(
                     AVG(CASE WHEN would_take_again = 1 THEN 100.0 ELSE 0.0 END)::numeric, 
                     1
                 ) as would_take_again_percent
-            FROM reviews 
+            FROM reviews_merged 
             WHERE professor_id = :professor_id 
               AND would_take_again IS NOT NULL
         """)
@@ -4843,7 +4896,7 @@ async def get_professor_profile(
                 ps.total_reviews as reviews_count,
                 {"ps.tips," if structured else ""}
                 ps.avg_rating as avg_rating
-            FROM professor_summaries_new ps
+            FROM professor_summaries_merged ps
             LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
             WHERE ps.professor_id = :professor_id
               AND ps.course_code IS NOT NULL
@@ -4916,7 +4969,7 @@ async def get_professor_profile(
                 ps.confidence,
                 {"ps.tldr, ps.review_stats, ps.citations," if structured else ""}
                 ps.total_reviews
-            FROM professor_summaries_new ps
+            FROM professor_summaries_merged ps
             WHERE ps.professor_id = :professor_id
               AND ps.course_code IS NULL
             LIMIT 1
@@ -4956,7 +5009,7 @@ async def get_professor_profile(
                 r.course_code,
                 r.rating_tags,
                 c.name as course_name
-            FROM reviews r
+            FROM reviews_merged r
             LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
             WHERE r.professor_id = :professor_id
               AND r.review_text IS NOT NULL
@@ -5252,9 +5305,11 @@ async def get_professor_reviews(
     - `/professor/prof123/reviews?sort_by=rating&limit=10` - Top 10 highest-rated reviews
     """
     try:
+        # A merged duplicate profile is shown under its canonical id.
+        professor_id = resolve_professor_id(db, professor_id)
         # Verify professor exists
         professor_check = db.execute(
-            text("SELECT id FROM professors WHERE id = :professor_id"),
+            text("SELECT id FROM professors_merged WHERE id = :professor_id"),
             {"professor_id": professor_id},
         ).fetchone()
 
@@ -5316,7 +5371,7 @@ async def get_professor_reviews(
                 r.course_code,
                 COALESCE(c.name, 'Course') as course_name,
                 c.subject_long_name as department_name
-            FROM reviews r
+            FROM reviews_merged r
             LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
             WHERE {where_clause}
               AND r.review_text IS NOT NULL
@@ -5532,20 +5587,19 @@ async def search_professors(
         params: Dict[str, Any] = {"limit": limit, "skip": skip}
 
         if name:
-            where_conditions.append(
-                "(p.first_name ILIKE :name OR p.last_name ILIKE :name OR (p.first_name || ' ' || p.last_name) ILIKE :name)"
-            )
-            params["name"] = f"%{name}%"
+            name_condition, name_params = professor_name_condition(name, "name")
+            where_conditions.append(name_condition)
+            params.update(name_params)
 
         if department:
             where_conditions.append(
-                "EXISTS (SELECT 1 FROM professor_summaries_new ps WHERE ps.professor_id = p.id AND SUBSTRING(ps.course_code FROM '^[A-Z]+') = :department)"
+                "EXISTS (SELECT 1 FROM professor_summaries_merged ps WHERE ps.professor_id = p.id AND SUBSTRING(ps.course_code FROM '^[A-Z]+') = :department)"
             )
             params["department"] = department.upper()
 
         if courses_taught:
             where_conditions.append(
-                "EXISTS (SELECT 1 FROM professor_summaries_new ps WHERE ps.professor_id = p.id AND ps.course_code = :courses_taught)"
+                "EXISTS (SELECT 1 FROM professor_summaries_merged ps WHERE ps.professor_id = p.id AND ps.course_code = :courses_taught)"
             )
             params["courses_taught"] = courses_taught.upper()
 
@@ -5563,14 +5617,19 @@ async def search_professors(
                 SELECT 
                     ps.professor_id,
                     COUNT(DISTINCT ps.course_code) as total_courses,
-                    SUM(ps.total_reviews) as total_reviews,
+                    -- The overall row (course_code NULL) already counts every
+                    -- review; adding the per-course rows counted them twice.
+                    COALESCE(
+                        MAX(ps.total_reviews) FILTER (WHERE ps.course_code IS NULL),
+                        SUM(ps.total_reviews)
+                    ) as total_reviews,
                     p.avg_rating as overall_rating,
-                    ARRAY_AGG(DISTINCT SUBSTRING(ps.course_code FROM '^[A-Z]+')) as departments,
-                    ARRAY_AGG(DISTINCT ps.course_code) as courses_taught,
+                    ARRAY_AGG(DISTINCT SUBSTRING(ps.course_code FROM '^[A-Z]+')) FILTER (WHERE ps.course_code IS NOT NULL) as departments,
+                    ARRAY_AGG(DISTINCT ps.course_code) FILTER (WHERE ps.course_code IS NOT NULL) as courses_taught,
                     STRING_AGG(DISTINCT c.name, ', ') as course_titles
-                FROM professor_summaries_new ps
+                FROM professor_summaries_merged ps
                 LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
-                JOIN professors p ON ps.professor_id = p.id
+                JOIN professors_merged p ON ps.professor_id = p.id
                 GROUP BY ps.professor_id, p.avg_rating
             ),
             would_take_again_stats AS (
@@ -5580,7 +5639,7 @@ async def search_professors(
                         AVG(CASE WHEN would_take_again = 1 THEN 100.0 ELSE 0.0 END)::numeric, 
                         1
                     ) as would_take_again_percent
-                FROM reviews 
+                FROM reviews_merged 
                 WHERE would_take_again IS NOT NULL
                 GROUP BY professor_id
             )
@@ -5596,7 +5655,7 @@ async def search_professors(
                 COALESCE(pst.courses_taught, ARRAY[]::text[]) as courses_taught,
                 COALESCE(pst.course_titles, '') as course_titles,
                 COALESCE(pst.total_courses, 0) as total_courses
-            FROM professors p
+            FROM professors_merged p
             LEFT JOIN professor_stats pst ON p.id = pst.professor_id
             LEFT JOIN would_take_again_stats wta ON p.id = wta.professor_id
             {where_clause}
@@ -5931,6 +5990,11 @@ async def compare_professors(
         if not professor_ids:
             raise HTTPException(status_code=400, detail="No professor IDs provided")
 
+        # Merged duplicate profiles are shown under their canonical id.
+        professor_ids = list(
+            dict.fromkeys(resolve_professor_id(db, pid) for pid in professor_ids)
+        )
+
         if len(professor_ids) > 10:  # Reasonable limit to prevent abuse
             raise HTTPException(
                 status_code=400, detail="Too many professor IDs. Maximum 10 allowed."
@@ -5942,7 +6006,7 @@ async def compare_professors(
                 p.id,
                 p.first_name || ' ' || p.last_name as name,
                 p.avg_rating
-            FROM professors p
+            FROM professors_merged p
             WHERE p.id = ANY(:professor_ids)
         """)
         professors_result = db.execute(
@@ -5966,7 +6030,7 @@ async def compare_professors(
                     AVG(CASE WHEN would_take_again = 1 THEN 100.0 ELSE 0.0 END)::numeric, 
                     1
                 ) as would_take_again_percent
-            FROM reviews 
+            FROM reviews_merged 
             WHERE professor_id = ANY(:professor_ids)
               AND would_take_again IS NOT NULL
             GROUP BY professor_id
@@ -5988,7 +6052,7 @@ async def compare_professors(
                 ps.total_reviews as reviews_count,
                 -- This course's rating, not the professor's overall one.
                 ps.avg_rating
-            FROM professor_summaries_new ps
+            FROM professor_summaries_merged ps
             LEFT JOIN courses c ON c.subject_id || c.course_number = ps.course_code
             WHERE ps.professor_id = ANY(:professor_ids)
               AND ps.course_code IS NOT NULL
@@ -6028,7 +6092,7 @@ async def compare_professors(
                 ps.complaints,
                 ps.consistency,
                 ps.confidence
-            FROM professor_summaries_new ps
+            FROM professor_summaries_merged ps
             WHERE ps.professor_id = ANY(:professor_ids)
               AND ps.course_code IS NULL
         """)
@@ -6052,7 +6116,7 @@ async def compare_professors(
                     r.rating_tags,
                     COALESCE(c.name, 'Course') as course_name,
                     ROW_NUMBER() OVER (PARTITION BY r.professor_id ORDER BY r.review_date DESC) as rn
-                FROM reviews r
+                FROM reviews_merged r
                 LEFT JOIN courses c ON c.subject_id || c.course_number = r.course_code
                 WHERE r.professor_id = ANY(:professor_ids)
                   AND r.review_text IS NOT NULL

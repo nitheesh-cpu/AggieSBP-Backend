@@ -322,7 +322,7 @@ async def discover_ucc_fit_candidates(
                         (COALESCE(r.clarity_rating, r.helpful_rating)
                          + COALESCE(r.helpful_rating, r.clarity_rating)) / 2.0
                     ) AS avg_rating
-                FROM reviews r
+                FROM reviews_merged r
                 WHERE r.course_code IN (
                     SELECT dept || course_number FROM candidate_courses
                 )
@@ -784,13 +784,13 @@ async def discover_ucc_courses(
                 g.percent_ab,
                 g.total_students as gpa_student_count
             FROM ucc_pairs up
-            LEFT JOIN professors p ON (
+            LEFT JOIN professors_merged p ON (
                 up.instructor_name IS NOT NULL
                 AND p.university_id = __CAMPUS_SCHOOL__
                 AND up.instructor_name ILIKE p.first_name || '%%'
                 AND up.instructor_name ILIKE '%%' || p.last_name
             )
-            LEFT JOIN professor_summaries_new psn ON (
+            LEFT JOIN professor_summaries_merged psn ON (
                 p.id IS NOT NULL
                 AND p.id = psn.professor_id
                 AND psn.course_code = up.dept || up.course_number
@@ -989,13 +989,13 @@ def _discover_rows(
                 g.total_students as gpa_student_count
             FROM sections s
             LEFT JOIN section_instructors si ON s.id = si.section_id
-            LEFT JOIN professors p ON (
+            LEFT JOIN professors_merged p ON (
                 si.instructor_name IS NOT NULL
                 AND p.university_id = __CAMPUS_SCHOOL__
                 AND si.instructor_name ILIKE p.first_name || '%%'
                 AND si.instructor_name ILIKE '%%' || p.last_name
             )
-            LEFT JOIN professor_summaries_new psn ON (
+            LEFT JOIN professor_summaries_merged psn ON (
                 p.id IS NOT NULL
                 AND p.id = psn.professor_id
                 AND psn.course_code = s.dept || s.course_number

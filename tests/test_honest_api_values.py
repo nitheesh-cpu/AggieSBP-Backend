@@ -84,7 +84,7 @@ def course_detail_session(**course_fields: object) -> FakeSession:
         False,
         {
             "recent_semesters": Result([course]),
-            "SELECT COUNT(*) FROM professor_summaries_new": Result(scalar=0),
+            "SELECT COUNT(*) FROM professor_summaries_merged": Result(scalar=0),
         },
     )
 

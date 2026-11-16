@@ -56,6 +56,7 @@ from pipelines.professors.hierarchical_summarization.ai_clients import (
 from pipelines.professors.upsert import upsert_professor_summary
 from pipelines.professors.review_sync import fetch_rating_counts, needs_review_fetch
 from aggiermp.core.name_matching import parse_person_name, professor_names_match
+from aggiermp.core.professor_identity import load_aliases
 
 # Checkpoint file for resume functionality
 CHECKPOINT_FILE = Path(__file__).parent / ".review_summary_checkpoint.json"
@@ -289,6 +290,14 @@ def upsert_reviews_and_summaries(
                     "sections first"
                 )
 
+        # Confirmed duplicate merges (see pipelines/professors/merge_duplicates.py).
+        # Every RMP entry is still fetched and stored as-is; summaries are
+        # built once per merged professor from all of its entries' reviews.
+        aliases = load_aliases(session)
+        merged_members: Dict[str, List[str]] = {}
+        for alias_id, canonical_id in aliases.items():
+            merged_members.setdefault(canonical_id, []).append(alias_id)
+
         # Filter out already processed professors
         remaining_professors = [
             pid for pid in professor_ids if pid not in processed_professors
@@ -451,9 +460,13 @@ def upsert_reviews_and_summaries(
             else:
                 professors_to_summarize = batch_professors
 
-            professors_to_summarize = [
-                pid for pid in professors_to_summarize if pid not in failed_fetches
-            ]
+            professors_to_summarize = list(
+                dict.fromkeys(
+                    aliases.get(pid, pid)
+                    for pid in professors_to_summarize
+                    if pid not in failed_fetches
+                )
+            )
 
             jobs = []
             for i, professor_id in enumerate(professors_to_summarize, 1):
@@ -466,11 +479,14 @@ def upsert_reviews_and_summaries(
                     break
                 try:
                     # Get all reviews for this professor
+                    # A merged professor's reviews come from every merged entry.
+                    member_ids = [professor_id] + merged_members.get(professor_id, [])
+                    review_query = session.query(ReviewDB)
                     all_reviews = (
-                        session.query(ReviewDB)
-                        .filter_by(professor_id=professor_id)
-                        .all()
-                    )
+                        review_query.filter(ReviewDB.professor_id.in_(member_ids))
+                        if len(member_ids) > 1
+                        else review_query.filter_by(professor_id=professor_id)
+                    ).all()
 
                     print(
                         f"    [{i}/{len(professors_to_summarize)}] "
@@ -487,7 +503,7 @@ def upsert_reviews_and_summaries(
                     raw_reviews = [
                         {
                             "id": review.id,
-                            "professor_id": review.professor_id,
+                            "professor_id": professor_id,
                             "course_code": review.course_code,
                             "review_text": review.review_text,
                             "clarity_rating": review.clarity_rating,

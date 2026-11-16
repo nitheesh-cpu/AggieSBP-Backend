@@ -50,7 +50,7 @@ def evidence(subjects_by_id=None, people=None):
         own, namesakes = (people or {}).get(pidm, (frozenset(), []))
         return Person(name, frozenset(own) | {dept}), namesakes
 
-    def load_profiles(db, candidates):
+    def load_profiles(db, candidates, aliases=None):
         return [
             Profile(c.id, f"{c.first_name} {c.last_name}",
                     frozenset(subjects_by_id.get(c.id, ())), frozenset())

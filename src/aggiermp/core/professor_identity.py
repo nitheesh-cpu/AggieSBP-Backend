@@ -39,6 +39,9 @@ class Person:
 
     name: str
     subjects: frozenset[str]
+    # False for sections listed without a PIDM: such a row names someone but
+    # cannot say which person, so it may block a duplicate merge, never prove one.
+    has_pidm: bool = True
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,11 @@ class Profile:
     name: str
     subjects: frozenset[str]
     course_codes: frozenset[str]
+    # Used only to find duplicate profiles of one person (see plan_profile_merges).
+    university_id: str = ""
+    department: str = ""
+    num_ratings: int = 0
+    legacy_id: Optional[int] = None
 
 
 def _same_name(left: str, right: str) -> bool:
@@ -183,14 +191,38 @@ def load_people(
     return instructor, namesakes
 
 
-def load_profiles(db: Any, candidates: Iterable[Any]) -> list[Profile]:
-    """Attach review evidence to ProfessorDB candidate rows."""
-    from aggiermp.database.base import ProfessorSummaryNewDB, ReviewDB
+def load_profiles(
+    db: Any, candidates: Iterable[Any], aliases: Optional[dict[str, str]] = None
+) -> list[Profile]:
+    """Attach review evidence to ProfessorDB candidate rows.
+
+    With ``aliases`` (confirmed merges, alias id -> canonical id), merged
+    entries become one profile: an alias candidate is replaced by its
+    canonical row, and every merged entry's reviews count as evidence for it.
+    """
+    from aggiermp.database.base import ProfessorDB, ProfessorSummaryNewDB, ReviewDB
 
     candidates = list(candidates)
     if not candidates:
         return []
+    members: dict[str, list[str]] = {}
+    if aliases:
+        by_id = {candidate.id: candidate for candidate in candidates}
+        missing = {
+            aliases[c.id] for c in candidates if c.id in aliases
+        } - set(by_id)
+        if missing:
+            for row in db.query(ProfessorDB).filter(ProfessorDB.id.in_(missing)).all():
+                by_id[row.id] = row
+        candidates = [c for c in by_id.values() if c.id not in aliases]
+        for alias_id, canonical_id in aliases.items():
+            members.setdefault(canonical_id, []).append(alias_id)
     ids = [candidate.id for candidate in candidates]
+    owner = {pid: pid for pid in ids}
+    for pid in ids:
+        for alias_id in members.get(pid, []):
+            owner[alias_id] = pid
+    ids = list(owner)
     valid = _valid_subjects(db)
     raw_codes = (
         db.query(ReviewDB.professor_id, ReviewDB.course_code)
@@ -208,19 +240,504 @@ def load_profiles(db: Any, candidates: Iterable[Any]) -> list[Profile]:
         .all()
     )
 
-    subjects: dict[str, set[str]] = {pid: set() for pid in ids}
-    codes: dict[str, set[str]] = {pid: set() for pid in ids}
+    subjects: dict[str, set[str]] = {pid: set() for pid in owner.values()}
+    codes: dict[str, set[str]] = {pid: set() for pid in owner.values()}
     for profile_id, raw in raw_codes:
         parsed = parse_course_code(raw, valid)
         if parsed:
-            subjects[profile_id].add(parsed[0])
-            codes[profile_id].add(parsed[0] + parsed[1])
+            subjects[owner[profile_id]].add(parsed[0])
+            codes[owner[profile_id]].add(parsed[0] + parsed[1])
     return [
         Profile(
             id=candidate.id,
             name=f"{candidate.first_name} {candidate.last_name}",
             subjects=frozenset(subjects[candidate.id]),
             course_codes=frozenset(codes[candidate.id]),
+            university_id=str(getattr(candidate, "university_id", "") or ""),
+            department=str(getattr(candidate, "department", "") or ""),
+            num_ratings=int(getattr(candidate, "num_ratings", 0) or 0),
+            legacy_id=getattr(candidate, "legacy_id", None),
         )
         for candidate in candidates
     ]
+
+
+# ---------------------------------------------------------------------------
+# Duplicate RMP profiles of one person
+#
+# RMP sometimes holds two teacher entries for one person ("Abigail Songok" and
+# "Abigael Songok", both teaching CHEM 119), often with a spelling variant or
+# under two departments. Each entry becomes its own professor row, so reviews
+# split across two pages and choose_profile() sees two equally good profiles
+# and attaches neither. merge_duplicates.py proposes pairs found here; a person
+# confirms each one in professor_aliases before the *_merged views combine it.
+#
+# A false merge shows one person's reviews under another, which is worse than a
+# missed duplicate, so the rules are deliberately narrow:
+#   * the first names are identical, or differ by a known-safe spelling edit;
+#     nicknames, initials and empty profiles are never merged;
+#   * both profiles have reviews for at least one shared course;
+#   * no other registrar instructor with that surname and a compatible first
+#     name taught the subjects involved (sections without a PIDM count as
+#     possible other people);
+#   * every pair in a merged group has this evidence directly.
+# ---------------------------------------------------------------------------
+
+_NICKNAMES: tuple[frozenset[str], ...] = tuple(
+    frozenset(group.split())
+    for group in (
+        "william bill will billy",
+        "robert bob rob bobby robbie",
+        "james jim jimmy jamie",
+        "michael mike",
+        "christopher chris",
+        "christina christine chris tina",
+        "thomas tom tommy",
+        "richard rick rich dick",
+        "joseph joe joey",
+        "daniel dan danny",
+        "david dave",
+        "stephen steven steve",
+        "matthew matt",
+        "andrew andy drew",
+        "anthony tony",
+        "edward ed eddie ted",
+        "elizabeth liz beth betsy lizzy",
+        "katherine catherine kathryn kate kathy katie cathy",
+        "jennifer jen jenny",
+        "margaret maggie peggy meg",
+        "patricia patty trish",
+        "samuel sam",
+        "benjamin ben",
+        "alexander alex",
+        "nicholas nick",
+        "jonathan jon",
+        "timothy tim",
+        "kenneth ken kenny",
+        "ronald ron",
+        "donald don",
+        "gregory greg",
+        "jeffrey jeff",
+        "lawrence larry",
+        "charles chuck charlie",
+        "susan sue",
+        "deborah debbie deb",
+        "rebecca becky",
+        "joshua josh",
+        "zachary zach zack",
+        "frederick fred",
+        "douglas doug",
+        "gerald jerry",
+        "raymond ray",
+        "phillip philip phil",
+        "jacob jake",
+    )
+)
+
+_VOWELS = frozenset("aeiouy")
+
+# Pairs one vowel apart that are usually two names, often a man's and a
+# woman's. The ending rules in _spelling_variant catch most others.
+_DIFFERENT_NAMES = frozenset(
+    frozenset(pair.split())
+    for pair in (
+        "francis frances",
+        "jesse jessie",
+        "jose josie",
+        "marian marion",
+        "louis luis",
+        "ahmad ahmed",
+        "stephan stephen",
+        "elena elina",
+        "jaime jamie",
+    )
+)
+
+_TITLES = frozenset({"dr", "prof", "professor", "mr", "mrs", "ms", "miss", "mx"})
+_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv", "v"})
+
+
+def _clean_name(name: str) -> tuple[str, frozenset[str]]:
+    """Strip titles ("Dr.") and return the name with its suffixes (Jr., III).
+
+    Keeps the registrar's "Last, First" comma, including when it sits on a
+    removed suffix ("Smith Jr., John" -> "Smith, John").
+    """
+    kept: list[str] = []
+    suffixes = set()
+    for token in (name or "").split():
+        bare = re.sub(r"[^a-z]", "", token.lower())
+        if bare in _TITLES or bare in _SUFFIXES:
+            if bare in _SUFFIXES:
+                suffixes.add(bare)
+            if token.endswith(",") and kept and not kept[-1].endswith(","):
+                kept[-1] += ","
+            continue
+        kept.append(token)
+    return " ".join(kept).strip(" ,"), frozenset(suffixes)
+
+
+def _one_edit(left: str, right: str) -> Optional[tuple[str, int, str, str]]:
+    """Describe a single-character edit between two names, or None.
+
+    Returns (kind, index, old, new): "sub" for a changed letter, "indel" for
+    a letter present in only one name (old is that letter), or "swap" for
+    two swapped neighbours.
+    """
+    if len(left) == len(right):
+        diffs = [i for i, (a, b) in enumerate(zip(left, right)) if a != b]
+        if len(diffs) == 1:
+            i = diffs[0]
+            return ("sub", i, left[i], right[i])
+        if (
+            len(diffs) == 2
+            and diffs[1] == diffs[0] + 1
+            and left[diffs[0]] == right[diffs[1]]
+            and left[diffs[1]] == right[diffs[0]]
+        ):
+            i = diffs[0]
+            return ("swap", i, left[i : i + 2], right[i : i + 2])
+        return None
+    if abs(len(left) - len(right)) != 1:
+        return None
+    longer, shorter = (left, right) if len(left) > len(right) else (right, left)
+    for i in range(len(longer)):
+        if longer[:i] + longer[i + 1 :] == shorter:
+            return ("indel", i, longer[i], "")
+    return None
+
+
+def _spelling_variant(left: str, right: str) -> Optional[str]:
+    """How two first names are one name spelled two ways, or None.
+
+    "spelling": an added or dropped "h" (Sara/Sarah, Jonathan/Johnathan) or
+    doubled consonant (Colin/Collin). These rarely make another name.
+    "vowel": one vowel changed, added or dropped away from the end of the
+    name (Abigail/Abigael, Kristen/Kristin). Vowel changes often do make
+    another name (Maria/Marie, Young/Yong), so duplicate_evidence also needs
+    the registrar to confirm them by exact name.
+    """
+    if left[:1] != right[:1] or min(len(left), len(right)) < 4:
+        return None
+    if frozenset((left, right)) in _DIFFERENT_NAMES:
+        return None
+    edit = _one_edit(left, right)
+    if edit is None:
+        return None
+    kind, i, old, new = edit
+    longer = left if len(left) >= len(right) else right
+    if kind == "indel":
+        doubled = (i > 0 and longer[i - 1] == old) or longer[i + 1 : i + 2] == old
+        if old == "h" or (doubled and old not in _VOWELS):
+            return "spelling"
+    # Everything else must be a vowel edit that leaves the last letter alone:
+    # the ending is where names mark gender or become another name
+    # (Terry/Terri, Andre/Andrea, Julia/Julie, and Rene/Renee or Jesse/Jessie,
+    # where the edit lands on the last letter of the shorter name).
+    if min(len(left), len(right)) < 5 and len(left) == len(right):
+        return None  # Short names: Dana/Dina, Mark/Mary.
+    if left[-1] != right[-1] or i >= min(len(left), len(right)) - 1:
+        return None
+    if kind == "sub" and old in _VOWELS and new in _VOWELS:
+        return "vowel"
+    if kind == "indel" and old in _VOWELS:
+        return "vowel"
+    return None
+
+
+def name_variant(left: str, right: str) -> Optional[str]:
+    """How two profile names can belong to one person, or None.
+
+    Returns "same", "spelling", "vowel", "nickname" or "initial"; only the
+    first three can lead to a merge. Surnames must be identical (spaces and
+    hyphens aside), suffixes (Jr., III) must agree, and a second given name,
+    when both names have one, must agree too. Titles (Dr.) are ignored.
+    """
+    left, left_suffixes = _clean_name(left)
+    right, right_suffixes = _clean_name(right)
+    if left_suffixes != right_suffixes:
+        return None
+    a, b = parse_person_name(left), parse_person_name(right)
+    if not a.surname or "".join(a.surname) != "".join(b.surname):
+        return None
+    if not a.given or not b.given:
+        return None
+    if len(a.given) > 1 and len(b.given) > 1:
+        middle_a, middle_b = a.given[1], b.given[1]
+        if middle_a != middle_b and not (
+            min(len(middle_a), len(middle_b)) == 1 and middle_a[0] == middle_b[0]
+        ):
+            return None
+    first_a, first_b = a.given[0], b.given[0]
+    if first_a == first_b:
+        return "same"
+    if min(len(first_a), len(first_b)) == 1:
+        return "initial" if first_a[0] == first_b[0] else None
+    variant = _spelling_variant(first_a, first_b)
+    if variant:
+        return variant
+    if any(first_a in group and first_b in group for group in _NICKNAMES):
+        return "nickname"
+    return None
+
+
+_MERGEABLE_KINDS = frozenset({"same", "spelling", "vowel"})
+
+
+def _first_name(name: str) -> str:
+    given = parse_person_name(_clean_name(name)[0]).given
+    return given[0] if given else ""
+
+
+def _surname_tokens(name: str) -> set[str]:
+    surname = parse_person_name(_clean_name(name)[0]).surname
+    return set(surname) | ({"".join(surname)} if surname else set())
+
+
+def _could_be(person: Person, profile: Profile) -> bool:
+    """Could this registrar instructor be the person behind ``profile``?
+
+    Deliberately loose (a shared surname part and the same first initial),
+    because here a match only ever blocks a merge.
+    """
+    if not _surname_tokens(person.name) & _surname_tokens(profile.name):
+        return False
+    return _first_name(person.name)[:1] == _first_name(profile.name)[:1]
+
+
+def duplicate_evidence(
+    left: Profile, right: Profile, people: Sequence[Person] = ()
+) -> Optional[str]:
+    """Why two RMP profiles belong to one person, or None when unproven.
+
+    ``people`` are registrar instructors with every subject they taught. The
+    returned text is what a person reads before confirming the merge, so it
+    states exactly what matched.
+    """
+    if not left.university_id or left.university_id != right.university_id:
+        return None
+    kind = name_variant(left.name, right.name)
+    if kind not in _MERGEABLE_KINDS:
+        return None
+    # Both profiles must have reviews for a shared course. An empty profile
+    # with a familiar name is as likely a new hire as a duplicate.
+    shared_codes = left.course_codes & right.course_codes
+    if not shared_codes:
+        return None
+
+    subjects = left.subjects | right.subjects
+    namesakes = [
+        person
+        for person in people
+        if person.subjects & subjects
+        and (_could_be(person, left) or _could_be(person, right))
+    ]
+    if len(namesakes) > 1:
+        return None  # More than one possible person taught these subjects.
+
+    names = f"{_clean_name(left.name)[0]} / {_clean_name(right.name)[0]}"
+    courses = ", ".join(sorted(shared_codes))
+    if namesakes:
+        person = namesakes[0]
+        if not person.has_pidm:
+            return None  # A section without a PIDM cannot prove who it was.
+        exact = [name_variant(person.name, p.name) == "same" for p in (left, right)]
+        # The registrar name must be exactly one of the two names (both, when
+        # the profile names are identical); a different spelling or nickname
+        # could be another person.
+        if not any(exact) or (kind == "same" and not all(exact)):
+            return None
+        check = (
+            "CHECK: the first names differ by one vowel, which is sometimes a "
+            "different name; "
+            if kind == "vowel"
+            else ""
+        )
+        return (
+            f"{check}{kind} name ({names}); both reviewed for {courses}; the only registrar "
+            f"instructor with a compatible name is {person.name} "
+            f"(taught {', '.join(sorted(person.subjects & subjects))})"
+        )
+
+    # Nobody compatible in the registrar data. Identical names and safe
+    # spelling edits may still merge on a shared course; vowel changes need
+    # the registrar to confirm them.
+    if kind == "vowel":
+        return None
+    return (
+        f"{kind} name ({names}); both reviewed for {courses}; no registrar record "
+        "of anyone with a compatible name (registrar data starts in 2025)"
+    )
+
+
+@dataclass(frozen=True)
+class ProfileMerge:
+    """Show ``alias_id`` under ``canonical_id``."""
+
+    canonical_id: str
+    alias_id: str
+    evidence: str
+
+
+def _canonical_rank(profile: Profile) -> tuple[int, int, int, str]:
+    # Most reviews first (most-linked page); then the older RMP entry.
+    legacy = profile.legacy_id if profile.legacy_id is not None else 2**62
+    return (-profile.num_ratings, -len(profile.course_codes), legacy, profile.id)
+
+
+def plan_profile_merges(
+    profiles: Sequence[Profile], people: Sequence[Person] = ()
+) -> tuple[list[ProfileMerge], list[list[str]]]:
+    """Decide which profiles to show as one.
+
+    Returns the merges and the groups skipped as ambiguous: linked profiles
+    where some pair lacks direct evidence (A matches B and B matches C, but
+    A and C are not shown to be one person).
+    """
+    by_surname: dict[tuple[str, str], list[Profile]] = {}
+    for profile in profiles:
+        surname = "".join(parse_person_name(_clean_name(profile.name)[0]).surname)
+        if surname:
+            by_surname.setdefault((profile.university_id, surname), []).append(profile)
+
+    merges: list[ProfileMerge] = []
+    ambiguous: list[list[str]] = []
+    for (_, surname), group in sorted(by_surname.items()):
+        if len(group) < 2:
+            continue
+        nearby = [
+            person
+            for person in people
+            if any(_could_be(person, profile) for profile in group)
+        ]
+        evidence: dict[frozenset[str], str] = {}
+        for i, left in enumerate(group):
+            for right in group[i + 1 :]:
+                found = duplicate_evidence(left, right, nearby)
+                if found:
+                    evidence[frozenset((left.id, right.id))] = found
+
+        # Connected components over evidence edges.
+        parent = {p.id: p.id for p in group}
+
+        def root(node: str) -> str:
+            while parent[node] != node:
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            return node
+
+        for pair in evidence:
+            a, b = tuple(pair)
+            parent[root(a)] = root(b)
+        components: dict[str, list[Profile]] = {}
+        for profile in group:
+            components.setdefault(root(profile.id), []).append(profile)
+
+        for members in components.values():
+            if len(members) < 2:
+                continue
+            # Every pair needs its own evidence; a hub linking two profiles
+            # that are not shown to be one person merges nothing.
+            if any(
+                frozenset((a.id, b.id)) not in evidence
+                for i, a in enumerate(members)
+                for b in members[i + 1 :]
+            ):
+                ambiguous.append(sorted(m.id for m in members))
+                continue
+            canonical = min(members, key=_canonical_rank)
+            for member in sorted(members, key=_canonical_rank):
+                if member is not canonical:
+                    merges.append(
+                        ProfileMerge(
+                            canonical.id,
+                            member.id,
+                            evidence[frozenset((canonical.id, member.id))],
+                        )
+                    )
+    return merges, ambiguous
+
+
+def load_all_people(db: Any) -> list[Person]:
+    """Every registrar instructor with every subject taught: one per PIDM,
+    plus one per name for sections listed without a PIDM (has_pidm=False).
+
+    PIDM-less rows stay apart even when one PIDM has the same name: they may
+    be that person or someone else, so they can only block a merge.
+    """
+    from aggiermp.database.base import SectionDB, SectionInstructorDB
+
+    rows = (
+        db.query(
+            SectionInstructorDB.instructor_pidm,
+            SectionInstructorDB.instructor_name,
+            SectionDB.dept,
+        )
+        .join(SectionDB, SectionInstructorDB.section_id == SectionDB.id)
+        .distinct()
+        .all()
+    )
+    names: dict[Any, str] = {}
+    subjects: dict[Any, set[str]] = {}
+    for pidm, name, dept in rows:
+        if not name:
+            continue
+        key = pidm if pidm is not None else ("name", name)
+        names.setdefault(key, name)
+        subjects.setdefault(key, set()).add(str(dept).upper())
+    return [
+        Person(names[key], frozenset(subjects[key]), has_pidm=not isinstance(key, tuple))
+        for key in names
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Aliases left behind by merges
+# ---------------------------------------------------------------------------
+
+
+def _aliases_table_exists(db: Any) -> bool:
+    """Checked up front instead of catching a failed SELECT, since rolling
+    back after one would also discard the caller's uncommitted work."""
+    from sqlalchemy import text
+
+    try:
+        found = db.execute(text("SELECT to_regclass('professor_aliases')")).scalar()
+    except Exception:
+        return False
+    # to_regclass gives the table name, or NULL when it's missing. Anything
+    # else (a Mock session in tests) counts as missing.
+    return isinstance(found, str)
+
+
+def load_aliases(db: Any) -> dict[str, str]:
+    """Confirmed merges: alias id -> canonical id. Proposed or rejected
+    merges are ignored, as they are by the *_merged views."""
+    from sqlalchemy import text
+
+    if not _aliases_table_exists(db):
+        return {}
+    rows = db.execute(
+        text(
+            "SELECT alias_id, canonical_id FROM professor_aliases "
+            "WHERE status = 'confirmed'"
+        )
+    ).fetchall()
+    return {str(alias): str(canonical) for alias, canonical in rows}
+
+
+def resolve_professor_id(db: Any, professor_id: str) -> str:
+    """The id a professor is shown under: its canonical id when a confirmed
+    merge folded it into another entry, else the id itself."""
+    from sqlalchemy import text
+
+    if not _aliases_table_exists(db):
+        return professor_id
+    row = db.execute(
+        text(
+            "SELECT canonical_id FROM professor_aliases "
+            "WHERE alias_id = :id AND status = 'confirmed'"
+        ),
+        {"id": professor_id},
+    ).fetchone()
+    return str(row[0]) if row else professor_id

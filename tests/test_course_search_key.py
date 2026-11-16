@@ -2,7 +2,7 @@
 
 import unittest
 
-from aggiermp.core.subjects import course_search_key
+from aggiermp.core.subjects import course_search_key, current_subject
 
 
 class CourseSearchKeyTest(unittest.TestCase):
@@ -21,6 +21,12 @@ class CourseSearchKeyTest(unittest.TestCase):
     def test_shorthand_without_number_is_left_alone(self):
         # "calc" alone is a title search, not MATH.
         self.assertEqual(course_search_key("calc"), "CALC")
+
+    def test_renamed_subjects(self):
+        self.assertEqual(course_search_key("psyc 107"), "PBSI107")
+        self.assertEqual(course_search_key("PSYC"), "PBSI")
+        self.assertEqual(current_subject("psyc"), "PBSI")
+        self.assertEqual(current_subject("CSCE"), "CSCE")
 
     def test_non_codes(self):
         self.assertEqual(course_search_key("financial reporting"), "FINANCIALREPORTING")

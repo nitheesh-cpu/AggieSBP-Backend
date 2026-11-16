@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ...database.base import get_session
 from ...core.cache import cached, TTL_LONG
+from ...core.professor_identity import resolve_professor_id
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,10 @@ async def compare_professors(
     db: Session = Depends(get_session),
 ) -> List[Dict[str, Any]]:
     professor_ids = _parse_ids(ids)
+    # Merged duplicate profiles are shown under their canonical id.
+    professor_ids = list(
+        dict.fromkeys(resolve_professor_id(db, pid) for pid in professor_ids)
+    )
 
     try:
         # ── 1. Core professor data + overall summary ──────────────────────
@@ -94,8 +99,8 @@ async def compare_professors(
                     psn.complaints,
                     psn.common_tags,
                     psn.tag_frequencies
-                FROM professors p
-                LEFT JOIN professor_summaries_new psn
+                FROM professors_merged p
+                LEFT JOIN professor_summaries_merged psn
                     ON psn.professor_id = p.id AND psn.course_code IS NULL
                 WHERE p.id = ANY(:ids)
             """),
@@ -116,7 +121,7 @@ async def compare_professors(
                     SUM(g.grade_a + g.grade_b)::float
                         / NULLIF(SUM(g.total_students), 0) * 100               AS percent_ab,
                     SUM(g.total_students)                                      AS total_students
-                FROM professors p
+                FROM professors_merged p
                 LEFT JOIN gpa_data g ON (
                     p.department IS NOT NULL
                     AND g.dept = p.department
@@ -143,7 +148,7 @@ async def compare_professors(
                     avg_difficulty,
                     total_reviews,
                     confidence
-                FROM professor_summaries_new
+                FROM professor_summaries_merged
                 WHERE professor_id = ANY(:ids)
                   AND course_code IS NOT NULL
                 ORDER BY professor_id, total_reviews DESC
