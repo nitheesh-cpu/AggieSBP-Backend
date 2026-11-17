@@ -12,6 +12,7 @@ than showing another person's reviews.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import re
 from dataclasses import dataclass
@@ -283,6 +284,11 @@ def load_profiles(
 #   * every pair in a merged group has this evidence directly.
 # ---------------------------------------------------------------------------
 
+# Name parsing is the slow part of planning merges over thousands of
+# profiles; names repeat constantly, so parse each one once.
+_parsed = functools.lru_cache(maxsize=None)(parse_person_name)
+
+
 _NICKNAMES: tuple[frozenset[str], ...] = tuple(
     frozenset(group.split())
     for group in (
@@ -357,6 +363,7 @@ _TITLES = frozenset({"dr", "prof", "professor", "mr", "mrs", "ms", "miss", "mx"}
 _SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv", "v"})
 
 
+@functools.lru_cache(maxsize=None)
 def _clean_name(name: str) -> tuple[str, frozenset[str]]:
     """Strip titles ("Dr.") and return the name with its suffixes (Jr., III).
 
@@ -445,6 +452,7 @@ def _spelling_variant(left: str, right: str) -> Optional[str]:
     return None
 
 
+@functools.lru_cache(maxsize=None)
 def name_variant(left: str, right: str) -> Optional[str]:
     """How two profile names can belong to one person, or None.
 
@@ -457,7 +465,7 @@ def name_variant(left: str, right: str) -> Optional[str]:
     right, right_suffixes = _clean_name(right)
     if left_suffixes != right_suffixes:
         return None
-    a, b = parse_person_name(left), parse_person_name(right)
+    a, b = _parsed(left), _parsed(right)
     if not a.surname or "".join(a.surname) != "".join(b.surname):
         return None
     if not a.given or not b.given:
@@ -484,14 +492,16 @@ def name_variant(left: str, right: str) -> Optional[str]:
 _MERGEABLE_KINDS = frozenset({"same", "spelling", "vowel"})
 
 
+@functools.lru_cache(maxsize=None)
 def _first_name(name: str) -> str:
-    given = parse_person_name(_clean_name(name)[0]).given
+    given = _parsed(_clean_name(name)[0]).given
     return given[0] if given else ""
 
 
-def _surname_tokens(name: str) -> set[str]:
-    surname = parse_person_name(_clean_name(name)[0]).surname
-    return set(surname) | ({"".join(surname)} if surname else set())
+@functools.lru_cache(maxsize=None)
+def _surname_tokens(name: str) -> frozenset[str]:
+    surname = _parsed(_clean_name(name)[0]).surname
+    return frozenset(surname) | ({"".join(surname)} if surname else frozenset())
 
 
 def _could_be(person: Person, profile: Profile) -> bool:
@@ -516,13 +526,14 @@ def duplicate_evidence(
     """
     if not left.university_id or left.university_id != right.university_id:
         return None
-    kind = name_variant(left.name, right.name)
-    if kind not in _MERGEABLE_KINDS:
-        return None
     # Both profiles must have reviews for a shared course. An empty profile
-    # with a familiar name is as likely a new hire as a duplicate.
+    # with a familiar name is as likely a new hire as a duplicate. (Checked
+    # first: it is the cheapest test.)
     shared_codes = left.course_codes & right.course_codes
     if not shared_codes:
+        return None
+    kind = name_variant(left.name, right.name)
+    if kind not in _MERGEABLE_KINDS:
         return None
 
     subjects = left.subjects | right.subjects
@@ -596,18 +607,31 @@ def plan_profile_merges(
     """
     by_surname: dict[tuple[str, str], list[Profile]] = {}
     for profile in profiles:
-        surname = "".join(parse_person_name(_clean_name(profile.name)[0]).surname)
+        surname = "".join(_parsed(_clean_name(profile.name)[0]).surname)
         if surname:
             by_surname.setdefault((profile.university_id, surname), []).append(profile)
+
+    # Index registrar instructors by surname part once; scanning every
+    # instructor for every surname group took minutes on production data.
+    people_by_token: dict[str, list[Person]] = {}
+    for person in people:
+        for token in _surname_tokens(person.name):
+            people_by_token.setdefault(token, []).append(person)
 
     merges: list[ProfileMerge] = []
     ambiguous: list[list[str]] = []
     for (_, surname), group in sorted(by_surname.items()):
         if len(group) < 2:
             continue
+        candidates = {
+            id(person): person
+            for profile in group
+            for token in _surname_tokens(profile.name)
+            for person in people_by_token.get(token, [])
+        }
         nearby = [
             person
-            for person in people
+            for person in candidates.values()
             if any(_could_be(person, profile) for profile in group)
         ]
         evidence: dict[frozenset[str], str] = {}
