@@ -16,7 +16,8 @@ def _db_error(e: Exception, context: str = "") -> HTTPException:
 
 from supertokens_python.recipe.session import SessionContainer
 from supertokens_python.recipe.session.framework.fastapi import verify_session
-from supertokens_python.asyncio import get_user as st_get_user
+from supertokens_python.asyncio import get_user as st_get_user, delete_user as st_delete_user
+from supertokens_python.recipe.session.asyncio import revoke_all_sessions_for_user
 import uuid
 from pydantic import ConfigDict
 
@@ -28,6 +29,12 @@ from ...models.schema import UserSchedule, UserTrackedSection, UserSubscription
 from ...core.notifications import NotificationService
 from ...core.config import settings
 from ...core.push_endpoints import is_allowed_push_endpoint
+from ...core.user_data import (
+    extract_crn as _extract_crn,
+    delete_user_rows,
+    get_redis_or_none,
+    release_trackers,
+)
 
 
 def get_session() -> Iterator[_Session]:
@@ -39,23 +46,6 @@ def get_session() -> Iterator[_Session]:
         db.close()
 
 router: APIRouter = APIRouter(prefix="/users", tags=["users"])
-
-
-def _extract_crn(section_id: str) -> Optional[str]:
-    """Extract CRN from a section_id.
-
-    Handles two known formats:
-      - Extension format: ``TERMCODE-CRN-DEPT-NUM-SEC``  →  second dash-segment
-      - DB format: ``TERMCODE_CRN``  →  second underscore-segment
-    Returns None when the format is unrecognised.
-    """
-    if "-" in section_id:
-        parts = section_id.split("-")
-        return parts[1] if len(parts) >= 2 else None
-    if "_" in section_id:
-        parts = section_id.split("_")
-        return parts[1] if len(parts) >= 2 else None
-    return None
 
 
 class SignInMethodPublic(BaseModel):
@@ -135,6 +125,62 @@ async def get_my_account(session: SessionContainer = Depends(verify_session())):
         primary_email=primary,
         sign_in_methods=methods,
     )
+
+
+@router.delete("/me")
+async def delete_my_account(
+    session: SessionContainer = Depends(verify_session()),
+    db: Session = Depends(get_session),
+):
+    """
+    Permanently delete the signed-in user's account and all data tied to it.
+
+    Order: (1) all user rows in one DB transaction, (2) Redis tracker entries
+    (best effort), (3) the SuperTokens user (also ends their sessions).
+    Safe to retry: if step 3 fails the session stays valid and the same call
+    can be repeated; steps 1-2 then simply find nothing left to delete.
+    """
+    user_id = session.get_user_id()
+
+    try:
+        counts, watched = delete_user_rows(db, user_id)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error("Account deletion: DB delete failed for %s: %s", user_id, e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="We couldn't delete your account data. Nothing was changed. Please try again.",
+        )
+
+    try:
+        redis_client = await get_redis_or_none()
+        await release_trackers(redis_client, [(user_id, term, crn) for term, crn in watched])
+    except Exception as e:
+        logger.warning("Account deletion: Redis cleanup failed for %s: %s", user_id, e)
+
+    try:
+        await st_delete_user(user_id)
+    except Exception as e:
+        logger.error(
+            "Account deletion: data deleted but SuperTokens delete FAILED for %s: %s",
+            user_id, e, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Your saved data was deleted, but we couldn't remove your sign-in. "
+                "Please try again; if it keeps failing, email us and we'll finish it."
+            ),
+        )
+
+    try:
+        await revoke_all_sessions_for_user(user_id)
+    except Exception as e:
+        logger.warning("Account deletion: session revoke failed for %s: %s", user_id, e)
+
+    logger.info("Account deleted: %s rows=%s", user_id, counts)
+    return {"status": "deleted", "deleted": counts}
 
 
 # Request Models
