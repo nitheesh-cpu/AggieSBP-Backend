@@ -57,6 +57,7 @@ from pipelines.professors.upsert import upsert_professor_summary
 from pipelines.professors.review_sync import fetch_rating_counts, needs_review_fetch
 from aggiermp.core.name_matching import parse_person_name, professor_names_match
 from aggiermp.core.professor_identity import load_aliases
+from aggiermp.core.summary_lock import serialized_summary_run
 
 # Checkpoint file for resume functionality
 CHECKPOINT_FILE = Path(__file__).parent / ".review_summary_checkpoint.json"
@@ -218,6 +219,7 @@ def batch_upsert_reviews(session: Any, reviews_batch: List[Any]) -> None:
     upsert_reviews(session, reviews_batch)
 
 
+@serialized_summary_run
 def upsert_reviews_and_summaries(
     professor_ids: List[str] | None = None,
     session: Any = None,
@@ -230,6 +232,7 @@ def upsert_reviews_and_summaries(
     stored_reviews_only: bool = False,
     min_new_review_percent: float = 10.0,
     dry_run: bool = False,
+    invalidate_cache: bool = True,
 ) -> Dict[str, Any]:
     """
     Get new reviews and generate summaries for professors.
@@ -250,11 +253,16 @@ def upsert_reviews_and_summaries(
                                 last overall summary's count; force bypasses it.
         dry_run: Generate and print summaries from stored reviews without
                  writing reviews, summaries, or checkpoints.
+        invalidate_cache: Clear the API cache and website pages for every
+                 professor whose reviews or summary were saved (done once at
+                 the end of the run, also after an error or interrupt). The
+                 admin worker passes False because it clears per professor.
 
     Returns:
         Dictionary with results
     """
     close_session = False
+    changed_professor_ids: Set[str] = set()
     if not 0 <= min_new_review_percent <= 100:
         raise ValueError("min_new_review_percent must be between 0 and 100")
     if session is None:
@@ -312,7 +320,13 @@ def upsert_reviews_and_summaries(
             eligible = [
                 pid
                 for pid in remaining_professors
-                if professor_existing_reviews.get(pid)
+                if any(
+                    professor_existing_reviews.get(member)
+                    for member in [
+                        aliases.get(pid, pid),
+                        *merged_members.get(aliases.get(pid, pid), []),
+                    ]
+                )
             ]
             empty_professors = len(remaining_professors) - len(eligible)
             remaining_professors = eligible
@@ -436,6 +450,7 @@ def upsert_reviews_and_summaries(
                 batch_upsert_reviews(session, all_new_reviews)
                 session.commit()  # Commit reviews batch
                 results["reviews_added"] += len(all_new_reviews)
+                changed_professor_ids.update(r.professor_id for r in all_new_reviews)
 
                 # Update existing review IDs for next batch
                 for review in all_new_reviews:
@@ -606,6 +621,8 @@ def upsert_reviews_and_summaries(
                             raise RuntimeError("database save failed")
                         results["summaries_generated"] += 1
                         results["professors_processed"] += 1
+                        if not dry_run:
+                            changed_professor_ids.add(professor_id)
                         processed_professors.add(professor_id)
                         if use_checkpoint:
                             save_checkpoint(processed_professors)
@@ -695,6 +712,19 @@ def upsert_reviews_and_summaries(
         return {"error": str(e)}
 
     finally:
+        if invalidate_cache and not dry_run and changed_professor_ids:
+            try:
+                from aggiermp.core.cache_invalidation import invalidate_professors
+
+                outcome = invalidate_professors(changed_professor_ids, db=session)
+                print(
+                    f"Cache: {len(changed_professor_ids)} professors invalidated, "
+                    f"{outcome.keys_deleted} API keys cleared, website "
+                    f"{outcome.revalidation}",
+                    flush=True,
+                )
+            except Exception as exc:  # never fail the run over a cache problem
+                print(f"Cache invalidation failed: {exc}", flush=True)
         if close_session:
             session.close()
 

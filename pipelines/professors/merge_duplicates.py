@@ -54,6 +54,7 @@ from aggiermp.core.professor_merges import (  # noqa: F401 (chain_problem: tests
     set_status,
     stored_aliases,
 )
+from aggiermp.core.cache_invalidation import invalidate_professors
 from aggiermp.database.base import ProfessorDB, get_session
 
 
@@ -124,13 +125,21 @@ def main() -> None:
                     continue
                 print(f"  {change.status}: {describe(session, change.alias_id)}")
                 print(f"      -> {describe(session, change.canonical_id)}")
-            command = rebuild_command(
-                c.canonical_id for c in changes if c.status == status
-            )
+            done = [c for c in changes if c.status == status]
+            if done:
+                outcome = invalidate_professors(
+                    {c.alias_id for c in done} | {c.canonical_id for c in done},
+                    db=session,
+                )
+                print(
+                    f"\nCache: {outcome.keys_deleted} API keys cleared, website "
+                    f"pages {outcome.revalidation} ({outcome.pages_revalidated})"
+                )
+            command = rebuild_command(c.canonical_id for c in done)
             if command:
                 print(
-                    "\nRebuild these professors' summaries, then clear the API cache "
-                    "(DELETE /cache/clear with the X-Admin-Key header):\n  " + command
+                    "\nRebuild these professors' summaries (the cache is cleared "
+                    "again for each one that finishes):\n  " + command
                 )
             return
 

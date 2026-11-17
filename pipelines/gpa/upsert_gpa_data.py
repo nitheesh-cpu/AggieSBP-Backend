@@ -152,6 +152,27 @@ def chunks(lst: List[Any], n: int) -> Iterator[List[Any]]:
         yield lst[i : i + n]
 
 
+def invalidate_gpa_caches(course_codes: Set[str]) -> None:
+    """Clear cached API responses and website pages for courses with new GPA data.
+
+    Professor pages show per-course grades too, so they refresh as well. Runs
+    once at the end of a run. Never raises.
+    """
+    if not course_codes:
+        return
+    try:
+        from aggiermp.core.cache_invalidation import invalidate_courses
+
+        outcome = invalidate_courses(course_codes, include_professor_pages=True)
+        print(
+            f"[CACHE] {len(course_codes)} courses: {outcome.keys_deleted} keys cleared, "
+            f"website {outcome.revalidation}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[CACHE] invalidation failed: {exc}", flush=True)
+
+
 def bulk_upsert_records(records: List[Dict[str, Any]]) -> int:
     """
     Upsert records in batches on one connection. Raises on a failed batch
@@ -327,6 +348,26 @@ async def fetch_and_upsert(
     full: bool,
     checkpoint: Optional[Path],
 ) -> None:
+    touched: Set[str] = set()  # course codes that got records written
+    try:
+        await _fetch_and_upsert(
+            http, blocks, courses, completed, skip_terms, full, checkpoint, touched
+        )
+    finally:
+        # Also after a stop or error: batches already written are live.
+        invalidate_gpa_caches(touched)
+
+
+async def _fetch_and_upsert(
+    http: Any,
+    blocks: "BlockHandler",
+    courses: List[Course],
+    completed: Set[Course],
+    skip_terms: Dict[Course, Set[Term]],
+    full: bool,
+    checkpoint: Optional[Path],
+    touched: Set[str],
+) -> None:
     request_interval = blocks.pacer.interval
     to_fetch = [c for c in courses if c not in completed]
     print(
@@ -374,6 +415,7 @@ async def fetch_and_upsert(
         # Save what this batch got before stopping or moving on
         if records:
             written += bulk_upsert_records(records)
+            touched.update(f"{r['dept']}{r['course_number']}" for r in records)
         completed.update(finished)
         if checkpoint is not None and finished:
             save_checkpoint(checkpoint, completed)

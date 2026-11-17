@@ -20,8 +20,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ...core.admin_auth import require_admin_key
-from ...core.cache import clear_all_cache
-from ...core.professor_merges import list_merges, rebuild_command, set_status
+from ...core.cache_invalidation import ainvalidate_professors
+from ...core.professor_merges import (
+    list_merges,
+    rebuild_command,
+    set_status,
+    stored_aliases,
+)
 from ...database.base import request_session
 
 logger = logging.getLogger(__name__)
@@ -61,11 +66,23 @@ async def _change(db: Session, alias_ids: List[str], status: str) -> Dict[str, A
             status_code=409,
             detail="professor_aliases does not exist yet: run migration 002_professor_aliases.sql",
         )
+    before = stored_aliases(db)
     changes = set_status(db, alias_ids, status)
     changed = [c for c in changes if c.status == status]
+    affected = set()
+    for change in changed:
+        previous = before.get(change.alias_id)
+        if previous and previous.status != status:
+            if status == "confirmed" or previous.status == "confirmed":
+                affected.add(change.canonical_id)
+            if previous.status == "confirmed":
+                affected.add(change.alias_id)
     if changed:
-        # Professor pages, lists and search are cached for a week.
-        await clear_all_cache()
+        # Professor pages, lists and search are cached for a week. Clear the
+        # changed merges only (alias and canonical ids), plus website pages.
+        await ainvalidate_professors(
+            {c.alias_id for c in changed} | {c.canonical_id for c in changed}
+        )
         logger.info("Admin set %d professor merges to %s", len(changed), status)
     return {
         "changes": [
@@ -79,21 +96,28 @@ async def _change(db: Session, alias_ids: List[str], status: str) -> Dict[str, A
         ],
         # Summaries are built per shown professor, so both confirming and
         # undoing a merge leave the canonical professor's summary stale.
-        "rebuildCommand": rebuild_command(c.canonical_id for c in changed),
+        "rebuildCommand": rebuild_command(sorted(affected)),
+        "affectedProfessorIds": sorted(affected),
     }
 
 
 @router.post("/professor-merges/confirm", summary="Make merges live")
-async def confirm(body: AliasIds, db: Session = Depends(request_session)) -> Dict[str, Any]:
+async def confirm(
+    body: AliasIds, db: Session = Depends(request_session)
+) -> Dict[str, Any]:
     return await _change(db, body.alias_ids, "confirmed")
 
 
 @router.post("/professor-merges/reject", summary="Turn merges down or undo them")
-async def reject(body: AliasIds, db: Session = Depends(request_session)) -> Dict[str, Any]:
+async def reject(
+    body: AliasIds, db: Session = Depends(request_session)
+) -> Dict[str, Any]:
     return await _change(db, body.alias_ids, "rejected")
 
 
 def _aliases_ready(db: Session) -> bool:
     from sqlalchemy import text
 
-    return db.execute(text("SELECT to_regclass('professor_aliases')")).scalar() is not None
+    return (
+        db.execute(text("SELECT to_regclass('professor_aliases')")).scalar() is not None
+    )

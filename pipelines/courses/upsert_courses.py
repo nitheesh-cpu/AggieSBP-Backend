@@ -658,6 +658,22 @@ def main() -> None:
     print("\n7. PHASE 3: Bulk upserting all courses...")
     total_courses = bulk_upsert_courses(all_courses, batch_size=1000)
 
+    # The upsert doesn't report which rows changed (ON CONFLICT DO UPDATE), so
+    # clear the cached endpoints for every upserted course, the course lists
+    # and departments, and refresh all website course pages. It runs rarely.
+    try:
+        from aggiermp.core.cache_invalidation import invalidate_courses
+
+        outcome = invalidate_courses(
+            [c.id for c in all_courses], revalidate_all=True
+        )
+        print(
+            f"   Cache: {outcome.keys_deleted} API keys cleared, "
+            f"website {outcome.revalidation}"
+        )
+    except Exception as exc:  # never fail the upsert over a cache problem
+        print(f"   Cache invalidation failed: {exc}")
+
     # Final summary
     end_time = time.time()
     duration = end_time - start_time
