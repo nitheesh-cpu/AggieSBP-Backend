@@ -131,6 +131,14 @@ async def fetch_course_data(
             except aiohttp.ClientError as e:
                 last_error = str(e) or type(e).__name__
                 continue
+            except Exception as e:
+                # Anything else (e.g. a body that won't decode) fails this
+                # course only; the caller's as_completed loop would otherwise
+                # re-raise it and stop the whole run.
+                return course_key, {
+                    "success": False,
+                    "error": f"{type(e).__name__}: {e}",
+                }
 
             # anex.us answers courses with no grade data with this invalid JSON
             if "".join(text_response.split()) == '{"classes":]}':
