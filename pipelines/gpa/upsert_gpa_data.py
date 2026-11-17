@@ -248,9 +248,14 @@ async def main_async(
         for batch in chunks(to_fetch, COURSE_BATCH_SIZE):
             records: List[Dict[str, Any]] = []
             finished: Set[Course] = set()
+            interruption: Optional[BaseException] = None
             for dept, number in batch:
                 course = (dept, number)
-                response = await fetch_course_data(http, dept, number, pacer)
+                try:
+                    response = await fetch_course_data(http, dept, number, pacer)
+                except (asyncio.CancelledError, KeyboardInterrupt) as exc:
+                    interruption = exc
+                    break
                 try:
                     if response.get("success"):
                         records.extend(
@@ -266,6 +271,12 @@ async def main_async(
                         break
                 else:
                     finished.add(course)
+                    if len(finished) % 10 == 0 and len(finished) < len(batch):
+                        print(
+                            f"[INFO] Fetched {processed + len(finished)}/{len(to_fetch)} "
+                            "remaining courses",
+                            flush=True,
+                        )
 
             if records:
                 written += bulk_upsert_records(records)
@@ -274,6 +285,8 @@ async def main_async(
                 save_checkpoint(checkpoint, completed)
             processed += len(finished)
             print(f"[INFO] Processed {processed}/{len(to_fetch)} remaining courses", flush=True)
+            if interruption is not None:
+                raise interruption
             if stop_fetching:
                 break
 
