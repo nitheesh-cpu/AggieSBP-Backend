@@ -134,6 +134,7 @@ python -m pipelines.courses.upsert_courses
 python -m pipelines.sections.upsert_all
 python pipelines/gpa/upsert_gpa_data.py
 python -m pipelines.professors.upsert_all
+python pipelines/professors/upsert_reviews_and_summaries.py --fetch-only   # nightly: new RMP reviews + queue summary rebuilds, no AI
 python -m aggiermp.collectors.section_watcher
 ```
 

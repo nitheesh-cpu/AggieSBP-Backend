@@ -7,6 +7,9 @@ This script:
 3. Runs the hierarchical summarization pipeline (batched)
 4. Upserts summaries to professor_summaries_new table (batched)
 
+With --fetch-only, steps 3-4 are replaced by queueing professors in
+admin_summary_rebuilds so the admin worker rebuilds them later (no AI calls).
+
 Optimized for processing thousands of professors efficiently.
 """
 
@@ -45,7 +48,13 @@ load_dotenv(project_root / ".env")
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from aggiermp.database.base import ProfessorDB, ReviewDB, get_session, upsert_reviews
+from aggiermp.database.base import (
+    ProfessorDB,
+    ProfessorSummaryNewDB,
+    ReviewDB,
+    get_session,
+    upsert_reviews,
+)
 from pipelines.professors.scrapers import RMPReviewCollector
 from pipelines.professors.hierarchical_summarization import (
     HierarchicalSummarizationPipeline,
@@ -58,6 +67,8 @@ from pipelines.professors.review_sync import fetch_rating_counts, needs_review_f
 from aggiermp.core.name_matching import parse_person_name, professor_names_match
 from aggiermp.core.professor_identity import load_aliases
 from aggiermp.core.summary_lock import serialized_summary_run
+
+logger = logging.getLogger(__name__)
 
 # Checkpoint file for resume functionality
 CHECKPOINT_FILE = Path(__file__).parent / ".review_summary_checkpoint.json"
@@ -210,6 +221,23 @@ def get_new_reviews_for_professor(
     finally:
         if collector is not None:
             collector.session.close()
+
+
+def summary_deferral(
+    summarized_count: int | None, review_count: int, min_new_review_percent: float
+) -> Tuple[int, int] | None:
+    """The single rule for holding back a summary rebuild.
+
+    Returns (added, required) when an existing summary was built from
+    `summarized_count` reviews, `review_count` are stored now, and fewer than
+    `min_new_review_percent` percent were added; None means "do not defer".
+    """
+    if summarized_count and review_count > summarized_count:
+        added = review_count - summarized_count
+        required = max(1, ceil(summarized_count * min_new_review_percent / 100))
+        if added < required:
+            return added, required
+    return None
 
 
 def batch_upsert_reviews(session: Any, reviews_batch: List[Any]) -> None:
@@ -559,19 +587,18 @@ def upsert_reviews_and_summaries(
                         # Compare with the last saved summary so deferred reviews
                         # accumulate even when this run fetched no new rows.
                         summarized_count = summary_counts.get(None)
-                        if summarized_count and len(raw_reviews) > summarized_count:
-                            added = len(raw_reviews) - summarized_count
-                            required = max(
-                                1, ceil(summarized_count * min_new_review_percent / 100)
+                        deferral = summary_deferral(
+                            summarized_count, len(raw_reviews), min_new_review_percent
+                        )
+                        if deferral:
+                            added, required = deferral
+                            print(
+                                f"      deferred | {added}/{required} new reviews required ({min_new_review_percent:g}% of {summarized_count} summarized)"
                             )
-                            if added < required:
-                                print(
-                                    f"      deferred | {added}/{required} new reviews required ({min_new_review_percent:g}% of {summarized_count} summarized)"
-                                )
-                                results["professors_skipped"] += 1
-                                # Do not checkpoint deferrals as completed: the
-                                # next run must reconsider accumulated evidence.
-                                continue
+                            results["professors_skipped"] += 1
+                            # Do not checkpoint deferrals as completed: the
+                            # next run must reconsider accumulated evidence.
+                            continue
 
                         # Compare only the overall count: course rows are keyed by
                         # normalized codes (e.g. ASTR111), so comparing them with
@@ -729,6 +756,297 @@ def upsert_reviews_and_summaries(
             session.close()
 
 
+def plan_rebuilds(
+    totals: Dict[str, int],
+    summarized: Dict[str, int | None],
+    new_ids: Set[str],
+    min_new_review_percent: float,
+) -> List[Tuple[str, str, bool]]:
+    """Decide which merged professors need a summary rebuild.
+
+    totals: canonical professor id -> stored review count (all merged entries).
+    summarized: canonical id -> review count behind its overall summary (absent
+        or 0 when it has no summary yet).
+    new_ids: canonical ids that received new reviews in this run.
+
+    Returns (professor_id, reason, bump) rows. bump is True when new reviews
+    arrived, so an already pending rebuild must be marked changed again;
+    professors that merely lack a summary are queued once without churning
+    their revision every night.
+    """
+    plan: List[Tuple[str, str, bool]] = []
+    for professor_id, total in totals.items():
+        summarized_count = summarized.get(professor_id)
+        is_new = professor_id in new_ids
+        if not total or not (is_new or not summarized_count):
+            continue
+        if not summarized_count:
+            plan.append((professor_id, f"No summary yet ({total} reviews)", is_new))
+        elif total == summarized_count or summary_deferral(
+            summarized_count, total, min_new_review_percent
+        ):
+            continue
+        elif total > summarized_count:
+            added = total - summarized_count
+            percent = added * 100 / summarized_count
+            noun = "review" if added == 1 else "reviews"
+            plan.append((professor_id, f"{added} new {noun} (+{percent:.0f}%)", True))
+        else:
+            plan.append(
+                (
+                    professor_id,
+                    f"Review count changed ({summarized_count} to {total})",
+                    True,
+                )
+            )
+    return plan
+
+
+QUEUE_BUMP_SQL = (
+    "INSERT INTO admin_summary_rebuilds(professor_id, reason) VALUES (:id, :reason) "
+    "ON CONFLICT (professor_id) DO UPDATE SET "
+    "revision = admin_summary_rebuilds.revision + 1, "
+    "reason = EXCLUDED.reason, changed_at = now()"
+)
+QUEUE_KEEP_SQL = (
+    "INSERT INTO admin_summary_rebuilds(professor_id, reason) VALUES (:id, :reason) "
+    "ON CONFLICT (professor_id) DO NOTHING"
+)
+
+
+def rebuild_queue_available(session: Any) -> bool:
+    from sqlalchemy import text
+
+    return bool(
+        session.execute(
+            text("SELECT to_regclass('admin_summary_rebuilds') IS NOT NULL")
+        ).scalar()
+    )
+
+
+def queue_summary_rebuilds(session: Any, plan: List[Tuple[str, str, bool]]) -> int:
+    """Write the plan to admin_summary_rebuilds in one transaction.
+
+    The admin worker deletes a queue row only if revision and changed_at are
+    unchanged since it started, so bumping the revision on conflict keeps a
+    professor pending when new reviews land during a rebuild.
+    """
+    from sqlalchemy import text
+
+    try:
+        for professor_id, reason, bump in plan:
+            session.execute(
+                text(QUEUE_BUMP_SQL if bump else QUEUE_KEEP_SQL),
+                {"id": professor_id, "reason": reason},
+            )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return len(plan)
+
+
+def fetch_reviews_and_queue_rebuilds(
+    professor_ids: List[str] | None = None,
+    session: Any = None,
+    max_workers: int = 4,
+    batch_size: int = 50,
+    min_new_review_percent: float = 10.0,
+    dry_run: bool = False,
+    invalidate_cache: bool = True,
+) -> Dict[str, Any]:
+    """Nightly mode: store new RMP reviews and queue summary rebuilds.
+
+    No AI provider is created or called. Reviews are fetched for professors
+    whose RMP rating count changed (as in the full pipeline), stored, their
+    caches cleared, and professors whose reviews would trigger a summary under
+    the usual threshold are added to admin_summary_rebuilds for the admin
+    worker. It is deliberately not wrapped in serialized_summary_run: it never
+    generates summaries, review inserts are idempotent, and the queue write
+    happens after the reviews are committed, so a worker that sees a bumped
+    revision also sees the reviews. It need not wait for a summary run.
+    """
+    if not 0 <= min_new_review_percent <= 100:
+        raise ValueError("min_new_review_percent must be between 0 and 100")
+    close_session = session is None
+    if session is None:
+        session = get_session()
+    changed_professor_ids: Set[str] = set()
+    results: Dict[str, Any] = {
+        "professors_checked": 0,
+        "professors_fetched": 0,
+        "reviews_added": 0,
+        "professors_queued": 0,
+        "queue_unavailable": False,
+        "errors": [],
+    }
+    try:
+        if professor_ids is None:
+            professor_ids = [prof.id for prof in session.query(ProfessorDB).all()]
+        results["professors_checked"] = len(professor_ids)
+
+        aliases = load_aliases(session)
+        merged_members: Dict[str, List[str]] = {}
+        for alias_id, canonical_id in aliases.items():
+            merged_members.setdefault(canonical_id, []).append(alias_id)
+
+        existing: Dict[str, Set[str]] = {}
+        for prof_id, review_id in session.query(
+            ReviewDB.professor_id, ReviewDB.id
+        ).all():
+            existing.setdefault(prof_id, set()).add(review_id)
+        summarized: Dict[str, int | None] = {
+            row[0]: row[1]
+            for row in session.query(
+                ProfessorSummaryNewDB.professor_id, ProfessorSummaryNewDB.total_reviews
+            )
+            .filter(ProfessorSummaryNewDB.course_code.is_(None))
+            .all()
+        }
+        canonical_scope = list(
+            dict.fromkeys(aliases.get(pid, pid) for pid in professor_ids)
+        )
+
+        def totals_for(canonical_ids: List[str]) -> Dict[str, int]:
+            return {
+                cid: sum(
+                    len(existing.get(member, ()))
+                    for member in [cid, *merged_members.get(cid, [])]
+                )
+                for cid in canonical_ids
+            }
+
+        queue_ok = rebuild_queue_available(session)
+        if not queue_ok:
+            results["queue_unavailable"] = True
+            logger.warning(
+                "admin_summary_rebuilds does not exist (apply migration "
+                "004_admin_jobs.sql); reviews are fetched but no summary "
+                "rebuilds will be queued"
+            )
+
+        def queue(plan: List[Tuple[str, str, bool]]) -> None:
+            if not plan or not queue_ok:
+                return
+            if dry_run:
+                for pid, reason, _ in plan:
+                    print(f"  would queue {pid}: {reason}", flush=True)
+                results["professors_queued"] += len(plan)
+                return
+            try:
+                results["professors_queued"] += queue_summary_rebuilds(session, plan)
+            except Exception as exc:
+                results["errors"].append(f"Queueing rebuilds failed: {exc}")
+                print(f"  Queueing rebuilds failed: {exc}", flush=True)
+
+        print(
+            f"Fetch-only run: {len(professor_ids)} professors"
+            f"{' | DRY RUN (no writes)' if dry_run else ''}",
+            flush=True,
+        )
+        # Professors that already have reviews but never got a summary.
+        queue(
+            plan_rebuilds(
+                totals_for(canonical_scope), summarized, set(), min_new_review_percent
+            )
+        )
+
+        print("Checking rating counts by school...", flush=True)
+        remote_counts = fetch_rating_counts(session, professor_ids)
+        to_fetch = [
+            pid
+            for pid in professor_ids
+            if needs_review_fetch(len(existing.get(pid, set())), remote_counts.get(pid))
+        ]
+        print(f"Reviews: {len(to_fetch)} professors to fetch", flush=True)
+
+        for start in range(0, len(to_fetch), batch_size):
+            batch = to_fetch[start : start + batch_size]
+            new_reviews: List[Any] = []
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        get_new_reviews_for_professor, pid, existing.get(pid, set())
+                    ): pid
+                    for pid in batch
+                }
+                for future in as_completed(futures):
+                    try:
+                        _, fetched = future.result()
+                    except Exception as exc:
+                        results["errors"].append(
+                            f"Review fetch failed for {futures[future]}: {exc}"
+                        )
+                        print(f"  Review fetch failed for {futures[future]}", flush=True)
+                        continue
+                    new_reviews.extend(fetched)
+            results["professors_fetched"] += len(batch)
+            if not new_reviews:
+                continue
+
+            if not dry_run:
+                try:
+                    batch_upsert_reviews(session, new_reviews)
+                except Exception as exc:
+                    # Nothing from this batch is stored; the next run retries it.
+                    results["errors"].append(f"Review save failed: {exc}")
+                    print(f"  Review save failed: {exc}", flush=True)
+                    continue
+                changed_professor_ids.update(r.professor_id for r in new_reviews)
+            for review in new_reviews:
+                existing.setdefault(review.professor_id, set()).add(review.id)
+            results["reviews_added"] += len(new_reviews)
+            print(f"  {len(new_reviews)} new reviews", flush=True)
+
+            new_canonical = list(
+                dict.fromkeys(
+                    aliases.get(r.professor_id, r.professor_id) for r in new_reviews
+                )
+            )
+            queue(
+                plan_rebuilds(
+                    totals_for(new_canonical),
+                    summarized,
+                    set(new_canonical),
+                    min_new_review_percent,
+                )
+            )
+
+        verb = "would be queued" if dry_run else "queued"
+        print(
+            f"\nFetch-only complete: {results['professors_checked']} professors checked, "
+            f"{results['professors_fetched']} fetched, "
+            f"{results['reviews_added']} reviews added, "
+            f"{results['professors_queued']} professors {verb} for summary rebuild, "
+            f"{len(results['errors'])} errors",
+            flush=True,
+        )
+        return results
+    except Exception as exc:
+        print(f"\n[ERROR] Fetch-only failed: {exc}")
+        import traceback
+
+        traceback.print_exc()
+        results["error"] = str(exc)
+        return results
+    finally:
+        if invalidate_cache and not dry_run and changed_professor_ids:
+            try:
+                from aggiermp.core.cache_invalidation import invalidate_professors
+
+                outcome = invalidate_professors(changed_professor_ids, db=session)
+                print(
+                    f"Cache: {len(changed_professor_ids)} professors invalidated, "
+                    f"{outcome.keys_deleted} API keys cleared, website "
+                    f"{outcome.revalidation}",
+                    flush=True,
+                )
+            except Exception as exc:  # never fail the run over a cache problem
+                print(f"Cache invalidation failed: {exc}", flush=True)
+        if close_session:
+            session.close()
+
+
 def main() -> None:
     """Main function"""
     import argparse
@@ -775,6 +1093,12 @@ def main() -> None:
         help="Regenerate existing summaries after this percentage of new reviews accumulates (default: 10; 0 = any new review)",
     )
     parser.add_argument(
+        "--fetch-only",
+        action="store_true",
+        help="Nightly mode: fetch and store new RMP reviews, clear caches and queue "
+        "professors for the admin summary worker; no AI is called. Works with --dry-run",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show model, clustering, and dependency request details",
@@ -791,6 +1115,16 @@ def main() -> None:
 
     # Process all professors (or specify a list of IDs)
     professor_ids = args.professor_id or None
+
+    if args.fetch_only:
+        result = fetch_reviews_and_queue_rebuilds(
+            professor_ids=professor_ids,
+            min_new_review_percent=args.min_new_review_percent,
+            dry_run=args.dry_run,
+        )
+        if "error" in result or result.get("errors"):
+            sys.exit(1)
+        return
 
     result = upsert_reviews_and_summaries(
         professor_ids=professor_ids,

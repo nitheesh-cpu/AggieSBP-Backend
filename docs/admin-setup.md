@@ -66,6 +66,16 @@ Create the "professor merge proposals" monitor in Cronitor, put its key in `CRON
 30 4 * * * cronitor exec <KEY> /home/opc/backend/.venv/bin/python /home/opc/backend/pipelines/professors/merge_duplicates.py --propose
 ```
 
+### Nightly review fetch
+
+Fetches new RateMyProfessors reviews (only for professors whose rating count changed), clears their caches, and queues professors who crossed the new-review threshold (`SUMMARY_MIN_NEW_REVIEW_PERCENT`, default 10) or have no summary yet in the "Awaiting rebuild" list of the admin UI. It never calls an AI provider; an admin rebuilds the queued professors from the UI. Needs migration 004 applied (without it the reviews are still stored and a warning is logged). It exits non-zero on any failure so Cronitor notices; add `--dry-run` to count without writing.
+
+```cron
+30 2 * * * cronitor exec <KEY> /home/opc/backend/.venv/bin/python /home/opc/backend/pipelines/professors/upsert_reviews_and_summaries.py --fetch-only
+```
+
+It does not take the summary lock, so it can overlap a worker rebuild safely: a review arriving mid-rebuild bumps the queue revision and the professor stays pending.
+
 Existing cron jobs keep their lines; the scheduled summary runner shares a PostgreSQL lock with the worker, so it needs the updated code from step 1 (nothing to change in crontab).
 
 ## 7. Vercel (website project, then redeploy)
