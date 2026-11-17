@@ -4,18 +4,20 @@ Upsert script for GPA data from anex.us.
 This script:
 1. Finds the newest term anex.us has published
 2. Reads which (course, term) pairs are already in gpa_data
-3. Fetches only courses that could have something new, showing progress
-4. Bulk upserts the new records into gpa_data
+3. Fetches courses at a configurable pace
+4. Bulk upserts each batch and optionally saves a full-run checkpoint
 
 Usage:
-    python pipelines/gpa/upsert_gpa_data.py          # incremental (fast)
-    python pipelines/gpa/upsert_gpa_data.py --full   # refetch every course and
-                                                     # re-upsert every record
+    python pipelines/gpa/upsert_gpa_data.py          # incremental
+    python pipelines/gpa/upsert_gpa_data.py --full --checkpoint gpa-progress.json
 """
 
 import argparse
 import asyncio
+import json
+import math
 import sys
+import tempfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -30,9 +32,10 @@ from sqlalchemy.dialects.postgresql import insert
 
 from aggiermp.database.base import GpaDataDB, get_session
 from pipelines.gpa.anex_scraping import (
-    MAX_CONCURRENT_REQUESTS,
+    DEFAULT_REQUEST_INTERVAL,
+    RequestPacer,
     extract_class_records,
-    fetch_all_courses_concurrent,
+    fetch_course_data,
     get_newest_semester,
     make_http_session,
     term_key,
@@ -43,12 +46,15 @@ load_dotenv()
 
 # Configuration
 BULK_INSERT_SIZE = 2000  # Records per batch/commit
+COURSE_BATCH_SIZE = 50
 
 Course = Tuple[str, str]
 Term = Tuple[str, str]
 
 
-def load_courses_and_existing_terms() -> Tuple[List[Course], Dict[Course, Set[Term]]]:
+def load_courses_and_existing_terms(
+    full: bool = False,
+) -> Tuple[List[Course], Dict[Course, Set[Term]]]:
     """
     Return (all numeric courses from the courses table,
             {course: set of (year, semester) already in gpa_data}).
@@ -69,6 +75,9 @@ def load_courses_and_existing_terms() -> Tuple[List[Course], Dict[Course, Set[Te
         ]
 
         existing_terms: Dict[Course, Set[Term]] = defaultdict(set)
+        if full:
+            return courses, existing_terms
+
         for row in session.execute(
             text("""
                 SELECT DISTINCT dept, course_number, year, semester
@@ -172,61 +181,108 @@ def bulk_upsert_records(records: List[Dict[str, Any]]) -> int:
     return written
 
 
-async def main_async(full: bool = False) -> None:
-    print("=" * 60)
-    print("GPA Data Upsert" + (" (FULL)" if full else ""))
-    print("=" * 60)
-    print(f"[INFO] Max concurrent requests: {MAX_CONCURRENT_REQUESTS}")
-    print(f"[INFO] Bulk insert size: {BULK_INSERT_SIZE} records")
+def load_checkpoint(path: Optional[Path]) -> Set[Course]:
+    if path is None or not path.exists():
+        return set()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    courses = payload.get("completed_courses") if isinstance(payload, dict) else None
+    if not isinstance(courses, list) or any(
+        not isinstance(course, list)
+        or len(course) != 2
+        or not all(isinstance(value, str) for value in course)
+        for course in courses
+    ):
+        raise ValueError(f"Invalid GPA checkpoint: {path}")
+    return {(dept, number) for dept, number in courses}
 
+
+def save_checkpoint(path: Path, completed: Set[Course]) -> None:
+    temp = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    )
+    temporary_path = Path(temp.name)
+    try:
+        with temp:
+            json.dump({"completed_courses": sorted(completed)}, temp)
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+async def main_async(
+    full: bool = False,
+    request_interval: float = DEFAULT_REQUEST_INTERVAL,
+    checkpoint: Optional[Path] = None,
+) -> None:
+    print("GPA Data Upsert" + (" (FULL)" if full else ""))
+    print(f"[INFO] Request interval: {request_interval:g}s")
     start_time = datetime.now()
 
-    print("\n[STEP 1] Fetching newest semester from anex.us...")
-    async with make_http_session(1) as http:
-        newest_term = await get_newest_semester(http)
-    if newest_term:
-        print(f"[OK] Newest semester on anex.us: {newest_term[1]} {newest_term[0]}")
-    else:
-        print("[WARNING] Could not determine newest semester; fetching every course")
+    completed = load_checkpoint(checkpoint)
+    courses, existing_terms = load_courses_and_existing_terms(full=full)
+    newest_term = None
+    pacer = RequestPacer(request_interval)
+    async with make_http_session() as http:
+        if not full:
+            newest_term = await get_newest_semester(http, pacer)
+            if newest_term:
+                print(f"[OK] Newest semester on anex.us: {newest_term[1]} {newest_term[0]}")
+            else:
+                print("[WARNING] Could not determine newest semester. Fetching all courses.")
 
-    print("\n[STEP 2] Reading courses and existing GPA terms from the database...")
-    courses, existing_terms = load_courses_and_existing_terms()
-    to_fetch = select_courses_to_fetch(courses, existing_terms, newest_term, full)
-    with_data = sum(1 for c in to_fetch if c in existing_terms)
-    print(f"[INFO] {len(courses)} courses, {len(existing_terms)} already have GPA data")
-    print(
-        f"[INFO] Fetching {len(to_fetch)} courses "
-        f"({with_data} behind the newest term, {len(to_fetch) - with_data} with no data yet); "
-        f"skipping {len(courses) - len(to_fetch)} up to date"
-    )
+        to_fetch = [
+            course
+            for course in select_courses_to_fetch(courses, existing_terms, newest_term, full)
+            if course not in completed
+        ]
+        print(
+            f"[INFO] {len(to_fetch)} of {len(courses)} courses to fetch"
+            f" ({len(completed)} in checkpoint)",
+            flush=True,
+        )
 
-    if not to_fetch:
-        print("[OK] Everything is up to date.")
-        return
+        written = 0
+        processed = 0
+        errors = 0
+        stop_fetching = False
+        for batch in chunks(to_fetch, COURSE_BATCH_SIZE):
+            records: List[Dict[str, Any]] = []
+            finished: Set[Course] = set()
+            for dept, number in batch:
+                course = (dept, number)
+                response = await fetch_course_data(http, dept, number, pacer)
+                try:
+                    if response.get("success"):
+                        records.extend(
+                            extract_class_records(response, existing_terms.get(course), strict=full)
+                        )
+                    elif not response.get("no_data"):
+                        raise ValueError(response["error"])
+                except ValueError as exc:
+                    errors += 1
+                    print(f"[ERROR] {dept} {number}: {exc}", flush=True)
+                    if full or response.get("retries_exhausted"):
+                        stop_fetching = True
+                        break
+                else:
+                    finished.add(course)
 
-    print("\n[STEP 3] Fetching course data from anex.us...")
-    responses = await fetch_all_courses_concurrent(to_fetch)
+            if records:
+                written += bulk_upsert_records(records)
+            completed.update(finished)
+            if checkpoint is not None and finished:
+                save_checkpoint(checkpoint, completed)
+            processed += len(finished)
+            print(f"[INFO] Processed {processed}/{len(to_fetch)} remaining courses", flush=True)
+            if stop_fetching:
+                break
 
-    print("\n[STEP 4] Extracting new records...")
-    all_records: List[Dict[str, Any]] = []
-    for response in responses:
-        skip = None if full else existing_terms.get(response["course"])
-        all_records.extend(extract_class_records(response, skip))
-    print(f"[INFO] {len(all_records)} records to upsert")
-
-    written = 0
-    if all_records:
-        print("\n[STEP 5] Upserting into gpa_data...")
-        written = bulk_upsert_records(all_records)
-
-    duration = datetime.now() - start_time
-    print("\n" + "=" * 60)
-    print("GPA UPSERT COMPLETE")
-    print("=" * 60)
-    print(f"{'Duration':<20}: {duration}")
-    print(f"{'Courses fetched':<20}: {len(to_fetch)}")
-    print(f"{'Courses with data':<20}: {len(responses)}")
-    print(f"{'Records upserted':<20}: {written}")
+    if errors:
+        raise SystemExit(
+            f"GPA UPSERT INCOMPLETE. {errors} course fetch or parsing errors."
+            + (f" Resume with the same checkpoint: {checkpoint}" if checkpoint else "")
+        )
+    print(f"GPA UPSERT COMPLETE. {written} records upserted in {datetime.now() - start_time}.")
 
 
 def main() -> None:
@@ -234,13 +290,32 @@ def main() -> None:
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Refetch every course and re-upsert every record (fills gaps, slow)",
+        help="Refetch every course and re-upsert every record",
+    )
+    parser.add_argument(
+        "--request-interval",
+        type=float,
+        default=DEFAULT_REQUEST_INTERVAL,
+        metavar="SECONDS",
+        help="Minimum time between request starts (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="Save or resume a full run using this file. Use a new file for each fresh run.",
     )
     args = parser.parse_args()
+    if not math.isfinite(args.request_interval) or args.request_interval <= 0:
+        parser.error("--request-interval must be finite and greater than zero")
+    if args.checkpoint is not None and not args.full:
+        parser.error("--checkpoint requires --full")
+    if args.checkpoint is not None and not args.checkpoint.parent.is_dir():
+        parser.error("--checkpoint must be in an existing directory")
     try:
-        asyncio.run(main_async(full=args.full))
+        asyncio.run(main_async(args.full, args.request_interval, args.checkpoint))
     except KeyboardInterrupt:
-        print("\n\n[INFO] Operation interrupted by user")
+        print("\n[INFO] Operation interrupted by user")
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":
