@@ -18,7 +18,10 @@ A merge goes through two steps so a person checks it before the site changes:
    again later is how it is undone or redone.
 
 After confirming, rebuild the merged professors' summaries (the command is
-printed) and clear the API cache (DELETE /cache with the admin key).
+printed) and clear the API cache (DELETE /cache/clear with X-Admin-Key).
+
+Run --propose from cron; review and confirm on the site's /admin/merges page
+(admin key required), which also clears the cache, or with the flags below.
 
 Usage (from backend/):
     python -m pipelines.professors.merge_duplicates                 # dry run
@@ -44,6 +47,13 @@ from aggiermp.core.professor_identity import (
     load_profiles,
     plan_profile_merges,
 )
+from aggiermp.core.professor_merges import (  # noqa: F401 (chain_problem: tests)
+    chain_problem,
+    propose,
+    rebuild_command,
+    set_status,
+    stored_aliases,
+)
 from aggiermp.database.base import ProfessorDB, get_session
 
 
@@ -61,30 +71,6 @@ def plan(
     return merges, ambiguous, by_id
 
 
-def stored_aliases(session: Any) -> Dict[str, Any]:
-    """Every row of professor_aliases by alias id, whatever its status."""
-    rows = session.execute(
-        text("SELECT alias_id, canonical_id, evidence, status FROM professor_aliases")
-    ).fetchall()
-    return {row.alias_id: row for row in rows}
-
-
-def chain_problem(
-    alias_id: str, canonical_id: str, confirmed: Dict[str, str]
-) -> str | None:
-    """Why confirming alias -> canonical would chain merges, or None.
-
-    The views map each id one step, so a canonical id must never itself be
-    a confirmed alias, and an alias must not be the canonical of others.
-    """
-    if canonical_id in confirmed:
-        return f"{canonical_id} is itself merged into {confirmed[canonical_id]}"
-    shown_under_alias = [a for a, c in confirmed.items() if c == alias_id]
-    if shown_under_alias:
-        return f"{alias_id} is the canonical id of {', '.join(shown_under_alias)}"
-    return None
-
-
 def describe(session: Any, pid: str) -> str:
     row = session.execute(
         text(
@@ -99,62 +85,6 @@ def describe(session: Any, pid: str) -> str:
         f"{row.first_name} {row.last_name} "
         f"[{row.department or '-'}, {row.num_ratings or 0} ratings] {pid}"
     )
-
-
-def propose(session: Any, merges: List[ProfileMerge]) -> int:
-    existing = stored_aliases(session)
-    added = 0
-    for merge in merges:
-        if merge.alias_id in existing:
-            continue  # Already proposed, confirmed or rejected.
-        session.execute(
-            text(
-                "INSERT INTO professor_aliases (alias_id, canonical_id, evidence, status) "
-                "VALUES (:alias, :canonical, :evidence, 'proposed')"
-            ),
-            {
-                "alias": merge.alias_id,
-                "canonical": merge.canonical_id,
-                "evidence": merge.evidence,
-            },
-        )
-        added += 1
-    session.commit()
-    return added
-
-
-def set_status(session: Any, alias_ids: List[str], status: str) -> List[str]:
-    """Confirm or reject stored merges; returns the canonical ids touched."""
-    existing = stored_aliases(session)
-    confirmed = {
-        a: row.canonical_id for a, row in existing.items() if row.status == "confirmed"
-    }
-    touched: List[str] = []
-    for alias_id in alias_ids:
-        row = existing.get(alias_id)
-        if row is None:
-            print(f"  SKIPPED {alias_id}: not in professor_aliases (run --propose first)")
-            continue
-        if status == "confirmed":
-            problem = chain_problem(alias_id, row.canonical_id, confirmed)
-            if problem:
-                print(f"  SKIPPED {alias_id}: {problem}")
-                continue
-            confirmed[alias_id] = row.canonical_id
-        else:
-            confirmed.pop(alias_id, None)
-        session.execute(
-            text(
-                "UPDATE professor_aliases SET status = :status, reviewed_at = now() "
-                "WHERE alias_id = :alias"
-            ),
-            {"status": status, "alias": alias_id},
-        )
-        print(f"  {status}: {describe(session, alias_id)}")
-        print(f"      -> {describe(session, row.canonical_id)}")
-        touched.append(row.canonical_id)
-    session.commit()
-    return list(dict.fromkeys(touched))
 
 
 def main() -> None:
@@ -187,14 +117,20 @@ def main() -> None:
 
         if args.confirm or args.reject:
             status = "confirmed" if args.confirm else "rejected"
-            canonical_ids = set_status(session, args.confirm or args.reject, status)
-            if canonical_ids:
+            changes = set_status(session, args.confirm or args.reject, status)
+            for change in changes:
+                if change.status == "skipped":
+                    print(f"  SKIPPED {change.alias_id}: {change.problem}")
+                    continue
+                print(f"  {change.status}: {describe(session, change.alias_id)}")
+                print(f"      -> {describe(session, change.canonical_id)}")
+            command = rebuild_command(
+                c.canonical_id for c in changes if c.status == status
+            )
+            if command:
                 print(
                     "\nRebuild these professors' summaries, then clear the API cache "
-                    "(DELETE /cache with the admin key):\n"
-                    "  python -m pipelines.professors.upsert_reviews_and_summaries "
-                    "--stored-reviews-only --force-update --professor-id "
-                    + " ".join(canonical_ids)
+                    "(DELETE /cache/clear with the X-Admin-Key header):\n  " + command
                 )
             return
 

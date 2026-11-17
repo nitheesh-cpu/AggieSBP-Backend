@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ...database.base import get_session
+from ...database.base import request_session
 from ...core.cache import cached, TTL_LONG
 from ...core.professor_identity import resolve_professor_id
 
@@ -73,7 +73,7 @@ def _parse_ids(ids_param: str) -> List[str]:
 async def compare_professors(
     request: Request,
     ids: str = Query(..., description="Comma-separated professor IDs (2–4)"),
-    db: Session = Depends(get_session),
+    db: Session = Depends(request_session),
 ) -> List[Dict[str, Any]]:
     professor_ids = _parse_ids(ids)
     # Merged duplicate profiles are shown under their canonical id.

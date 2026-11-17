@@ -8,11 +8,10 @@ import ast
 import json
 import logging
 import re
-import secrets
 import time
 from typing import Any, Dict, List, Optional, Tuple, cast, Iterator
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -46,9 +45,11 @@ from .routers.users import router as users_router
 from .routers.professors import router as professors_router
 from .routers.prereqs import router as prereqs_router
 from .routers.planner import router as planner_router
+from .routers.admin import router as admin_router
 from ..core.config import settings
 from ..core.professor_identity import MATCHING_VERSION as PROFESSOR_MATCHING_VERSION
 from ..core.professor_identity import resolve_professor_id
+from ..core.admin_auth import require_admin_key
 from ..core.name_search import professor_name_condition
 from ..core.subjects import course_search_key, current_subject
 from supertokens_python import init, InputAppInfo, SupertokensConfig, get_all_cors_headers
@@ -411,7 +412,8 @@ _cors_kwargs = dict(
     allow_origin_regex=r"(chrome-extension|moz-extension)://[a-z0-9]+",
     allow_credentials=True,
     allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH", "HEAD"],
-    allow_headers=["Content-Type", "Authorization"] + get_all_cors_headers(),
+    # X-Admin-Key: the site's /admin pages call the admin endpoints.
+    allow_headers=["Content-Type", "Authorization", "X-Admin-Key"] + get_all_cors_headers(),
 )
 # Local dev: http(s) + localhost / 127.0.0.1 / IPv6 loopback, any port.
 _LOCAL_ORIGIN_REGEX = (
@@ -6247,17 +6249,6 @@ async def cache_status() -> Dict[str, Any]:
     return await get_cache_stats()
 
 
-def require_admin_key(x_admin_key: Optional[str] = Header(None)) -> None:
-    """Reject the request unless X-Admin-Key matches ADMIN_API_KEY."""
-    expected = settings.admin_api_key
-    if not expected:
-        raise HTTPException(status_code=503, detail="Admin endpoints are disabled.")
-    if not x_admin_key or not secrets.compare_digest(
-        x_admin_key.encode(), expected.encode()
-    ):
-        raise HTTPException(status_code=401, detail="Invalid admin key.")
-
-
 @app.delete(
     "/cache/clear",
     responses={
@@ -6290,3 +6281,4 @@ app.include_router(discover_router)
 app.include_router(professors_router)
 app.include_router(prereqs_router)
 app.include_router(planner_router)
+app.include_router(admin_router)
