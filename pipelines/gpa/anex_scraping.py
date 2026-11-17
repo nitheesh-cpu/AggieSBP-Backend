@@ -9,6 +9,7 @@ This module contains functions to:
 
 import asyncio
 import json
+import random
 import re
 import ssl
 from datetime import datetime, timezone
@@ -19,10 +20,10 @@ import aiohttp
 import certifi
 
 # Configuration
-DEFAULT_REQUEST_INTERVAL = 1.0
-INITIAL_RETRY_DELAY = 30
+# anex.us blocks an IP after roughly 10 quick requests, so stay well under that.
+DEFAULT_REQUEST_INTERVAL = 8.0  # Seconds between request starts, before jitter
+REQUEST_JITTER = 0.5  # Up to +50% random extra delay so requests aren't evenly spaced
 REQUEST_TIMEOUT = 30
-MAX_RETRIES = 2  # Retries on timeouts, connection errors, 429 and 5xx
 ANEX_BASE_URL = "https://anex.us/grades/"
 
 # Verify TLS against certifi's CA bundle instead of the OS store. Some Windows
@@ -36,10 +37,11 @@ def make_http_session() -> aiohttp.ClientSession:
 
 
 class RequestPacer:
-    """Space out request starts, including retries and requests between batches."""
+    """Space out request starts with jitter; slow down further after each block."""
 
-    def __init__(self, interval: float):
+    def __init__(self, interval: float, max_interval: float = 120.0):
         self.interval = interval
+        self.max_interval = max(interval, max_interval)
         self.next_request = 0.0
 
     async def wait(self) -> None:
@@ -47,22 +49,25 @@ class RequestPacer:
         delay = self.next_request - loop.time()
         if delay > 0:
             await asyncio.sleep(delay)
-        self.next_request = loop.time() + self.interval
+        spacing = self.interval * (1 + random.uniform(0, REQUEST_JITTER))
+        self.next_request = loop.time() + spacing
+
+    def slow_down(self) -> None:
+        self.interval = min(self.interval * 1.5, self.max_interval)
 
 
-def retry_delay(attempt: int, retry_after: Optional[str]) -> float:
-    delay = INITIAL_RETRY_DELAY * 2**attempt
+def parse_retry_after(retry_after: Optional[str]) -> Optional[float]:
     if not retry_after:
-        return delay
+        return None
     try:
         if retry_after.isascii() and retry_after.isdecimal():
-            return max(delay, float(retry_after))
+            return float(retry_after)
         retry_at = parsedate_to_datetime(retry_after)
         if retry_at.tzinfo is None:
             retry_at = retry_at.replace(tzinfo=timezone.utc)
-        return max(delay, (retry_at - datetime.now(timezone.utc)).total_seconds())
-    except (ValueError, OverflowError):
-        return delay
+        return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+    except (ValueError, OverflowError, TypeError):
+        return None
 
 
 # anex.us uses calendar years, so within a year the order is
@@ -106,7 +111,11 @@ async def fetch_course_data(
     number: str,
     pacer: RequestPacer,
 ) -> Dict[str, Any]:
-    """Fetch one course, backing off on HTTP 429, 5xx and connection failures."""
+    """
+    Make one paced request for a course. Doesn't retry: a dropped connection,
+    timeout, 429 or 5xx comes back with "blocked": True so the caller can cool
+    down before trying the same course again.
+    """
     headers = {
         "accept": "application/json, text/javascript, */*; q=0.01",
         "accept-language": "en-US,en;q=0.9",
@@ -124,39 +133,31 @@ async def fetch_course_data(
     }
     data = {"dept": dept, "number": number}
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-    last_error = "unknown error"
 
-    for attempt in range(MAX_RETRIES + 1):
-        retry_after = None
-        await pacer.wait()
-        try:
-            async with session.post(
-                ANEX_BASE_URL + "getData/", headers=headers, data=data, timeout=timeout
-            ) as response:
-                if response.status == 200:
-                    return parse_course_response(await response.text())
-                last_error = f"HTTP {response.status}"
-                if response.status != 429 and response.status < 500:
-                    return {"success": False, "error": last_error}
-                retry_after = response.headers.get("Retry-After")
-        except asyncio.TimeoutError:
-            last_error = "Request timeout"
-        except aiohttp.ClientSSLError as exc:
-            return {"success": False, "error": str(exc)}
-        except aiohttp.ClientError as exc:
-            last_error = str(exc) or type(exc).__name__
-        except (LookupError, ValueError) as exc:
-            return {"success": False, "error": f"Invalid response: {exc}"}
-
-        if attempt < MAX_RETRIES:
-            delay = retry_delay(attempt, retry_after)
-            print(
-                f"[WARNING] {dept} {number}: {last_error}. Retrying in {delay:.0f}s.",
-                flush=True,
-            )
-            await asyncio.sleep(delay)
-
-    return {"success": False, "error": last_error, "retries_exhausted": True}
+    await pacer.wait()
+    try:
+        async with session.post(
+            ANEX_BASE_URL + "getData/", headers=headers, data=data, timeout=timeout
+        ) as response:
+            if response.status == 200:
+                return parse_course_response(await response.text())
+            error = f"HTTP {response.status}"
+            if response.status == 429 or response.status >= 500:
+                return {
+                    "success": False,
+                    "blocked": True,
+                    "error": error,
+                    "retry_after": parse_retry_after(response.headers.get("Retry-After")),
+                }
+            return {"success": False, "error": error}
+    except aiohttp.ClientSSLError as exc:
+        return {"success": False, "error": str(exc)}
+    except asyncio.TimeoutError:
+        return {"success": False, "blocked": True, "error": "Request timeout"}
+    except aiohttp.ClientError as exc:
+        return {"success": False, "blocked": True, "error": str(exc) or type(exc).__name__}
+    except (LookupError, ValueError) as exc:
+        return {"success": False, "error": f"Invalid response: {exc}"}
 
 
 def parse_course_response(body: str) -> Dict[str, Any]:
