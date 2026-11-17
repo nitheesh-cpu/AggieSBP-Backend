@@ -28,7 +28,10 @@ Wants=network-online.target
 Type=simple
 User=opc
 WorkingDirectory=/home/opc/backend
-EnvironmentFile=/home/opc/backend/.env
+# No EnvironmentFile: the worker loads /home/opc/backend/.env itself (settings and
+# the summary runner both read it). On Oracle Linux, SELinux blocks systemd from
+# reading a file in a home directory, so EnvironmentFile= fails with
+# "Failed to load environment files: Permission denied".
 Environment=PYTHONPATH=/home/opc/backend/src:/home/opc/backend
 ExecStart=/home/opc/backend/.venv/bin/python -m aggiermp.core.admin_worker
 Restart=always
