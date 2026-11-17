@@ -2,16 +2,24 @@
 Upsert script for GPA data from anex.us.
 
 This script:
-1. Queries the database to find missing courses and new semesters
-2. Fetches missing data in parallel
-3. Bulk inserts the data into gpa_data table
+1. Finds the newest term anex.us has published
+2. Reads which (course, term) pairs are already in gpa_data
+3. Fetches only courses that could have something new, showing progress
+4. Bulk upserts the new records into gpa_data
+
+Usage:
+    python pipelines/gpa/upsert_gpa_data.py          # incremental (fast)
+    python pipelines/gpa/upsert_gpa_data.py --full   # refetch every course and
+                                                     # re-upsert every record
 """
 
+import argparse
 import asyncio
 import sys
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -26,193 +34,80 @@ from pipelines.gpa.anex_scraping import (
     extract_class_records,
     fetch_all_courses_concurrent,
     get_newest_semester,
+    make_http_session,
+    term_key,
 )
 from pipelines.gpa.schemas import GpaDataSchema
 
 load_dotenv()
 
 # Configuration
-BULK_INSERT_SIZE = 5000  # Records per batch
+BULK_INSERT_SIZE = 2000  # Records per batch/commit
+
+Course = Tuple[str, str]
+Term = Tuple[str, str]
 
 
-def get_missing_courses_and_semesters() -> List[Tuple[str, str, str, str]]:
+def load_courses_and_existing_terms() -> Tuple[List[Course], Dict[Course, Set[Term]]]:
     """
-    Query database to find:
-    1. Courses in courses table that don't exist in gpa_data
-    2. New semesters that haven't been fetched
-
-    Returns list of (dept, course_number, year, semester) tuples.
+    Return (all numeric courses from the courses table,
+            {course: set of (year, semester) already in gpa_data}).
     """
     session = get_session()
-
     try:
-        # Query 1: Find courses that exist in courses table but not in gpa_data
-        missing_courses_query = text("""
-            SELECT DISTINCT 
-                c.subject_id as dept,
-                c.course_number,
-                CAST(c.course_number AS INTEGER) as course_number_int,
-                NULL::text as year,
-                NULL::text as semester
-            FROM courses c
-            WHERE c.subject_id IS NOT NULL 
-              AND c.course_number IS NOT NULL
-              AND c.course_number ~ '^[0-9]+$'
-              AND NOT EXISTS (
-                  SELECT 1 
-                  FROM gpa_data gd 
-                  WHERE gd.dept = c.subject_id 
-                    AND gd.course_number = c.course_number
-              )
-            ORDER BY dept, course_number_int
-        """)
-
-        result = session.execute(missing_courses_query)
-        missing_courses = [(row.dept, row.course_number, None, None) for row in result]
-
-        # Query 2: Find courses that exist but are missing newer semesters
-        # Get the latest year/semester in gpa_data for each course
-        # Latest = highest year, and if same year, highest semester priority (SUMMER=1 > SPRING=2 > FALL=3)
-        latest_semesters_query = text("""
-            WITH latest_semesters AS (
-                SELECT DISTINCT ON (dept, course_number)
-                    dept,
-                    course_number,
-                    year,
-                    semester
-                FROM gpa_data
-                ORDER BY 
-                    dept, 
-                    course_number,
-                    year::int DESC,
-                    CASE semester 
-                        WHEN 'SUMMER' THEN 1 
-                        WHEN 'SPRING' THEN 2 
-                        WHEN 'FALL' THEN 3 
-                        ELSE 4 
-                    END ASC
+        courses = [
+            (row.dept, row.course_number)
+            for row in session.execute(
+                text("""
+                    SELECT DISTINCT subject_id AS dept, course_number
+                    FROM courses
+                    WHERE subject_id IS NOT NULL
+                      AND course_number ~ '^[0-9]+$'
+                    ORDER BY subject_id, course_number
+                """)
             )
-            SELECT 
-                c.subject_id as dept,
-                c.course_number,
-                CAST(c.course_number AS INTEGER) as course_number_int,
-                ls.year as latest_year,
-                ls.semester as latest_semester
-            FROM courses c
-            JOIN latest_semesters ls ON c.subject_id = ls.dept AND c.course_number = ls.course_number
-            WHERE c.subject_id IS NOT NULL 
-              AND c.course_number IS NOT NULL
-              AND c.course_number ~ '^[0-9]+$'
-            ORDER BY dept, course_number_int
-        """)
-
-        result = session.execute(latest_semesters_query)
-        courses_with_data = [
-            (row.dept, row.course_number, row.latest_year, row.latest_semester)
-            for row in result
         ]
 
-        print(f"[INFO] Found {len(missing_courses)} courses with no GPA data")
-        print(f"[INFO] Found {len(courses_with_data)} courses with existing GPA data")
+        existing_terms: Dict[Course, Set[Term]] = defaultdict(set)
+        for row in session.execute(
+            text("""
+                SELECT DISTINCT dept, course_number, year, semester
+                FROM gpa_data
+            """)
+        ):
+            existing_terms[(row.dept, row.course_number)].add((row.year, row.semester))
 
-        # Combine both lists
-        all_courses_to_fetch = missing_courses + courses_with_data
-
-        return all_courses_to_fetch
-
-    except Exception as e:
-        print(f"[ERROR] Error querying database: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return []
+        return courses, existing_terms
     finally:
         session.close()
 
 
-def convert_to_schema(record_dict: Dict[str, Any]) -> GpaDataSchema:
+def select_courses_to_fetch(
+    courses: List[Course],
+    existing_terms: Dict[Course, Set[Term]],
+    newest_term: Optional[Term],
+    full: bool,
+) -> List[Course]:
     """
-    Convert a dictionary record to GpaDataSchema.
+    Skip courses that already have the newest anex.us term stored; nothing
+    newer can exist for them. Everything else (no data yet, or behind) is fetched.
     """
-    return GpaDataSchema(
-        id=record_dict["id"],
-        dept=record_dict["dept"],
-        course_number=record_dict["course_number"],
-        section=record_dict["section"],
-        professor=record_dict["professor"],
-        year=record_dict["year"],
-        semester=record_dict["semester"],
-        gpa=record_dict.get("gpa"),
-        grade_a=record_dict.get("grade_a", 0),
-        grade_b=record_dict.get("grade_b", 0),
-        grade_c=record_dict.get("grade_c", 0),
-        grade_d=record_dict.get("grade_d", 0),
-        grade_f=record_dict.get("grade_f", 0),
-        grade_i=record_dict.get("grade_i", 0),
-        grade_s=record_dict.get("grade_s", 0),
-        grade_u=record_dict.get("grade_u", 0),
-        grade_q=record_dict.get("grade_q", 0),
-        grade_x=record_dict.get("grade_x", 0),
-        total_students=record_dict.get("total_students", 0),
-    )
+    if full or newest_term is None:
+        return list(courses)
+
+    newest_key = term_key(*newest_term)
+    to_fetch = []
+    for course in courses:
+        terms = existing_terms.get(course)
+        if terms and max(term_key(*t) for t in terms) >= newest_key:
+            continue
+        to_fetch.append(course)
+    return to_fetch
 
 
-def bulk_insert_records(records: List[Dict[str, Any]]) -> int:
-    """
-    Insert a batch of records into the database using bulk insert with ON CONFLICT.
-    """
-    if not records:
-        return 0
-
-    session = get_session()
-    try:
-        # Ensure transaction is clean
-        try:
-            if session.in_transaction():
-                session.execute(text("SELECT 1"))
-        except Exception:
-            session.rollback()
-        # Convert to schema and then to dict for database
-        gpa_records = []
-        for record in records:
-            schema = convert_to_schema(record)
-            gpa_records.append(schema.dict())
-
-        stmt = insert(GpaDataDB).values(gpa_records)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["id"],
-            set_=dict(
-                gpa=stmt.excluded.gpa,
-                grade_a=stmt.excluded.grade_a,
-                grade_b=stmt.excluded.grade_b,
-                grade_c=stmt.excluded.grade_c,
-                grade_d=stmt.excluded.grade_d,
-                grade_f=stmt.excluded.grade_f,
-                grade_i=stmt.excluded.grade_i,
-                grade_s=stmt.excluded.grade_s,
-                grade_u=stmt.excluded.grade_u,
-                grade_q=stmt.excluded.grade_q,
-                grade_x=stmt.excluded.grade_x,
-                total_students=stmt.excluded.total_students,
-                updated_at=stmt.excluded.updated_at,
-            ),
-        )
-        session.execute(stmt)
-        session.commit()
-        return len(records)
-
-    except Exception as e:
-        print(f"[ERROR] Error in bulk insert: {e}")
-        try:
-            session.rollback()
-        except Exception:
-            pass
-        return 0
-    finally:
-        session.close()
-
-
-from typing import Any, Dict, List, Tuple, Iterator
+def to_db_row(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate a scraped record and return the column dict for gpa_data."""
+    return GpaDataSchema(**record).model_dump()
 
 
 def chunks(lst: List[Any], n: int) -> Iterator[List[Any]]:
@@ -221,140 +116,131 @@ def chunks(lst: List[Any], n: int) -> Iterator[List[Any]]:
         yield lst[i : i + n]
 
 
-async def main_async() -> None:
+def bulk_upsert_records(records: List[Dict[str, Any]]) -> int:
     """
-    Main async function - fetch missing data then bulk insert.
+    Upsert records in batches on one connection. Raises on a failed batch
+    instead of silently reporting 0 inserted.
     """
+    # The same id twice in one INSERT ... ON CONFLICT DO UPDATE makes Postgres
+    # reject the whole statement, so dedupe first (last one wins).
+    rows = list({r["id"]: to_db_row(r) for r in records}.values())
+    if len(rows) != len(records):
+        print(f"[INFO] Dropped {len(records) - len(rows)} duplicate ids")
+
+    stmt = insert(GpaDataDB)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["id"],
+        set_={
+            col: stmt.excluded[col]
+            for col in (
+                "gpa",
+                "grade_a",
+                "grade_b",
+                "grade_c",
+                "grade_d",
+                "grade_f",
+                "grade_i",
+                "grade_s",
+                "grade_u",
+                "grade_q",
+                "grade_x",
+                "total_students",
+                "updated_at",
+            )
+        },
+    )
+
+    total_batches = (len(rows) + BULK_INSERT_SIZE - 1) // BULK_INSERT_SIZE
+    print(f"[INFO] Upserting {len(rows)} records in {total_batches} batches...")
+
+    session = get_session()
+    written = 0
+    try:
+        for batch_num, batch in enumerate(chunks(rows, BULK_INSERT_SIZE), start=1):
+            # executemany form: SQLAlchemy batches this into multi-row INSERTs
+            session.execute(stmt, batch)
+            session.commit()
+            written += len(batch)
+            print(f"  > Batch {batch_num}/{total_batches} OK ({written}/{len(rows)})", flush=True)
+    except Exception:
+        session.rollback()
+        print(f"[ERROR] Batch failed after {written} records were committed")
+        raise
+    finally:
+        session.close()
+
+    return written
+
+
+async def main_async(full: bool = False) -> None:
     print("=" * 60)
-    print("GPA Data Fetch - Missing Courses and New Semesters")
+    print("GPA Data Upsert" + (" (FULL)" if full else ""))
     print("=" * 60)
     print(f"[INFO] Max concurrent requests: {MAX_CONCURRENT_REQUESTS}")
     print(f"[INFO] Bulk insert size: {BULK_INSERT_SIZE} records")
-    print("=" * 60)
 
-    # Step 1: Get newest semester from anex.us
-    print("\n[STEP 1] Fetching newest semester from anex.us...")
-    import aiohttp
-
-    async with aiohttp.ClientSession() as session:
-        result = await get_newest_semester(session)
-        if result:
-            newest_year, newest_semester = result
-            print(f"[OK] Newest semester found: {newest_semester} {newest_year}")
-        else:
-            newest_year, newest_semester = None, None
-            print(
-                "[WARNING] Could not determine newest semester, will fetch all missing data"
-            )
-
-    # Step 2: Find missing courses and semesters
-    print("\n[STEP 2] Finding missing courses and semesters in database...")
-    courses_to_fetch = get_missing_courses_and_semesters()
-
-    if not courses_to_fetch:
-        print("[OK] No missing courses found. All courses have GPA data!")
-        return
-
-    print(f"[INFO] Found {len(courses_to_fetch)} courses to fetch")
-
-    # Step 3: Fetch all course data concurrently
-    print("\n[STEP 3] Fetching course data from anex.us...")
     start_time = datetime.now()
-    successful_responses = await fetch_all_courses_concurrent(courses_to_fetch)
 
-    if not successful_responses:
-        print("[ERROR] No successful responses received!")
-        return
+    print("\n[STEP 1] Fetching newest semester from anex.us...")
+    async with make_http_session(1) as http:
+        newest_term = await get_newest_semester(http)
+    if newest_term:
+        print(f"[OK] Newest semester on anex.us: {newest_term[1]} {newest_term[0]}")
+    else:
+        print("[WARNING] Could not determine newest semester; fetching every course")
 
-    # Step 4: Extract all class records
-    print(f"\n[STEP 4] Processing {len(successful_responses)} successful responses...")
-    all_records = []
-
-    # Create a map of course to latest semester for filtering
-    course_latest_semester = {
-        (dept, number): (year, semester)
-        for dept, number, year, semester in courses_to_fetch
-        if year and semester
-    }
-
-    for response in successful_responses:
-        course = response.get("course")
-        if course:
-            dept, number = course
-            latest = course_latest_semester.get((dept, number))
-            if latest:
-                year, semester = latest
-                records = extract_class_records(response, year, semester)
-            else:
-                # No existing data, get all records
-                records = extract_class_records(response)
-            all_records.extend(records)
-
-    print(f"[INFO] Extracted {len(all_records)} total class records")
-
-    if not all_records:
-        print("[WARNING] No records to insert!")
-        return
-
-    # Step 5: Bulk insert in chunks
-    total_batches = (len(all_records) + BULK_INSERT_SIZE - 1) // BULK_INSERT_SIZE
+    print("\n[STEP 2] Reading courses and existing GPA terms from the database...")
+    courses, existing_terms = load_courses_and_existing_terms()
+    to_fetch = select_courses_to_fetch(courses, existing_terms, newest_term, full)
+    with_data = sum(1 for c in to_fetch if c in existing_terms)
+    print(f"[INFO] {len(courses)} courses, {len(existing_terms)} already have GPA data")
     print(
-        f"\n[STEP 5] Bulk inserting records ({BULK_INSERT_SIZE} records/batch, {total_batches} batches)..."
+        f"[INFO] Fetching {len(to_fetch)} courses "
+        f"({with_data} behind the newest term, {len(to_fetch) - with_data} with no data yet); "
+        f"skipping {len(courses) - len(to_fetch)} up to date"
     )
 
-    total_inserted = 0
-    chunk_num = 0
+    if not to_fetch:
+        print("[OK] Everything is up to date.")
+        return
 
-    for chunk in chunks(all_records, BULK_INSERT_SIZE):
-        chunk_num += 1
-        chunk_size = len(chunk)
+    print("\n[STEP 3] Fetching course data from anex.us...")
+    responses = await fetch_all_courses_concurrent(to_fetch)
 
-        print(
-            f"  > Inserting batch {chunk_num}/{total_batches} ({chunk_size} records)...",
-            end=" ",
-            flush=True,
-        )
+    print("\n[STEP 4] Extracting new records...")
+    all_records: List[Dict[str, Any]] = []
+    for response in responses:
+        skip = None if full else existing_terms.get(response["course"])
+        all_records.extend(extract_class_records(response, skip))
+    print(f"[INFO] {len(all_records)} records to upsert")
 
-        inserted = bulk_insert_records(chunk)
-        total_inserted += inserted
+    written = 0
+    if all_records:
+        print("\n[STEP 5] Upserting into gpa_data...")
+        written = bulk_upsert_records(all_records)
 
-        if inserted == chunk_size:
-            print("OK")
-        else:
-            print(f"WARNING ({inserted}/{chunk_size} success)")
-
-    # Final summary
-    end_time = datetime.now()
-    duration = end_time - start_time
-    courses_per_sec = (
-        len(courses_to_fetch) / duration.total_seconds()
-        if duration.total_seconds() > 0
-        else 0
-    )
-
+    duration = datetime.now() - start_time
     print("\n" + "=" * 60)
     print("GPA UPSERT COMPLETE")
     print("=" * 60)
     print(f"{'Duration':<20}: {duration}")
-    print(f"{'Courses Processed':<20}: {len(successful_responses)}")
-    print(f"{'Records Inserted':<20}: {total_inserted}")
-    print(f"{'Speed':<20}: {courses_per_sec:.2f} courses/sec")
-
-    if total_inserted > 0:
-        print(f"\n[OK] SUCCESS! {total_inserted} GPA records added to database!")
+    print(f"{'Courses fetched':<20}: {len(to_fetch)}")
+    print(f"{'Courses with data':<20}: {len(responses)}")
+    print(f"{'Records upserted':<20}: {written}")
 
 
 def main() -> None:
-    """Main function wrapper"""
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Refetch every course and re-upsert every record (fills gaps, slow)",
+    )
+    args = parser.parse_args()
     try:
-        asyncio.run(main_async())
+        asyncio.run(main_async(full=args.full))
     except KeyboardInterrupt:
         print("\n\n[INFO] Operation interrupted by user")
-    except Exception as e:
-        print(f"\n[ERROR] Error: {e}")
-        import traceback
-
-        traceback.print_exc()
 
 
 if __name__ == "__main__":

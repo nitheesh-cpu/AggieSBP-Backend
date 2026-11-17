@@ -10,136 +10,66 @@ This module contains functions to:
 import asyncio
 import json
 import re
-from typing import Any, Dict, List, Tuple, Optional
+import ssl
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import aiohttp
+import certifi
 
 # Configuration
 MAX_CONCURRENT_REQUESTS = 10  # Concurrent API requests
 REQUEST_TIMEOUT = 30
+MAX_RETRIES = 2  # Retries on timeouts, connection errors, 429 and 5xx
 ANEX_BASE_URL = "https://anex.us/grades/"
+
+# Verify TLS against certifi's CA bundle instead of the OS store. Some Windows
+# trust stores pick an expired chain for anex.us's Let's Encrypt cert and every
+# request fails with CERTIFICATE_VERIFY_FAILED.
+SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+
+
+def make_http_session(concurrency: int = MAX_CONCURRENT_REQUESTS) -> aiohttp.ClientSession:
+    connector = aiohttp.TCPConnector(
+        ssl=SSL_CONTEXT, limit=concurrency * 2, limit_per_host=concurrency
+    )
+    return aiohttp.ClientSession(connector=connector)
+
+
+# anex.us uses calendar years, so within a year the order is
+# SPRING (Jan) -> SUMMER (May) -> FALL (Aug). FALL 2025 is older than SPRING 2026.
+SEMESTER_ORDER = {"SPRING": 1, "SUMMER": 2, "FALL": 3}
+
+
+def term_key(year: Any, semester: Any) -> Tuple[int, int]:
+    """Sortable key for a (year, semester) term. Unparseable values sort first."""
+    match = re.search(r"(\d{4})", str(year or ""))
+    year_int = int(match.group(1)) if match else 0
+    return year_int, SEMESTER_ORDER.get(str(semester or "").upper().strip(), 0)
 
 
 async def get_newest_semester(
     session: aiohttp.ClientSession,
-) -> Tuple[Optional[str], Optional[str]] | None:
+) -> Optional[Tuple[str, str]]:
     """
-    Query anex.us API to find the newest semester and year available.
-    Uses a sample course (MATH 151) to get semester data.
-    Returns (year, semester) tuple.
+    Query anex.us to find the newest (year, semester) available, using MATH 151
+    as a sample course since it is offered every term. Returns None on failure.
     """
-    try:
-        # Use a common course (MATH 151) to get semester data
-        url = "https://anex.us/grades/getData/"
-        headers = {
-            "accept": "*/*",
-            "accept-language": "en-US,en;q=0.9",
-            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "sec-ch-ua": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-            "x-requested-with": "XMLHttpRequest",
-            "referer": "https://anex.us/grades/?dept=MATH&number=151",
-        }
-        data = {"dept": "MATH", "number": "151"}
+    _, response = await fetch_course_data(
+        session, "MATH", "151", asyncio.Semaphore(1)
+    )
+    if not response.get("success"):
+        print(f"[WARNING] Could not fetch MATH 151 from anex.us: {response.get('error')}")
+        return None
 
-        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-        async with session.post(
-            url, headers=headers, data=data, timeout=timeout
-        ) as response:
-            if response.status != 200:
-                print(
-                    f"[WARNING] Could not fetch semester data from anex.us API (status {response.status})"
-                )
-                return None, None
-
-            try:
-                text_response = await response.text()
-                json_data = json.loads(text_response)
-
-                if "classes" not in json_data or not json_data["classes"]:
-                    print("[WARNING] No class data in API response")
-                    return None, None
-
-                # Find the newest semester from the classes data
-                # Within same year: SUMMER (newest, priority=1) > SPRING (priority=2) > FALL (oldest, priority=3)
-                # This is because Summer comes after Spring in the same calendar year
-                newest_year = None
-                newest_semester = None
-                newest_year_int = 0
-                newest_sem_priority = 999  # Lower priority number = newer semester
-
-                semester_priority = {"SUMMER": 1, "SPRING": 2, "FALL": 3}
-
-                # Debug: print first few classes to see what we're getting
-                print(
-                    f"[DEBUG] Processing {len(json_data['classes'])} classes from API"
-                )
-                sample_classes = json_data["classes"][:5]
-                for sample in sample_classes:
-                    print(
-                        f"[DEBUG] Sample: year={sample.get('year')}, semester={sample.get('semester')}"
-                    )
-
-                for class_info in json_data["classes"]:
-                    year_str = str(class_info.get("year", ""))
-                    semester_str = str(class_info.get("semester", "")).upper().strip()
-
-                    # Extract numeric year (handle "2025b" format)
-                    year_match = re.search(r"(\d{4})", year_str)
-                    if not year_match:
-                        print(f"[DEBUG] Skipping class with invalid year: {year_str}")
-                        continue
-                    year_int = int(year_match.group(1))
-                    semester_priority_val = semester_priority.get(semester_str, 999)
-
-                    # Debug for potential newest semesters
-                    if year_int >= 2024:
-                        print(
-                            f"[DEBUG] Checking: year={year_int} ({year_str}), semester={semester_str} (priority={semester_priority_val})"
-                        )
-
-                    # Check if this is newer
-                    # Newer = higher year, or same year with lower priority (SUMMER=1 is newest in same year)
-                    is_newer = False
-                    if year_int > newest_year_int:
-                        is_newer = True
-                    elif year_int == newest_year_int:
-                        if semester_priority_val < newest_sem_priority:
-                            is_newer = True
-
-                    if is_newer:
-                        print(
-                            f"[DEBUG] Found newer: {semester_str} {year_int} (was: {newest_semester} {newest_year_int})"
-                        )
-                        newest_year_int = year_int
-                        newest_sem_priority = semester_priority_val
-                        newest_year = year_match.group(1)  # Use just the numeric part
-                        newest_semester = semester_str
-
-                if newest_year and newest_semester:
-                    print(
-                        f"[INFO] Found newest semester from API: {newest_semester} {newest_year}"
-                    )
-                    return newest_year, newest_semester
-                else:
-                    print("[WARNING] Could not determine newest semester from API data")
-
-            except json.JSONDecodeError as e:
-                print(f"[WARNING] Invalid JSON response from API: {e}")
-            except Exception as e:
-                print(f"[WARNING] Error parsing API response: {e}")
-
-    except Exception as e:
-        print(f"[WARNING] Error fetching newest semester: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-    return None, None
+    newest = max(
+        response["data"]["classes"],
+        key=lambda c: term_key(c.get("year"), c.get("semester")),
+        default=None,
+    )
+    if newest is None:
+        return None
+    return str(newest["year"]), str(newest["semester"]).upper().strip()
 
 
 async def fetch_course_data(
@@ -173,55 +103,71 @@ async def fetch_course_data(
         }
 
         data = {"dept": dept, "number": number}
+        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+        last_error = "unknown error"
 
-        try:
-            timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-            async with session.post(
-                url, headers=headers, data=data, timeout=timeout
-            ) as response:
-                if response.status == 200:
-                    try:
-                        text_response = await response.text()
-                        json_data = json.loads(text_response)
-
-                        if "classes" in json_data and json_data["classes"]:
-                            return course_key, {
-                                "success": True,
-                                "data": json_data,
-                                "course": (dept, number),
-                            }
-                        else:
-                            return course_key, {
-                                "success": False,
-                                "error": "No data available",
-                            }
-                    except json.JSONDecodeError:
+        for attempt in range(MAX_RETRIES + 1):
+            if attempt:
+                await asyncio.sleep(2**attempt)
+            try:
+                async with session.post(
+                    url, headers=headers, data=data, timeout=timeout
+                ) as response:
+                    if response.status == 429 or response.status >= 500:
+                        last_error = f"HTTP {response.status}"
+                        continue
+                    if response.status != 200:
                         return course_key, {
                             "success": False,
-                            "error": "Invalid JSON response",
+                            "error": f"HTTP {response.status}",
                         }
-                else:
-                    return course_key, {
-                        "success": False,
-                        "error": f"HTTP {response.status}",
-                    }
+                    text_response = await response.text()
+            except asyncio.TimeoutError:
+                last_error = "Request timeout"
+                continue
+            except aiohttp.ClientSSLError as e:
+                # Certificate problems won't fix themselves on retry
+                return course_key, {"success": False, "error": str(e)}
+            except aiohttp.ClientError as e:
+                last_error = str(e) or type(e).__name__
+                continue
 
-        except asyncio.TimeoutError:
-            return course_key, {"success": False, "error": "Request timeout"}
-        except Exception as e:
-            return course_key, {"success": False, "error": str(e)}
+            # anex.us answers courses with no grade data with this invalid JSON
+            if "".join(text_response.split()) == '{"classes":]}':
+                return course_key, {
+                    "success": False,
+                    "no_data": True,
+                    "error": "No data available",
+                }
+            try:
+                json_data = json.loads(text_response)
+            except json.JSONDecodeError:
+                return course_key, {"success": False, "error": "Invalid JSON response"}
+
+            if json_data.get("classes"):
+                return course_key, {
+                    "success": True,
+                    "data": json_data,
+                    "course": (dept, number),
+                }
+            return course_key, {
+                "success": False,
+                "no_data": True,
+                "error": "No data available",
+            }
+
+        return course_key, {"success": False, "error": last_error}
 
 
 def extract_class_records(
     course_data: Dict[str, Any],
-    min_year: Optional[str] = None,
-    min_semester: Optional[str] = None,
+    skip_terms: Optional[Set[Tuple[str, str]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Extract individual class records from a course's data.
-    Optionally filter to only include records newer than min_year/min_semester.
 
-    Semester priority: Within same year: SUMMER=1 (newest) > SPRING=2 > FALL=3 (oldest)
+    skip_terms: (year, semester) pairs already stored for this course; records
+    from those terms are dropped. None keeps every record.
     """
     if not course_data.get("success") or "data" not in course_data:
         return []
@@ -229,53 +175,13 @@ def extract_class_records(
     records = []
     classes = course_data["data"].get("classes", [])
 
-    # Semester priority for comparison (lower number = newer in same year)
-    # Within same year: SUMMER=1 (newest), SPRING=2, FALL=3 (oldest)
-    semester_priority = {"SUMMER": 1, "SPRING": 2, "FALL": 3}
-
     for class_info in classes:
         try:
-            # Filter by year/semester if specified
-            if min_year and min_semester:
-                try:
-                    # Extract numeric year from class_info (handle formats like "2025", "2025b", etc.)
-                    class_year_str = str(class_info.get("year", "0"))
-                    class_year_match = re.search(r"(\d{4})", class_year_str)
-                    if class_year_match:
-                        class_year = int(class_year_match.group(1))
-                    else:
-                        class_year = (
-                            int(class_year_str) if class_year_str.isdigit() else 0
-                        )
-
-                    class_semester = class_info.get("semester", "").upper()
-
-                    # Extract numeric year from min_year (handle formats like "2025", "2025b", etc.)
-                    min_year_match = re.search(r"(\d{4})", str(min_year))
-                    if min_year_match:
-                        min_year_int = int(min_year_match.group(1))
-                    else:
-                        min_year_int = int(min_year) if str(min_year).isdigit() else 0
-
-                    min_sem_priority = semester_priority.get(min_semester.upper(), 0)
-                    class_sem_priority = semester_priority.get(class_semester, 0)
-
-                    # Skip if older year
-                    if class_year < min_year_int:
-                        continue
-                    # Skip if same year but older or equal semester
-                    # (e.g., if we have Fall 2024, skip Spring 2024 and Fall 2024, but keep Spring 2025)
-                    if (
-                        class_year == min_year_int
-                        and class_sem_priority >= min_sem_priority
-                    ):
-                        continue
-                except (ValueError, TypeError) as e:
-                    # If we can't parse the year, include the record to be safe
-                    print(
-                        f"[WARNING] Error parsing year/semester for filtering: {e}, including record"
-                    )
-                    pass
+            if skip_terms and (
+                str(class_info.get("year")),
+                str(class_info.get("semester")),
+            ) in skip_terms:
+                continue
 
             # Calculate total students
             total_students = sum(
@@ -328,57 +234,52 @@ def extract_class_records(
 
 
 async def fetch_all_courses_concurrent(
-    courses: List[Tuple[str, str, str, str]],
+    courses: List[Tuple[str, str]],
 ) -> List[Dict[str, Any]]:
     """
-    Fetch data for all courses concurrently.
+    Fetch data for all (dept, number) courses concurrently, printing progress.
     """
-    print(f"\n[INFO] Starting concurrent fetch of {len(courses)} courses...")
-    print(f"[INFO] Using {MAX_CONCURRENT_REQUESTS} concurrent connections")
+    print(f"[INFO] Fetching {len(courses)} courses with {MAX_CONCURRENT_REQUESTS} concurrent connections...")
 
-    # Create semaphore to limit concurrent requests
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-    # Create connector with appropriate limits
-    connector = aiohttp.TCPConnector(
-        limit=MAX_CONCURRENT_REQUESTS * 2, limit_per_host=MAX_CONCURRENT_REQUESTS
-    )
+    successful_responses: List[Dict[str, Any]] = []
+    no_data = 0
+    errors: List[str] = []
+    start_time = time.time()
+    progress_every = max(1, len(courses) // 20)
 
-    async with aiohttp.ClientSession(connector=connector) as session:
-        # Create tasks for all courses
+    async with make_http_session() as session:
         tasks = [
             fetch_course_data(session, dept, number, semaphore)
-            for dept, number, _, _ in courses
+            for dept, number in courses
         ]
-
-        print(f"[INFO] Created {len(tasks)} concurrent fetch tasks")
-
-        # Execute all tasks concurrently
-        import time
-
-        start_time = time.time()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        duration = time.time() - start_time
-
-        print(f"[INFO] Fetch completed in {duration:.1f} seconds")
-        print(f"[INFO] Average: {len(courses) / duration:.1f} requests/second")
-
-        # Process results
-        successful_responses = []
-        failed_count = 0
-
-        for result in results:
-            if isinstance(result, BaseException):
-                failed_count += 1
-                print(f"[ERROR] Task failed with exception: {result}")
+        for done, future in enumerate(asyncio.as_completed(tasks), start=1):
+            course_key, response = await future
+            if response.get("success"):
+                successful_responses.append(response)
+            elif response.get("no_data"):
+                no_data += 1
             else:
-                course_key, response = result
-                if response.get("success"):
-                    successful_responses.append(response)
-                else:
-                    failed_count += 1
+                errors.append(f"{course_key}: {response.get('error')}")
 
-        print(f"[OK] Successful: {len(successful_responses)}")
-        print(f"[ERROR] Failed: {failed_count}")
+            if done % progress_every == 0 or done == len(courses):
+                elapsed = time.time() - start_time
+                rate = done / elapsed if elapsed else 0
+                eta = (len(courses) - done) / rate if rate else 0
+                print(
+                    f"  > {done}/{len(courses)} fetched "
+                    f"({rate:.1f}/s, ~{eta:.0f}s left, {len(errors)} errors)",
+                    flush=True,
+                )
 
-        return successful_responses
+    print(f"[OK] With data: {len(successful_responses)}")
+    print(f"[INFO] No data on anex.us: {no_data}")
+    if errors:
+        print(f"[WARNING] Errors after retries: {len(errors)}")
+        for err in errors[:10]:
+            print(f"    {err}")
+        if len(errors) > 10:
+            print(f"    ... and {len(errors) - 10} more")
+
+    return successful_responses
