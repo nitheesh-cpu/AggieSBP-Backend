@@ -13,6 +13,10 @@ Design goals
 * "Already notified" guard: a `last_notified_open_at` column on
   `user_tracked_sections` prevents repeated spam when a section stays
   open across multiple runs.
+* Every push attempt is recorded in `push_notifications` (one batched
+  INSERT per run, see migrations/003_push_notifications.sql) as 'sent',
+  'expired' (subscription gone: 404/410) or 'failed'. Recording is best
+  effort and runs after delivery, so it can never block a notification.
 
 Usage
 -----
@@ -30,9 +34,11 @@ import json
 import logging
 import os
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 import sys
@@ -145,13 +151,37 @@ _WATCH_QUERY = text("""
 # ---------------------------------------------------------------------------
 # Push notification helper (runs in thread pool)
 # ---------------------------------------------------------------------------
-def _send_push(sub_row: Any, payload: str) -> tuple[str, bool]:
-    """Send one push notification. Returns (endpoint, success)."""
-    if not is_allowed_push_endpoint(sub_row.endpoint):
+STATUS_SENT = "sent"
+STATUS_EXPIRED = "expired"  # push service says the subscription is gone (404/410)
+STATUS_FAILED = "failed"
+_GONE_STATUS_CODES = (404, 410)
+_MAX_ERROR_CHARS = 300
+
+
+@dataclass
+class PushResult:
+    endpoint: str
+    status: str  # STATUS_SENT | STATUS_EXPIRED | STATUS_FAILED
+    error: Optional[str] = None
+    # The subscription can never work again and should be deleted.
+    remove_subscription: bool = False
+
+
+def _short_error(message: Any) -> str:
+    return " ".join(str(message).split())[:_MAX_ERROR_CHARS]
+
+
+def _send_push(sub_row: Any, payload: str) -> PushResult:
+    """Send one push notification and classify the outcome."""
+    endpoint = sub_row.endpoint
+    if not is_allowed_push_endpoint(endpoint):
         logger.warning("Skipping non-push-service endpoint")
-        return sub_row.endpoint, False
+        return PushResult(
+            endpoint, STATUS_FAILED, "endpoint not on push-service allowlist",
+            remove_subscription=True,
+        )
     subscription_info = {
-        "endpoint": sub_row.endpoint,
+        "endpoint": endpoint,
         "keys": {"p256dh": sub_row.p256dh, "auth": sub_row.auth},
     }
     try:
@@ -162,14 +192,25 @@ def _send_push(sub_row: Any, payload: str) -> tuple[str, bool]:
             vapid_claims={"sub": VAPID_CONTACT},
             timeout=PUSH_TIMEOUT_SECONDS,
         )
-        return sub_row.endpoint, True
+        return PushResult(endpoint, STATUS_SENT)
     except WebPushException as exc:
-        status = exc.response.status_code if exc.response else None
+        # requests.Response is falsy for 4xx/5xx, so compare with None.
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None) if response is not None else None
         logger.warning("Push failed (status=%s): %s", status, exc)
-        return sub_row.endpoint, False
+        if status in _GONE_STATUS_CODES:
+            return PushResult(
+                endpoint, STATUS_EXPIRED, f"HTTP {status}", remove_subscription=True
+            )
+        prefix = f"HTTP {status}: " if status is not None else ""
+        return PushResult(
+            endpoint, STATUS_FAILED, _short_error(f"{prefix}{getattr(exc, 'message', exc)}")
+        )
     except Exception as exc:
         logger.error("Push error: %s", exc)
-        return sub_row.endpoint, False
+        return PushResult(
+            endpoint, STATUS_FAILED, _short_error(f"{type(exc).__name__}: {exc}")
+        )
 
 
 # Seat-alert taps open College Scheduler (see _scheduler_cart_url).
@@ -189,19 +230,94 @@ def _scheduler_cart_url(row: Any) -> str:
     return f"{_COLLEGE_SCHEDULER_ORIGIN}/terms/{segment}/cart"
 
 
-def _build_payload(row: Any) -> str:
-    return json.dumps(
-        {
-            "title": "Seat Available! 🎉",
-            "body": (
-                f"{row.dept} {row.course_number}.{row.section_number} "
-                f"({row.course_title}) just opened up!"
-            ),
-            "url": _scheduler_cart_url(row),
-            "crn": row.crn,
-            "sectionId": row.section_id,
-        }
-    )
+def _course_label(row: Any) -> str:
+    """e.g. "CSCE 121.501"."""
+    return f"{row.dept} {row.course_number}.{row.section_number}"
+
+
+def _build_payload(row: Any, notification_id: Optional[str] = None) -> str:
+    # course/term/notificationId let the service worker report
+    # notification-shown/click/dismiss to Umami (frontend/public/sw.js).
+    # Nothing here identifies the user.
+    payload: Dict[str, Any] = {
+        "title": "Seat Available! 🎉",
+        "body": f"{_course_label(row)} ({row.course_title}) just opened up!",
+        "url": _scheduler_cart_url(row),
+        "crn": row.crn,
+        "sectionId": row.section_id,
+        "course": _course_label(row),
+        "term": row.term_code,
+    }
+    if notification_id:
+        payload["notificationId"] = notification_id
+    return json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# Delivery log (push_notifications table, migration 003)
+# ---------------------------------------------------------------------------
+_PUSH_LOG_TABLE_SQL = text("SELECT to_regclass('public.push_notifications')")
+_INSERT_PUSH_LOG_SQL = text("""
+    INSERT INTO push_notifications
+        (id, user_id, track_id, section_id, term_code, crn, course,
+         sent_at, status, error)
+    VALUES
+        (CAST(:id AS uuid), :user_id, :track_id, :section_id, :term_code, :crn,
+         :course, :sent_at, :status, :error)
+""")
+
+
+def _push_log_record(
+    notification_id: str, row: Any, result: PushResult, sent_at: datetime
+) -> Dict[str, Any]:
+    def _str(value: Any) -> Optional[str]:
+        return None if value is None else str(value)
+
+    return {
+        "id": notification_id,
+        "user_id": str(row.user_id),
+        "track_id": _str(row.track_id),
+        "section_id": _str(row.section_id),
+        "term_code": _str(row.term_code),
+        "crn": _str(row.crn),
+        "course": _course_label(row),
+        "sent_at": sent_at,
+        "status": result.status,
+        "error": result.error,
+    }
+
+
+def _record_push_attempts(db: Any, records: List[Dict[str, Any]]) -> int:
+    """Insert one push_notifications row per attempt, in a single batch.
+
+    Best effort: a missing table (migration 003 not applied yet) or any DB
+    error is logged once and swallowed, so it never affects delivery.
+    Returns the number of rows written.
+    """
+    if not records:
+        return 0
+    try:
+        if db.execute(_PUSH_LOG_TABLE_SQL).scalar() is None:
+            logger.warning(
+                "push_notifications table missing; skipped logging %d push "
+                "attempt(s). Apply migrations/003_push_notifications.sql.",
+                len(records),
+            )
+            return 0
+        # Bound the cost: logging must never hold the run for long.
+        db.execute(text("SET LOCAL statement_timeout = '5s'"))
+        db.execute(_INSERT_PUSH_LOG_SQL, records)
+        db.commit()
+        return len(records)
+    except Exception as exc:
+        logger.warning(
+            "Could not log %d push attempt(s): %s", len(records), _short_error(exc)
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -213,9 +329,14 @@ def run_watcher() -> Dict[str, Any]:
 
     Returns a summary dict:
         {
-            "checked": int,       # total active watches
-            "newly_open": int,    # sections that just became open
-            "notified": int,      # push attempts that succeeded
+            "checked": int,          # total active watches
+            "newly_open": int,       # sections that just became open
+            "notified": int,         # push attempts that succeeded (== sent)
+            "sent": int,             # push service accepted the message
+            "expired": int,          # subscription gone (404/410), removed
+            "failed": int,           # any other error
+            "no_subscription": int,  # newly-open watches whose user has no device
+            "logged": int,           # rows written to push_notifications
             "elapsed_s": float,
         }
     """
@@ -291,6 +412,11 @@ def run_watcher() -> Dict[str, Any]:
                 "checked": len(rows),
                 "newly_open": 0,
                 "notified": 0,
+                "sent": 0,
+                "expired": 0,
+                "failed": 0,
+                "no_subscription": 0,
+                "logged": 0,
                 "elapsed_s": round(elapsed, 3),
             }
 
@@ -320,28 +446,47 @@ def run_watcher() -> Dict[str, Any]:
         )
 
         # ── 5. Dispatch push notifications in parallel ───────────────────
-        push_tasks: List[tuple[Any, str]] = []  # (sub_row, payload)
+        # One notification id per (watch, device): it is both the
+        # push_notifications row id and the payload's notificationId.
+        push_tasks: List[tuple[str, Any, Any, str]] = []  # (id, watch, sub, payload)
+        no_subscription = 0
         for row in needs_notify:
-            payload = _build_payload(row)
-            for sub in subs_by_user.get(row.user_id, []):
-                push_tasks.append((sub, payload))
+            subs = subs_by_user.get(row.user_id, [])
+            if not subs:
+                no_subscription += 1
+            for sub in subs:
+                notification_id = str(uuid.uuid4())
+                push_tasks.append(
+                    (notification_id, row, sub, _build_payload(row, notification_id))
+                )
 
-        notified_count = 0
+        counts = {STATUS_SENT: 0, STATUS_EXPIRED: 0, STATUS_FAILED: 0}
         stale_endpoints: List[str] = []
+        log_records: List[Dict[str, Any]] = []
 
         with ThreadPoolExecutor(max_workers=min(MAX_PUSH_WORKERS, len(push_tasks) or 1)) as pool:
             future_map = {
-                pool.submit(_send_push, sub, payload): sub
-                for sub, payload in push_tasks
+                pool.submit(_send_push, sub, payload): (notification_id, row, sub)
+                for notification_id, row, sub, payload in push_tasks
             }
             for future in as_completed(future_map):
-                endpoint, ok = future.result()
-                if ok:
-                    notified_count += 1
-                else:
-                    stale_endpoints.append(endpoint)
+                notification_id, row, sub = future_map[future]
+                try:
+                    result = future.result()
+                except Exception as exc:  # _send_push catches everything; just in case
+                    result = PushResult(
+                        sub.endpoint, STATUS_FAILED, _short_error(f"{type(exc).__name__}: {exc}")
+                    )
+                counts[result.status] = counts.get(result.status, 0) + 1
+                if result.remove_subscription:
+                    stale_endpoints.append(result.endpoint)
+                log_records.append(
+                    _push_log_record(notification_id, row, result, datetime.now(timezone.utc))
+                )
+        notified_count = counts[STATUS_SENT]
 
-        # ── 6. Remove stale subscriptions (expired/invalid) ─────────────
+        # ── 6. Remove subscriptions that can never work again (404/410, or
+        #       not a push-service URL). Transient failures keep theirs. ──
         if stale_endpoints:
             db.execute(
                 text(
@@ -365,18 +510,31 @@ def run_watcher() -> Dict[str, Any]:
         )
         db.commit()
 
+        # ── 8. Record every attempt (best effort, after delivery) ────────
+        logged = _record_push_attempts(db, log_records)
+
         elapsed = time.perf_counter() - t0
         logger.info(
-            "Done. checked=%d newly_open=%d notified=%d elapsed=%.2fs",
+            "Done. checked=%d newly_open=%d sent=%d expired=%d failed=%d "
+            "no_subscription=%d logged=%d elapsed=%.2fs",
             len(rows),
             len(needs_notify),
-            notified_count,
+            counts[STATUS_SENT],
+            counts[STATUS_EXPIRED],
+            counts[STATUS_FAILED],
+            no_subscription,
+            logged,
             elapsed,
         )
         return {
             "checked": len(rows),
             "newly_open": len(needs_notify),
             "notified": notified_count,
+            "sent": counts[STATUS_SENT],
+            "expired": counts[STATUS_EXPIRED],
+            "failed": counts[STATUS_FAILED],
+            "no_subscription": no_subscription,
+            "logged": logged,
             "elapsed_s": round(elapsed, 3),
         }
 
@@ -395,4 +553,4 @@ if __name__ == "__main__":
     summary = run_watcher()
     print("\n=== Section Watcher Summary ===")
     for k, v in summary.items():
-        print(f"  {k:12s}: {v}")
+        print(f"  {k:15s}: {v}")

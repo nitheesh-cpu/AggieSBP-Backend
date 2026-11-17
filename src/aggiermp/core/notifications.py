@@ -55,8 +55,10 @@ class NotificationService:
                 success_count += 1
             except WebPushException as ex:
                 logger.error(f"Web Push Error: {repr(ex)}")
-                # If the subscription is expired or invalid, remove it
-                if ex.response and ex.response.status_code in [404, 410]:
+                # If the subscription is expired or invalid, remove it. Compare
+                # to None: a requests.Response is falsy for any 4xx/5xx, so
+                # `if ex.response` never let this cleanup run.
+                if ex.response is not None and ex.response.status_code in [404, 410]:
                     logger.info(f"Removing invalid subscription for user {user_id}")
                     db.delete(sub)
                     db.commit()
