@@ -7,6 +7,7 @@ reject). Which pairs are duplicates is decided in professor_identity.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -119,6 +120,22 @@ def rebuild_command(canonical_ids: Iterable[str]) -> Optional[str]:
     )
 
 
+def rmp_number(professor_id: str, legacy_id: Optional[int]) -> Optional[int]:
+    """The number in a RateMyProfessors URL (ratemyprofessors.com/professor/N).
+
+    That is the stored legacy id; our ids also encode it ("Teacher-N" in
+    base64), which covers rows where legacy_id is missing.
+    """
+    if legacy_id:
+        return int(legacy_id)
+    try:
+        decoded = base64.b64decode(professor_id + "=" * (-len(professor_id) % 4)).decode()
+    except (ValueError, UnicodeDecodeError):
+        return None
+    prefix, _, number = decoded.partition("-")
+    return int(number) if prefix == "Teacher" and number.isdigit() else None
+
+
 def list_merges(db: Any, status: Optional[str] = None) -> List[Dict[str, Any]]:
     """Stored merges with both professors' names, departments and counts."""
     where = "WHERE a.status = :status" if status else ""
@@ -130,8 +147,10 @@ def list_merges(db: Any, status: Optional[str] = None) -> List[Dict[str, Any]]:
                 a.created_at, a.reviewed_at,
                 pa.first_name AS alias_first, pa.last_name AS alias_last,
                 pa.department AS alias_department, pa.num_ratings AS alias_ratings,
+                pa.legacy_id AS alias_legacy_id,
                 pc.first_name AS canonical_first, pc.last_name AS canonical_last,
-                pc.department AS canonical_department, pc.num_ratings AS canonical_ratings
+                pc.department AS canonical_department, pc.num_ratings AS canonical_ratings,
+                pc.legacy_id AS canonical_legacy_id
             FROM professor_aliases a
             LEFT JOIN professors pa ON pa.id = a.alias_id
             LEFT JOIN professors pc ON pc.id = a.canonical_id
@@ -158,11 +177,13 @@ def list_merges(db: Any, status: Optional[str] = None) -> List[Dict[str, Any]]:
                 "name": name(row.alias_first, row.alias_last),
                 "department": row.alias_department,
                 "ratings": row.alias_ratings or 0,
+                "rmpId": rmp_number(row.alias_id, row.alias_legacy_id),
             },
             "canonical": {
                 "name": name(row.canonical_first, row.canonical_last),
                 "department": row.canonical_department,
                 "ratings": row.canonical_ratings or 0,
+                "rmpId": rmp_number(row.canonical_id, row.canonical_legacy_id),
             },
         }
         for row in rows
