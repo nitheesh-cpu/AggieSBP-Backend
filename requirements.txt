@@ -55,11 +55,13 @@ soupsieve==2.8.1
 sqlalchemy==2.0.45
 supertokens_python
 starlette==0.50.0
-sympy==1.14.0
+sympy==1.13.1
 threadpoolctl==3.6.0
 tokenizers==0.22.1
-torch==2.5.1+cpu
-torchvision==0.20.1+cpu
+# PyTorch's CPU-only "+cpu" builds exist only for x86_64; on ARM (the Oracle VM
+# is aarch64) the regular build is already CPU-only. torchvision isn't used.
+torch==2.5.1+cpu; platform_machine == "x86_64"
+torch==2.5.1; platform_machine == "aarch64"
 tqdm==4.67.1
 transformers==4.57.3
 typing-extensions==4.15.0

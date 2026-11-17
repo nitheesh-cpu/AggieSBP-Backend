@@ -575,6 +575,19 @@ def get_session() -> Any:
     return SessionFactory()
 
 
+def request_session() -> Any:
+    """FastAPI dependency: a pooled session that is closed after the request.
+
+    Use this rather than Depends(get_session), which never closes the session
+    and so holds a pooled connection until garbage collection.
+    """
+    session = get_session()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 # Performance monitoring decorator
 def monitor_db_performance(func: Any) -> Any:
     """Decorator to monitor database query performance"""

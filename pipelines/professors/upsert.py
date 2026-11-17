@@ -223,19 +223,17 @@ def upsert_professor_summary(
 
         # Clean up old course summaries that are no longer in the new data
         current_course_codes = {cs.course for cs in professor_summary.course_summaries}
-        if current_course_codes:
-            try:
-                session.query(ProfessorSummaryNewDB).filter(
-                    ProfessorSummaryNewDB.professor_id
-                    == professor_summary.professor_id,
-                    ProfessorSummaryNewDB.course_code.isnot(None),
-                    ~ProfessorSummaryNewDB.course_code.in_(current_course_codes),
-                ).delete(synchronize_session=False)
-                session.commit()
-            except Exception:
-                # If delete fails, rollback immediately
-                session.rollback()
-                raise
+        try:
+            session.query(ProfessorSummaryNewDB).filter(
+                ProfessorSummaryNewDB.professor_id == professor_summary.professor_id,
+                ProfessorSummaryNewDB.course_code.isnot(None),
+                ~ProfessorSummaryNewDB.course_code.in_(current_course_codes),
+            ).delete(synchronize_session=False)
+            session.commit()
+        except Exception:
+            # If delete fails, rollback immediately
+            session.rollback()
+            raise
 
         return True
 

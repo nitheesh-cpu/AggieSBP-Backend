@@ -184,7 +184,7 @@ def course_session(migrated: bool) -> FakeSession:
         migrated,
         {
             "recent_semesters": Result([course]),
-            "SELECT COUNT(*) FROM professor_summaries_new": Result(scalar=1),
+            "SELECT COUNT(*) FROM professor_summaries_merged": Result(scalar=1),
             "professor_grades": Result([professor]),
         },
     )

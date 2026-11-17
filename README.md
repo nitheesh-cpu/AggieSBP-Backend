@@ -134,17 +134,43 @@ python -m pipelines.courses.upsert_courses
 python -m pipelines.sections.upsert_all
 python pipelines/gpa/upsert_gpa_data.py
 python -m pipelines.professors.upsert_all
+python pipelines/professors/upsert_reviews_and_summaries.py --fetch-only   # nightly: new RMP reviews + queue summary rebuilds, no AI
 python -m aggiermp.collectors.section_watcher
+```
+
+## Tests
+
+```bash
+pip install pytest pytest-asyncio httpx
+pytest --noconftest tests/test_name_matching.py   # pure-logic tests, no database
+```
+
+`tests/conftest.py` imports the app and creates tables and seeds data in whatever `DATABASE_URL` points at. Never run the full suite (or anything that loads that conftest) against the production database; use a throwaway local Postgres. Use `--noconftest` for tests that do not need a database. CI runs `ruff check`, `ruff format --check`, `pytest` and mypy (`.github/workflows/ci.yml`).
+
+## Database migrations
+
+SQL migrations live in `src/aggiermp/database/migrations/` (`001`-`004`: planner state, professor aliases, push notifications, admin jobs). Pipeline-specific ones are in `pipelines/courses/migrations/` and `pipelines/professors/migrations/`. Apply them in order with `psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1 -f <file>` (after loading `.env`); the steps for a deployment are in [docs/admin-setup.md](docs/admin-setup.md).
+
+## Admin operations
+
+The website's `/admin` dashboard shows cron health and runs targeted summary rebuilds after professor merges. Follow [docs/admin-setup.md](docs/admin-setup.md) for the full deployment checklist, and see [Cronitor monitoring](docs/admin-monitoring.md) and the [summary worker](docs/admin-worker.md).
+
+The summary worker is a long-running process (Redis must be reachable):
+
+```bash
+python -m aggiermp.core.admin_worker
 ```
 
 ## Layout
 
 ```
 src/aggiermp/api/          FastAPI app and routers
-src/aggiermp/core/         config, cache, name matching, push
+src/aggiermp/core/         config, cache, name matching, push, admin worker
 src/aggiermp/collectors/   seat-alert watcher
+src/aggiermp/database/     models and SQL migrations
 pipelines/                 scrapers + upserts (courses, sections, gpa, professors)
 tests/                     pytest
+docs/                      admin setup, monitoring, worker
 ```
 
 MIT License

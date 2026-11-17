@@ -56,7 +56,7 @@ if spec and spec.loader:
     spec.loader.exec_module(course_catalog_scraping)
 else:
     raise ImportError("Could not load course_catalog_scraping module")
-get_all_departments = course_catalog_scraping.get_all_departments
+get_all_catalog_departments = course_catalog_scraping.get_all_catalog_departments
 get_courses_from_department = course_catalog_scraping.get_courses_from_department
 
 from dotenv import load_dotenv
@@ -598,8 +598,11 @@ def main() -> None:
 
     # Get all departments
     print("\n2. Scraping all departments...")
-    departments_raw = get_all_departments()
-    print(f"   Found {len(departments_raw)} departments")
+    # Undergraduate and graduate catalogs. A subject in both has one course
+    # page per catalog, so scrape every entry but store one department row,
+    # keeping the undergraduate title (graduate titles are abbreviated).
+    departments_raw = get_all_catalog_departments()
+    print(f"   Found {len(departments_raw)} department catalog pages")
 
     if not departments_raw:
         print("   ✗ No departments found. Exiting.")
@@ -607,7 +610,12 @@ def main() -> None:
 
     # Convert to schemas
     print("\n3. Converting departments to schemas...")
-    departments = [convert_department_to_schema(dept) for dept in departments_raw]
+    unique_departments: Dict[str, dict] = {}
+    for dept in departments_raw:
+        unique_departments.setdefault(dept["id"], dept)
+    departments = [
+        convert_department_to_schema(dept) for dept in unique_departments.values()
+    ]
 
     # Upsert departments
     print("\n4. Upserting departments to departments...")
@@ -638,11 +646,33 @@ def main() -> None:
             all_courses.extend(courses)
             print(f"   ✓ Converted {len(courses)} courses for {dept_code}")
 
+    # Course numbers don't overlap between catalogs today; if one ever
+    # does, keep the first (undergraduate) version rather than both.
+    seen_ids: set = set()
+    all_courses = [
+        c for c in all_courses if not (c.id in seen_ids or seen_ids.add(c.id))
+    ]
     print(f"   ✓ Total courses converted: {len(all_courses)}")
 
     # PHASE 3: Bulk upsert all courses
     print("\n7. PHASE 3: Bulk upserting all courses...")
     total_courses = bulk_upsert_courses(all_courses, batch_size=1000)
+
+    # The upsert doesn't report which rows changed (ON CONFLICT DO UPDATE), so
+    # clear the cached endpoints for every upserted course, the course lists
+    # and departments, and refresh all website course pages. It runs rarely.
+    try:
+        from aggiermp.core.cache_invalidation import invalidate_courses
+
+        outcome = invalidate_courses(
+            [c.id for c in all_courses], revalidate_all=True
+        )
+        print(
+            f"   Cache: {outcome.keys_deleted} API keys cleared, "
+            f"website {outcome.revalidation}"
+        )
+    except Exception as exc:  # never fail the upsert over a cache problem
+        print(f"   Cache invalidation failed: {exc}")
 
     # Final summary
     end_time = time.time()

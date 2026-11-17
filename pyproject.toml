@@ -9,7 +9,7 @@ description = "Texas A&M University Rate My Professor data collection and analys
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "Nitheesh Kodarapu"},
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "python-dotenv>=1.0.0",
     "numpy>=1.24.0",
@@ -52,9 +52,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/aggiermp"
-Repository = "https://github.com/yourusername/aggiermp"
-Issues = "https://github.com/yourusername/aggiermp/issues"
+Homepage = "https://github.com/nitheesh-cpu/AggieSBP"
+Repository = "https://github.com/nitheesh-cpu/AggieSBP-Backend"
+Issues = "https://github.com/nitheesh-cpu/AggieSBP-Backend/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aggiermp"]

@@ -4,7 +4,7 @@
 -- syncs them here; *_rev counters make concurrent saves from two devices
 -- fail with 409 instead of overwriting each other.
 -- Apply once before deploying the API that serves /users/me/planner:
---   psql "$DATABASE_URL" -f src/aggiermp/database/migrations/001_user_planner_state.sql
+--   psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1 -f src/aggiermp/database/migrations/001_user_planner_state.sql
 
 CREATE TABLE IF NOT EXISTS user_planner_state (
     user_id TEXT PRIMARY KEY,

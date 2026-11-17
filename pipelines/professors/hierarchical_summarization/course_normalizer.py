@@ -9,6 +9,8 @@ from typing import Optional, Dict, List, Tuple
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from aggiermp.core.subjects import SUBJECT_ALIASES
+
 
 _NAME_STOPWORDS = {"AND", "OF", "THE", "FOR", "IN", "ENG"}
 
@@ -46,66 +48,8 @@ class CourseNormalizer:
             session: Optional database session to load cross-listings from courses table
         """
         self.session = session
-        # Department aliases mapping
-        self.dept_aliases = {
-            # Computer Science department changes
-            "CPCS": "CSCE",
-            "CPSC": "CSCE",
-            "COSC": "CSCE",
-            "CS": "CSCE",
-            # Electrical Engineering variations
-            "ELEN": "ECEN",
-            "EE": "ECEN",
-            "ELEC": "ECEN",
-            # Mathematics variations
-            "MATH": "MATH",
-            "MATHS": "MATH",
-            # Engineering variations
-            "ENGR": "ENGR",
-            "ENGI": "ENGR",
-            # Physics variations
-            "PHYS": "PHYS",
-            "PHY": "PHYS",
-            # Chemistry variations
-            "CHEM": "CHEM",
-            "CHM": "CHEM",
-            # Business variations
-            "MGMT": "MGMT",
-            "MKTG": "MKTG",
-            "FINC": "FINC",
-            "ACCT": "ACCT",
-            "ID": "IDIS",
-            # Student shorthand and full subject names seen in RMP course codes
-            "ASTRO": "ASTR",
-            "ASTRONOMY": "ASTR",
-            "PSYCH": "PSYC",
-            "PYSCH": "PSYC",
-            "PSYCHOLOGY": "PSYC",
-            "CHEMISTRY": "CHEM",
-            "OCHEM": "CHEM",
-            "HISTORY": "HIST",
-            "STATS": "STAT",
-            "STATISTICS": "STAT",
-            "SOCIO": "SOCI",
-            "SOCIOLOGY": "SOCI",
-            "PHYSICS": "PHYS",
-            "PHSYS": "PHYS",
-            "BIO": "BIOL",
-            "BIOLOGY": "BIOL",
-            "KINES": "KINE",
-            "ANTHRO": "ANTH",
-            "ANTHROPOLOGY": "ANTH",
-            "ENGLISH": "ENGL",
-            "POLISCI": "POLS",
-            "GOVT": "POLS",
-            "GOVERNMENT": "POLS",
-            "COMMS": "COMM",
-            "COMMUNICATIONS": "COMM",
-            "CALC": "MATH",
-            "CALCULUS": "MATH",
-            "ACCTT": "ACCT",
-            "BUSINESS": "BUSN",
-        }
+        # Department aliases mapping, shared with API identity matching
+        self.dept_aliases = dict(SUBJECT_ALIASES)
         # Real department codes and "ASTRONOMY"-style full names, from the DB
         self.department_codes: set[str] = set()
         self.department_names: Dict[str, str] = {}

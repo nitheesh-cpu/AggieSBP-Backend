@@ -87,7 +87,14 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(list(Path(directory).iterdir()), [path])
 
     def run_professor(
-        self, force, stored=False, actual=1, summarized=1, percent=10, fetched=False
+        self,
+        force,
+        stored=False,
+        actual=1,
+        summarized=1,
+        percent=10,
+        fetched=False,
+        alias_only=False,
     ):
         review = SimpleNamespace(
             id="r",
@@ -106,7 +113,7 @@ class RunnerTests(unittest.TestCase):
         )
         session = Mock()
         session.query.return_value.all.return_value = [
-            ("p", f"r{i}") for i in range(actual)
+            ("alias" if alias_only else "p", f"r{i}") for i in range(actual)
         ]
         session.query.return_value.filter_by.return_value.all.return_value = [
             review
@@ -119,6 +126,10 @@ class RunnerTests(unittest.TestCase):
             if summarized is not None
             else []
         )
+        if alias_only:
+            session.query.return_value.filter.return_value.all.return_value = [
+                review
+            ] * actual
         pipeline = Mock()
         pipeline.summarizer.tamu_client = None
         pipeline.summarizer.fallback_clusters = 0
@@ -131,6 +142,8 @@ class RunnerTests(unittest.TestCase):
             else []
         )
         with patch.object(
+            runner, "load_aliases", return_value={"alias": "p"} if alias_only else {}
+        ), patch.object(
             runner, "HierarchicalSummarizationPipeline", return_value=pipeline
         ), patch.object(
             runner,
@@ -162,6 +175,11 @@ class RunnerTests(unittest.TestCase):
         self.counts.assert_not_called()
         self.assertEqual(self.fetch_calls, 0)
         self.assertEqual(result["summaries_generated"], 1)
+
+    def test_stored_only_canonical_with_only_alias_reviews_is_rebuilt(self):
+        result, pipeline = self.run_professor(True, stored=True, alias_only=True)
+        self.assertEqual(result["summaries_generated"], 1)
+        self.assertEqual(pipeline.process_professor_batch.call_args.args[0][0][0], "p")
 
     def test_force_update_regenerates_matching_review_counts(self):
         result, pipeline = self.run_professor(True)
