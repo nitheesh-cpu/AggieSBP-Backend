@@ -329,3 +329,50 @@ class HealthReader:
 
 
 health_reader = HealthReader()
+
+
+def read_data_timestamps() -> dict:
+    with get_session() as session:
+        session.execute(text("SET LOCAL statement_timeout = '3000ms'"))
+        courses, sections, reviews = session.execute(
+            text("""
+                SELECT
+                    (SELECT max(updated_at) FROM courses),
+                    (SELECT max(updated_at) FROM sections),
+                    (SELECT max(review_date) FROM reviews)
+            """)
+        ).one()
+        return {
+            "coursesUpdatedAt": iso(courses),
+            "sectionsUpdatedAt": iso(sections),
+            "newestReviewAt": iso(reviews),
+        }
+
+
+class FreshnessReader:
+    def __init__(self):
+        self.lock = asyncio.Lock()
+        self.result: dict | None = None
+        self.expires = 0.0
+        self.task: asyncio.Task | None = None
+
+    async def read(self) -> dict | None:
+        async with self.lock:
+            if time.monotonic() < self.expires:
+                return self.result
+            if self.task is None:
+                self.task = asyncio.create_task(asyncio.to_thread(read_data_timestamps))
+            # Keep a timed-out database thread for the next check to reuse.
+            done, _ = await asyncio.wait({self.task}, timeout=5)
+            self.result = None
+            if done:
+                try:
+                    self.result = self.task.result()
+                except Exception:
+                    pass
+                self.task = None
+            self.expires = time.monotonic() + (300 if self.result is not None else 30)
+            return self.result
+
+
+freshness_reader = FreshnessReader()

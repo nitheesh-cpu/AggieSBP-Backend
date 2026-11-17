@@ -32,6 +32,12 @@ heartbeat older than 90 seconds is stale; an empty table means not started; a
 missing table means not configured. Timestamps are UTC ISO strings for the UI to
 localize. The API version is the configured application version.
 
+`GET /admin/operations/freshness` also requires the admin key. It reports the
+latest stored course and section update timestamps and the publication date of
+the newest stored professor review. A dataset with no recorded date returns
+`null`. Results are cached for five minutes and probe failures return HTTP 503
+for up to 30 seconds before retrying.
+
 Local isolated verification (does not load the live-database pytest fixtures):
 
 ```sh

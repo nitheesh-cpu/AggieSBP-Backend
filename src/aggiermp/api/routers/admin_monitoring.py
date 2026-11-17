@@ -1,9 +1,9 @@
 """Authenticated, read-only operational dashboard endpoints."""
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from ...core.admin_auth import require_admin_key
-from ...core.admin_monitoring import health_reader, monitor_reader
+from ...core.admin_monitoring import freshness_reader, health_reader, monitor_reader
 
 router = APIRouter(
     prefix="/admin/operations",
@@ -22,3 +22,16 @@ async def monitors(response: Response) -> dict:
 async def health(response: Response) -> dict:
     response.headers["Cache-Control"] = "no-store"
     return await health_reader.read()
+
+
+@router.get("/freshness")
+async def freshness(response: Response) -> dict:
+    result = await freshness_reader.read()
+    if result is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not read dataset timestamps.",
+            headers={"Cache-Control": "no-store"},
+        )
+    response.headers["Cache-Control"] = "no-store"
+    return result

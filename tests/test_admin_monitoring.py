@@ -131,6 +131,24 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NormalizationTests(unittest.TestCase):
+    def test_freshness_reports_stored_timestamps_and_preserves_missing_dates(self):
+        session = Mock()
+        session.execute.return_value.one.return_value = (
+            datetime(2026, 11, 17, 18, 0),
+            None,
+            datetime(2026, 11, 16, 0, 0, tzinfo=timezone.utc),
+        )
+        with patch.object(monitoring, "get_session") as get_session:
+            get_session.return_value.__enter__.return_value = session
+            self.assertEqual(
+                monitoring.read_data_timestamps(),
+                {
+                    "coursesUpdatedAt": "2026-11-17T18:00:00+00:00",
+                    "sectionsUpdatedAt": None,
+                    "newestReviewAt": "2026-11-16T00:00:00+00:00",
+                },
+            )
+
     def test_failure_takes_precedence_and_duration_units(self):
         result = monitoring.normalize_monitor(
             {
@@ -193,7 +211,11 @@ class AuthenticationTests(unittest.TestCase):
         ), patch.object(
             monitoring.monitor_reader, "read", AsyncMock(return_value={"status": "ok"})
         ) as probe:
-            for path in ("/admin/operations/monitors", "/admin/operations/health"):
+            for path in (
+                "/admin/operations/monitors",
+                "/admin/operations/health",
+                "/admin/operations/freshness",
+            ):
                 self.assertEqual(client.get(path).status_code, 401)
                 self.assertEqual(
                     client.get(path, headers={"X-Admin-Key": "wrong"}).status_code, 401
@@ -204,6 +226,30 @@ class AuthenticationTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_freshness_returns_service_unavailable_when_database_probe_fails(self):
+        app = FastAPI()
+        app.include_router(router)
+        with TestClient(app) as client, patch.object(
+            settings, "admin_api_key", "admin-secret"
+        ), patch.object(
+            monitoring.freshness_reader, "read", AsyncMock(return_value=None)
+        ):
+            response = client.get(
+                "/admin/operations/freshness", headers={"X-Admin-Key": "admin-secret"}
+            )
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+
+class FreshnessReaderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_requests_share_one_database_probe(self):
+        reader = monitoring.FreshnessReader()
+        dates = {"coursesUpdatedAt": "2026-11-17T18:00:00+00:00"}
+        with patch.object(monitoring, "read_data_timestamps", return_value=dates) as read:
+            result = await asyncio.gather(*(reader.read() for _ in range(4)))
+            self.assertEqual(result, [dates] * 4)
+            read.assert_called_once()
 
 
 class PartialFailureTests(unittest.IsolatedAsyncioTestCase):
