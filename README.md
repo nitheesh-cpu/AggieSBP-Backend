@@ -148,7 +148,7 @@ pytest --noconftest tests/test_name_matching.py   # pure-logic tests, no databas
 
 ## Database migrations
 
-SQL migrations live in `src/aggiermp/database/migrations/` (`001`-`004`: planner state, professor aliases, push notifications, admin jobs). Pipeline-specific ones are in `pipelines/courses/migrations/` and `pipelines/professors/migrations/`. Apply them in order with `psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f <file>`; the steps for a deployment are in [docs/admin-setup.md](docs/admin-setup.md).
+SQL migrations live in `src/aggiermp/database/migrations/` (`001`-`004`: planner state, professor aliases, push notifications, admin jobs). Pipeline-specific ones are in `pipelines/courses/migrations/` and `pipelines/professors/migrations/`. Apply them in order with `psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1 -f <file>` (after loading `.env`); the steps for a deployment are in [docs/admin-setup.md](docs/admin-setup.md).
 
 ## Admin operations
 

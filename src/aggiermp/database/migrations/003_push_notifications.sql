@@ -11,7 +11,7 @@
 -- a warning that it skipped recording them.
 --
 -- Safe to re-run.
---   psql "$DATABASE_URL" -f src/aggiermp/database/migrations/003_push_notifications.sql
+--   psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1 -f src/aggiermp/database/migrations/003_push_notifications.sql
 
 CREATE TABLE IF NOT EXISTS push_notifications (
     id UUID PRIMARY KEY,

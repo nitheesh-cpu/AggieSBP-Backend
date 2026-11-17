@@ -1,8 +1,8 @@
 # Admin operations: deployment checklist
 
 One ordered pass for the VM (`/home/opc/backend`, user `opc`, venv `.venv`, systemd, nginx in front of the API).
-Run everything as `opc` from `/home/opc/backend` unless noted. `DATABASE_URL` below is the same value the API uses
-(`grep DATABASE_URL .env`).
+Run everything as `opc` from `/home/opc/backend` unless noted. The database connection comes from the
+`POSTGRES_*` values in `.env` (the API builds its URL from them; there's no `DATABASE_URL` there).
 
 ## 1. Pull
 
@@ -14,11 +14,12 @@ cd /home/opc/backend && git pull
 ## 2. Migrations (in order; each is safe to re-run)
 
 ```sh
-set -a; . ./.env; set +a
+set -a; . ./.env; set +a; export PGPASSWORD="$POSTGRES_PASSWORD"
 M=src/aggiermp/database/migrations
-psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f $M/002_professor_aliases.sql     # skip if already applied; re-running is harmless
-psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f $M/003_push_notifications.sql
-psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f $M/004_admin_jobs.sql            # needs 002; first run marks existing reviewed merges for one summary rebuild
+DB=(-h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1)
+psql "${DB[@]}" -f $M/002_professor_aliases.sql     # skip if already applied; re-running is harmless
+psql "${DB[@]}" -f $M/003_push_notifications.sql
+psql "${DB[@]}" -f $M/004_admin_jobs.sql            # needs 002; first run marks existing reviewed merges for one summary rebuild
 ```
 
 Re-running 004 does not mark merges as pending again. No AI calls run during migration.

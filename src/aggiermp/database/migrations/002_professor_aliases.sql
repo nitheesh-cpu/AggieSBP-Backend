@@ -12,7 +12,7 @@
 --
 -- Safe to re-run. Re-run it after adding a column to professors, reviews or
 -- professor_summaries_new so the views pick the column up.
---   psql "$DATABASE_URL" -f src/aggiermp/database/migrations/002_professor_aliases.sql
+--   psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DATABASE" -v ON_ERROR_STOP=1 -f src/aggiermp/database/migrations/002_professor_aliases.sql
 
 CREATE TABLE IF NOT EXISTS professor_aliases (
     alias_id VARCHAR PRIMARY KEY REFERENCES professors(id),
