@@ -33,7 +33,9 @@ WorkingDirectory=/home/opc/backend
 # reading a file in a home directory, so EnvironmentFile= fails with
 # "Failed to load environment files: Permission denied".
 Environment=PYTHONPATH=/home/opc/backend/src:/home/opc/backend
-ExecStart=/home/opc/backend/.venv/bin/python -m aggiermp.core.admin_worker
+# Started through /bin/bash: SELinux won't let systemd execute a program in a
+# home directory directly (status=203/EXEC "Permission denied").
+ExecStart=/bin/bash -c "exec /home/opc/backend/.venv/bin/python -m aggiermp.core.admin_worker"
 Restart=always
 RestartSec=10
 TimeoutStopSec=30
