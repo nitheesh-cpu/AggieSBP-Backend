@@ -45,6 +45,21 @@ class Settings(BaseSettings):
     # Required in the X-Admin-Key header for admin endpoints (e.g. /cache/clear).
     # When unset, those endpoints are disabled.
     admin_api_key: Optional[str] = Field(None, alias="admin_api_key")
+    # Server-only read access to Cronitor; never use a NEXT_PUBLIC_ variable.
+    cronitor_api_key: Optional[str] = None
+    cronitor_monitor_keys: str = "CX7Ga9,PpJGqD,YStGRp,FnepfT"
+    cronitor_environment: str = "production"
+    # Shared secret the website's server-side renderer sends in the
+    # X-Internal-Key header. Matching requests skip the per-IP rate limits
+    # (SSR traffic all comes from a few Vercel IPs). When unset, nothing is
+    # exempt.
+    internal_api_key: Optional[str] = Field(None, alias="internal_api_key")
+
+    # Where the backend asks the website to refresh its cached course and
+    # professor pages after data changes (POST, X-Revalidate-Secret header).
+    # When either is unset, page revalidation is skipped.
+    site_revalidate_url: Optional[str] = Field(None, alias="site_revalidate_url")
+    revalidate_secret: Optional[str] = Field(None, alias="revalidate_secret")
 
     # SuperTokens
     supertokens_connection_uri: str = "http://localhost:3567"
