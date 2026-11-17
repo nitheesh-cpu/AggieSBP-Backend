@@ -5,6 +5,7 @@ Provides endpoints for departments, courses, and course details with aggregated 
 
 import asyncio
 import ast
+import hmac
 import json
 import logging
 import re
@@ -46,6 +47,9 @@ from .routers.professors import router as professors_router
 from .routers.prereqs import router as prereqs_router
 from .routers.planner import router as planner_router
 from .routers.admin import router as admin_router
+from .routers.admin_jobs import router as admin_jobs_router
+from .routers.admin_monitoring import router as admin_monitoring_router
+from .routers.admin_cache import router as admin_cache_router
 from ..core.config import settings
 from ..core.professor_identity import MATCHING_VERSION as PROFESSOR_MATCHING_VERSION
 from ..core.professor_identity import resolve_professor_id
@@ -107,8 +111,44 @@ init(
     ]
 )
 
+INTERNAL_KEY_HEADER = "X-Internal-Key"
+
+
+def is_internal_request(request: Request) -> bool:
+    """True when the request carries the INTERNAL_API_KEY (website SSR fetches)."""
+    expected = settings.internal_api_key
+    if not expected:
+        return False
+    provided = request.headers.get(INTERNAL_KEY_HEADER)
+    if not provided:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
+class InternalExemptLimiter(Limiter):
+    """Limiter that skips every limit (route, default and application) for
+    requests with a valid X-Internal-Key header.
+
+    slowapi's own hooks don't fit: request_filter callbacks and exempt_when
+    take no arguments, so they can't see the request. Every limit check goes
+    through _check_request_limit, so this is the one place to short-circuit.
+    """
+
+    def _check_request_limit(
+        self,
+        request: Request,
+        endpoint_func: Optional[Any],
+        in_middleware: bool = True,
+    ) -> None:
+        if is_internal_request(request):
+            # The route decorator reads this when injecting rate-limit headers.
+            request.state.view_rate_limit = None
+            return
+        super()._check_request_limit(request, endpoint_func, in_middleware)
+
+
 # Rate limiter configuration
-limiter = Limiter(key_func=get_remote_address)
+limiter = InternalExemptLimiter(key_func=get_remote_address)
 
 # Request timeout in seconds
 REQUEST_TIMEOUT_SECONDS = 30
@@ -6282,3 +6322,6 @@ app.include_router(professors_router)
 app.include_router(prereqs_router)
 app.include_router(planner_router)
 app.include_router(admin_router)
+app.include_router(admin_jobs_router)
+app.include_router(admin_monitoring_router)
+app.include_router(admin_cache_router)

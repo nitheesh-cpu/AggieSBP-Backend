@@ -137,14 +137,39 @@ python -m pipelines.professors.upsert_all
 python -m aggiermp.collectors.section_watcher
 ```
 
+## Tests
+
+```bash
+pip install pytest pytest-asyncio httpx
+pytest --noconftest tests/test_name_matching.py   # pure-logic tests, no database
+```
+
+`tests/conftest.py` imports the app and creates tables and seeds data in whatever `DATABASE_URL` points at. Never run the full suite (or anything that loads that conftest) against the production database; use a throwaway local Postgres. Use `--noconftest` for tests that do not need a database. CI runs `ruff check`, `ruff format --check`, `pytest` and mypy (`.github/workflows/ci.yml`).
+
+## Database migrations
+
+SQL migrations live in `src/aggiermp/database/migrations/` (`001`-`004`: planner state, professor aliases, push notifications, admin jobs). Pipeline-specific ones are in `pipelines/courses/migrations/` and `pipelines/professors/migrations/`. Apply them in order with `psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f <file>`; the steps for a deployment are in [docs/admin-setup.md](docs/admin-setup.md).
+
+## Admin operations
+
+The website's `/admin` dashboard shows cron health and runs targeted summary rebuilds after professor merges. Follow [docs/admin-setup.md](docs/admin-setup.md) for the full deployment checklist, and see [Cronitor monitoring](docs/admin-monitoring.md) and the [summary worker](docs/admin-worker.md).
+
+The summary worker is a long-running process (Redis must be reachable):
+
+```bash
+python -m aggiermp.core.admin_worker
+```
+
 ## Layout
 
 ```
 src/aggiermp/api/          FastAPI app and routers
-src/aggiermp/core/         config, cache, name matching, push
+src/aggiermp/core/         config, cache, name matching, push, admin worker
 src/aggiermp/collectors/   seat-alert watcher
+src/aggiermp/database/     models and SQL migrations
 pipelines/                 scrapers + upserts (courses, sections, gpa, professors)
 tests/                     pytest
+docs/                      admin setup, monitoring, worker
 ```
 
 MIT License
