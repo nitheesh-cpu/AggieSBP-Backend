@@ -183,3 +183,13 @@ def test_grade_rows_need_the_whole_surname_and_first_initial() -> None:
         ("SMITH", "John Smith"), ("SMITH JD", "John D. Smith"),
     ]:
         assert not grade_row_matches(row, name), (row, name)
+
+
+def test_long_given_name_prefix_counts_like_a_nickname() -> None:
+    # RMP "Cemal Pulak" is Cemalettin M. Pulak; "Shankar Chellam" is Shankararaman.
+    assert professor_name_score("Cemalettin M. Pulak", "Pulak, Cemal") >= 0.82
+    assert professor_name_score("Shankararaman Chellam", "Chellam, Shankar") >= 0.82
+    assert professor_name_score("Jason E. Maddock", "Maddock, Jay") >= 0.82
+    # Short or near-equal starts are other names.
+    assert professor_name_score("Joseph Smith", "Smith, Jose") < 0.82
+    assert professor_name_score("Marianne Lee", "Lee, Marian") < 0.82

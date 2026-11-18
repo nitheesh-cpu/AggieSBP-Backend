@@ -7,7 +7,7 @@ from dataclasses import replace
 from unittest.mock import MagicMock
 
 from aggiermp.core.professor_identity import (
-    Person, Profile, _same_name, _similar_person, choose_profile, given_initials,
+    Person, Profile, _same_name, _similar_person, choose_profile, explain_choice, given_initials,
     load_people, profile_match_name, rmp_name, surname_tokens, swapped_needs_course,
 )
 from aggiermp.core.subjects import course_search_key, parse_course_code
@@ -205,6 +205,23 @@ class RivalTests(unittest.TestCase):
         self.assertIn("translate", sql)  # cheap letters-only form
         self.assertEqual(surname_tokens("Douglas M. O'Brien"), ["obrien"])
         self.assertEqual(surname_tokens("Juan De La Cruz"), ["cruz"])
+
+
+class CampusAndRenameTests(unittest.TestCase):
+    def test_other_campus_school_needs_review_evidence(self):
+        person = Person("Negin Mirhosseini", frozenset({"ENGR"}))
+        empty = Profile("nm", "Mirhosseini, Negin", frozenset(), frozenset())
+        self.assertEqual(choose_profile(person, "ENGR102", [empty]).id, "nm")
+        self.assertIsNone(explain_choice(person, "ENGR102", [empty], name_alone=False)[0])
+        reviewed = Profile("nm", "Mirhosseini, Negin", frozenset({"ENGR"}), frozenset({"ENGR102"}))
+        self.assertEqual(explain_choice(person, "ENGR102", [reviewed], name_alone=False)[0].id, "nm")
+
+    def test_renamed_subject_reviews_count(self):
+        # Brian A. Anderson's reviews say PSYC; he now teaches PBSI.
+        self.assertEqual(parse_course_code("PSYC 107", frozenset({"PBSI"})), ("PBSI", "107"))
+        person = Person("Brian A. Anderson", frozenset({"PBSI", "NRSC"}))
+        reviewed = Profile("ba", "Anderson, Brian", frozenset({"PBSI"}), frozenset({"PBSI107"}))
+        self.assertEqual(choose_profile(person, "PSYC107", [reviewed]).id, "ba")
 
 
 class ExactNameTests(unittest.TestCase):

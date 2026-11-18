@@ -131,4 +131,6 @@ def parse_course_code(
     subject = match.group(1)
     if subject not in valid_subjects:
         subject = SUBJECT_ALIASES.get(subject, subject)
+    if subject not in valid_subjects and current_subject(subject) in valid_subjects:
+        subject = current_subject(subject)
     return (subject, match.group(2)) if subject in valid_subjects else None

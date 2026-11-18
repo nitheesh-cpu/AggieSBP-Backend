@@ -1662,7 +1662,7 @@ async def get_course_professors_details(
         TermDB,
     )
     from aggiermp.core.name_matching import grade_row_matches
-    from aggiermp.core.professor_identity import load_aliases, match_instructor
+    from aggiermp.core.professor_identity import load_aliases, match_instructor_any_campus
     from aggiermp.core.campuses import (
         TEXAS_AM_ID, university_id_for_campus, campus_from_term_description,
     )
@@ -1765,7 +1765,7 @@ async def get_course_professors_details(
         for (instructor_name, pidm, instructor_campus), sections in instructor_sections.items():
             university_id = university_id_for_campus(instructor_campus)
             # Shared with pipelines/professors/unmatched_instructors.py.
-            matched = match_instructor(
+            matched = match_instructor_any_campus(
                 db, instructor_name, pidm, university_id, dept,
                 target_course_code, aliases,
             )

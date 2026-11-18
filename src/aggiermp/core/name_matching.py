@@ -81,6 +81,7 @@ _NICKNAME_LINES = (
     "raymond: ray",
     "phillip philip: phil",
     "jacob: jake",
+    "jason: jay",
     "peter: pete",
     "sandra: sandy",
     "henry: hank harry",
@@ -255,6 +256,12 @@ def _given_similarity(left: str, right: str) -> float:
     if len(left) == 1 or len(right) == 1:
         return 1.0 if left[:1] == right[:1] else 0.0
     if is_nickname(left, right):
+        return 0.9
+    # A long name's first five or more letters: "Cemal" for "Cemalettin",
+    # "Shankar" for "Shankararaman". Shorter starts are often other names
+    # ("Jose"/"Joseph"), and so are near-equal lengths ("Marian"/"Marianne").
+    short, long_ = sorted((left, right), key=len)
+    if len(short) >= 5 and len(long_) - len(short) >= 3 and long_.startswith(short):
         return 0.9
     # The ending is where names become other names: Yan/Yang, Maria/Mario,
     # Daniel/Danielle, Christina/Christine.

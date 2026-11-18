@@ -68,13 +68,15 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from aggiermp.core import professor_identity
-from aggiermp.core.campuses import campus_from_term_description, university_id_for_campus
+from aggiermp.core.campuses import (
+    TEXAS_AM_ID, campus_from_term_description, university_id_for_campus,
+)
 from aggiermp.core.name_matching import _normalize_token, parse_person_name, professor_name_score
 from aggiermp.core.professor_identity import (
     NAME_MATCH_THRESHOLD,
     InstructorMatch,
     load_aliases,
-    match_instructor,
+    match_instructor_any_campus,
     profile_match_name,
     rmp_name,
 )
@@ -129,7 +131,10 @@ class Instructor:
     name: str
     pidm: Optional[int]
     campus: str
+    # RMP school searched for this instructor: the campus's, or College
+    # Station's for locations without one (campus_university_id None).
     university_id: str
+    campus_university_id: Optional[str] = None
     terms: set[str] = field(default_factory=set)
     # Course code -> (dept, title)
     courses: dict[str, tuple[str, str]] = field(default_factory=dict)
@@ -158,8 +163,9 @@ def group_instructors(
 ) -> tuple[list[Instructor], int]:
     """One Instructor per (name, PIDM, campus), as the course page groups them.
 
-    Returns the instructors and how many rows were skipped because their
-    campus has no RMP school.
+    Returns the instructors and how many section rows are at locations with
+    no RMP school; those are checked against College Station's, as the
+    course page does.
     """
     instructors: dict[tuple[str, Optional[int], str], Instructor] = {}
     skipped = 0
@@ -174,13 +180,13 @@ def group_instructors(
             continue
         if university_id is None:
             skipped += 1
-            continue
         # Same key as the endpoint: the raw name, so the matcher sees what the page sees.
         key = (row.instructor_name, row.instructor_pidm, campus)
         instructor = instructors.get(key)
         if instructor is None:
             instructor = instructors[key] = Instructor(
-                row.instructor_name, row.instructor_pidm, campus, university_id
+                row.instructor_name, row.instructor_pidm, campus,
+                university_id or TEXAS_AM_ID, university_id,
             )
         instructor.terms.add(row.term_code)
         instructor.courses.setdefault(
@@ -200,8 +206,8 @@ def match_courses(
     """Run the course page matcher for each course; stop at the first match."""
     for code in sorted(instructor.courses):
         dept = instructor.courses[code][0]
-        result = match_instructor(
-            db, instructor.name, instructor.pidm, instructor.university_id,
+        result = match_instructor_any_campus(
+            db, instructor.name, instructor.pidm, instructor.campus_university_id,
             dept, code, aliases, cache,
         )
         instructor.matches[code] = result
@@ -693,7 +699,7 @@ def render_html(instructors: list[Instructor], summary: dict[str, Any]) -> str:
         f" &middot; {_e(summary['matched'])} matched"
     )
     if summary.get("skipped_rows"):
-        meta += f" &middot; {_e(summary['skipped_rows'])} section rows skipped (campus without an RMP school)"
+        meta += f" &middot; {_e(summary['skipped_rows'])} section rows at locations without an RMP school (checked at College Station)"
     return (
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
@@ -829,7 +835,7 @@ def main() -> None:
             if summary["categories"].get(name):
                 print(f"  {name}: {summary['categories'][name]}")
         if skipped_rows:
-            print(f"Skipped {skipped_rows} section rows at campuses without an RMP school")
+            print(f"{skipped_rows} section rows at locations without an RMP school (checked at College Station)")
         for path in (args.out_csv, args.out_html):
             if path:
                 print(f"Wrote {path}")

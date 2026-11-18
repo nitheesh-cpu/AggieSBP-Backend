@@ -197,6 +197,41 @@ class CampusMatchingTests(unittest.TestCase):
         filters = [arg for call in candidates.filter.call_args_list for arg in call.args]
         self.assertIn("%wickliff%", bound_values(filters[1]))
 
+    def test_location_without_rmp_school_falls_back_to_college_station(self):
+        # McAllen sections have no RMP school; the profile is at College Station.
+        profile = SimpleNamespace(
+            id="nm", first_name="Negin", last_name="Mirhosseini",
+            university_id=TEXAS_AM_ID, num_ratings=20, avg_rating=4.0, legacy_id=2614552,
+        )
+
+        def run(subjects):
+            candidates = query([profile])
+            db = Mock()
+            db.query.side_effect = [
+                query(first=SimpleNamespace(term_desc="Spring 2027 - College Station")),
+                query([SimpleNamespace(instructor_name="Negin Mirhosseini", instructor_pidm=5,
+                                       section_number="900", campus="McAllen")]),
+                candidates, query(), query(),
+            ]
+            patchers = evidence({"nm": subjects})
+            for patcher in patchers:
+                patcher.start()
+            try:
+                result = asyncio.run(details_endpoint()(None, "202711", "ENGR102", db, None))
+            finally:
+                for patcher in patchers:
+                    patcher.stop()
+            filters = [arg for call in candidates.filter.call_args_list for arg in call.args]
+            self.assertTrue(any(getattr(getattr(f, "right", None), "value", None) == TEXAS_AM_ID
+                                for f in filters))
+            return result["professors"][0]
+
+        matched = run({"ENGR"})
+        self.assertEqual(matched["id"], "nm")
+        self.assertIsNone(matched["universityId"])  # still a McAllen section
+        # The same exact name with no reviews in a subject she teaches is not enough.
+        self.assertIsNone(run(set())["id"])
+
     def test_instructor_without_profile_still_gets_official_grades(self):
         gpa = [SimpleNamespace(professor=name, total_students=n, gpa=g, grade_a=a,
                                grade_b=b, grade_c=0, grade_d=0, grade_f=0)

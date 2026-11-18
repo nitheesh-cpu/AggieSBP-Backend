@@ -28,7 +28,7 @@ from aggiermp.core.name_matching import (
     _SURNAME_PARTICLES, NICKNAME_GROUPS, ParsedName, _normalize_token,
     name_parses, nickname_alternates, parse_person_name, professor_name_score,
 )
-from aggiermp.core.subjects import normalize_course_code, parse_course_code
+from aggiermp.core.subjects import current_subject, normalize_course_code, parse_course_code
 
 NAME_MATCH_THRESHOLD = 0.82
 
@@ -190,11 +190,17 @@ def explain_choice(
     course_code: str,
     profiles: Sequence[Profile],
     namesakes: Sequence[Person] = (),
+    name_alone: bool = True,
 ) -> tuple[Optional[Profile], dict[str, str]]:
-    """choose_profile's decision plus, per profile not chosen, why not."""
+    """choose_profile's decision plus, per profile not chosen, why not.
+
+    With ``name_alone=False`` (a profile at another campus's RMP school) an
+    exact, unique name without review evidence is not enough.
+    """
     match = re.match(r"^([A-Z]+)(\d{3})", normalize_course_code(course_code))
-    target_subject = match.group(1) if match else ""
-    target_course = match.group(1) + match.group(2) if match else ""
+    # Renamed subjects (PSYC -> PBSI) count as their current code.
+    target_subject = current_subject(match.group(1)) if match else ""
+    target_course = target_subject + match.group(2) if match else ""
     reasons: dict[str, str] = {}
 
     named = []
@@ -275,12 +281,14 @@ def explain_choice(
         p for p in remaining
         if not p.swapped and _same_name(p.name, instructor.name)
     ]
-    chosen = exact[0] if len(exact) == 1 and not rivals else None
+    chosen = exact[0] if len(exact) == 1 and not rivals and name_alone else None
     for profile in remaining:
         if profile is chosen:
             continue
         why = no_evidence(profile)
-        if rivals:
+        if not name_alone:
+            why += "; at another campus's RMP school the name alone is not enough"
+        elif rivals:
             why += (
                 "; without that evidence the name is not enough, since "
                 f"{', '.join(sorted(r.name for r in rivals))} has a similar name"
@@ -426,10 +434,10 @@ def load_people(
         # Without a PIDM the name is the only identity we have.
         key = row_pidm if row_pidm is not None else ("name", row_name)
         names.setdefault(key, row_name)
-        subjects.setdefault(key, set()).add(str(dept).upper())
+        subjects.setdefault(key, set()).add(current_subject(str(dept)))
 
     own_key = pidm if pidm is not None else ("name", instructor_name)
-    own_subjects = frozenset(subjects.get(own_key, set()) | {subject.upper()})
+    own_subjects = frozenset(subjects.get(own_key, set()) | {current_subject(subject)})
     instructor = Person(instructor_name, own_subjects)
     namesakes = [
         Person(names[key], frozenset(subjects[key]))
@@ -555,6 +563,7 @@ def match_instructor(
     course_code: str,
     aliases: Optional[dict[str, str]] = None,
     cache: Optional[dict[Any, Any]] = None,
+    name_alone: bool = True,
 ) -> InstructorMatch:
     """Find the profile a course page shows for an instructor.
 
@@ -647,7 +656,7 @@ def match_instructor(
         ]
     result.profiles = entry["profiles"]
     chosen, result.rejected = explain_choice(
-        instructor, course_code, result.profiles, namesakes
+        instructor, course_code, result.profiles, namesakes, name_alone
     )
     if chosen is None:
         result.reason = "no name candidate's reviews identify this instructor"
@@ -660,6 +669,41 @@ def match_instructor(
             cache[row_key] = db.get(ProfessorDB, chosen.id)
         result.professor = cache[row_key]
     return result
+
+
+def match_instructor_any_campus(
+    db: Any,
+    instructor_name: str,
+    pidm: Optional[int],
+    university_id: Optional[str],
+    dept: str,
+    course_code: str,
+    aliases: Optional[dict[str, str]] = None,
+    cache: Optional[dict[Any, Any]] = None,
+) -> InstructorMatch:
+    """match_instructor at the campus's RMP school, then at College Station's.
+
+    Sections at locations with no RMP school (McAllen, Dallas, Fort Worth,
+    Bryan, partner colleges) have university_id None, and some Galveston
+    faculty are reviewed under College Station. Their profile is found at
+    College Station, but only on review evidence, never on the name alone.
+    """
+    from aggiermp.core.campuses import TEXAS_AM_ID
+
+    primary = None
+    if university_id is not None:
+        primary = match_instructor(
+            db, instructor_name, pidm, university_id, dept, course_code, aliases, cache
+        )
+        if primary.professor is not None or not primary.shown or university_id == TEXAS_AM_ID:
+            return primary
+    fallback = match_instructor(
+        db, instructor_name, pidm, TEXAS_AM_ID, dept, course_code, aliases, cache,
+        name_alone=False,
+    )
+    if fallback.professor is not None or primary is None:
+        return fallback
+    return primary
 
 
 # ---------------------------------------------------------------------------
