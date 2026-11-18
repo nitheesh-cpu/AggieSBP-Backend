@@ -1312,7 +1312,7 @@ async def get_sections_by_term_and_course(
         import re
 
         # Parse course_code (e.g., "CSCE121" -> dept="CSCE", course_num="121")
-        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", course_code.upper())
+        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", re.sub(r"\s+", "", course_code).upper())
         if not match:
             raise HTTPException(
                 status_code=400,
@@ -1524,7 +1524,7 @@ async def get_course_professors_by_term(
         import re
 
         # Parse course_code (e.g., "CSCE121" -> dept="CSCE", course_num="121")
-        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", course_code.upper())
+        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", re.sub(r"\s+", "", course_code).upper())
         if not match:
             raise HTTPException(
                 status_code=400,
@@ -1690,7 +1690,7 @@ async def get_course_professors_details(
         )
 
         # Parse course_code (e.g., "CSCE121" -> dept="CSCE", course_num="121")
-        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", course_code.upper())
+        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", re.sub(r"\s+", "", course_code).upper())
         if not match:
             raise HTTPException(
                 status_code=400,
@@ -2727,7 +2727,7 @@ async def get_course_details(
         # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
         import re
 
-        match = re.match(r"^([A-Z]+)(\d+)$", course_id.upper())
+        match = re.match(r"^([A-Z]+)(\d+)$", re.sub(r"\s+", "", course_id).upper())
         if not match:
             raise HTTPException(
                 status_code=400,
@@ -3342,7 +3342,7 @@ async def get_course_professors(
         # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
         import re
 
-        match = re.match(r"^([A-Z]+)(\d+)$", course_id.upper())
+        match = re.match(r"^([A-Z]+)(\d+)$", re.sub(r"\s+", "", course_id).upper())
         if not match:
             raise HTTPException(
                 status_code=400,
@@ -3792,7 +3792,7 @@ async def get_course_professor_reviews(
         # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
         import re
 
-        match = re.match(r"^([A-Z]+)(\d+)$", course_id.upper())
+        match = re.match(r"^([A-Z]+)(\d+)$", re.sub(r"\s+", "", course_id).upper())
         if not match:
             raise HTTPException(
                 status_code=400,
@@ -4118,7 +4118,7 @@ async def compare_courses(
             # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
             import re
 
-            match = re.match(r"^([A-Z]+)(\d+)$", course_id.upper())
+            match = re.match(r"^([A-Z]+)(\d+)$", re.sub(r"\s+", "", course_id).upper())
             if not match:
                 # Skip invalid course IDs rather than failing the entire request
                 continue
