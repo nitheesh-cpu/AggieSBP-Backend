@@ -30,6 +30,17 @@ def details_endpoint():
     return namespace[function.name]
 
 
+def bound_values(clause):
+    """Every literal bound in a SQLAlchemy clause tree (LIKE patterns, IN lists)."""
+    values = []
+    value = getattr(clause, "value", None)
+    if value is not None:
+        values.extend(value if isinstance(value, (list, tuple)) else [value])
+    for child in clause.get_children():
+        values.extend(bound_values(child))
+    return values
+
+
 def query(all_rows=None, first=None):
     result = Mock()
     result.options.return_value = result
@@ -90,9 +101,41 @@ class CampusMatchingTests(unittest.TestCase):
         # Check the actual SQL prefilter: the old parser only searched R%,
         # excluding a record whose last_name starts with De.
         filters = [arg for call in candidates.filter.call_args_list for arg in call.args]
-        surname_filter = filters[1]
-        prefixes = [clause.right.value for clause in surname_filter.clauses]
-        self.assertIn("d%", prefixes)
+        self.assertIn("d%", bound_values(filters[1]))
+
+    def test_swapped_name_profile_needs_and_uses_review_evidence(self):
+        # RMP lists Brett H. Furth as first "FURTH", last "HOWARD".
+        profile = SimpleNamespace(
+            id="furth", first_name="FURTH ", last_name="HOWARD",
+            university_id=TEXAS_AM_GALVESTON_ID, num_ratings=12, avg_rating=4.7, legacy_id=2924307,
+        )
+
+        def run(subjects):
+            db = Mock()
+            candidates = query([profile])
+            db.query.side_effect = [
+                query(first=SimpleNamespace(term_desc="Spring 2027 - Galveston")),
+                query([SimpleNamespace(instructor_name="Brett H. Furth", instructor_pidm=3,
+                                       section_number="500", campus="Galveston")]),
+                candidates, query(), query(), query(),
+            ]
+            patchers = evidence({"furth": subjects})
+            for patcher in patchers:
+                patcher.start()
+            try:
+                result = asyncio.run(details_endpoint()(None, "202712", "ANTH210", db, None))
+            finally:
+                for patcher in patchers:
+                    patcher.stop()
+            filters = [arg for call in candidates.filter.call_args_list for arg in call.args]
+            self.assertIn("furth", bound_values(filters[1]))
+            return result["professors"][0]
+
+        matched = run({"ANTH"})
+        self.assertEqual(matched["id"], "furth")
+        self.assertEqual(matched["name"], "Brett H. Furth")
+        # No reviews in a subject he teaches: the swapped name alone is not enough.
+        self.assertIsNone(run({"CHEM"})["id"])
 
     def test_campus_mapping_is_explicit_and_unknown_is_not_college_station(self):
         self.assertEqual(university_id_for_campus(" GALVESTON "), TEXAS_AM_GALVESTON_ID)
@@ -124,6 +167,26 @@ class CampusMatchingTests(unittest.TestCase):
         for candidate_query, school in [(cs_candidates, TEXAS_AM_ID), (gv_candidates, TEXAS_AM_GALVESTON_ID)]:
             filters = [arg for call in candidate_query.filter.call_args_list for arg in call.args]
             self.assertTrue(any(getattr(getattr(f, "right", None), "value", None) == school for f in filters))
+
+    def test_instructor_without_profile_still_gets_official_grades(self):
+        gpa = [SimpleNamespace(professor=name, total_students=n, gpa=g, grade_a=a,
+                               grade_b=b, grade_c=0, grade_d=0, grade_f=0)
+               for name, n, g, a, b in [("TAK H", 24, 4.0, 24, 0),
+                                        ("TAK H", 20, 3.5, 10, 10),
+                                        ("LEE J", 30, 2.0, 0, 0)]]
+        db = Mock()
+        db.query.side_effect = [
+            query(first=SimpleNamespace(term_desc="Spring 2027 - College Station")),
+            query([SimpleNamespace(instructor_name="Hee Yeon Tak", instructor_pidm=9,
+                                   section_number="511", campus="College Station")]),
+            query([]), query(gpa),
+        ]
+        professor = asyncio.run(details_endpoint()(None, "202711", "ENGL104", db, None))["professors"][0]
+        self.assertIsNone(professor["id"])
+        self.assertEqual(professor["totalReviews"], 0)
+        self.assertEqual(professor["grades"]["totalStudents"], 44)
+        self.assertEqual(professor["grades"]["avgGpa"], 3.77)
+        self.assertEqual(professor["grades"]["distribution"]["A"], 34)
 
     def test_sql_rejects_untrusted_columns(self):
         with self.assertRaises(ValueError):

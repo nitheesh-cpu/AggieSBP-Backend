@@ -1664,12 +1664,13 @@ async def get_course_professors_details(
     )
     from aggiermp.core.name_matching import parse_person_name, professor_name_score
     from aggiermp.core.professor_identity import (
-        NAME_MATCH_THRESHOLD, choose_profile, load_aliases, load_people, load_profiles,
+        choose_profile, load_aliases, load_people, load_profiles, profile_match_name,
     )
     from aggiermp.core.campuses import (
         TEXAS_AM_ID, university_id_for_campus, campus_from_term_description,
     )
-    from sqlalchemy import or_, func
+    from dataclasses import replace
+    from sqlalchemy import and_, or_, func
     from sqlalchemy.orm import undefer
     from aggiermp.api.structured_summaries import (
         STRUCTURED_SUMMARY_COLUMNS,
@@ -1737,6 +1738,8 @@ async def get_course_professors_details(
         # Confirmed duplicate-profile merges: alias id -> canonical id.
         aliases = load_aliases(db)
         merged_ids = set(aliases.values())
+        # Official grades for this course (College Station only), loaded once.
+        course_gpa_rows: Optional[List[Any]] = None
 
         # Build unique instructors and their sections. The PIDM separates
         # different people who share a name.
@@ -1769,33 +1772,40 @@ async def get_course_professors_details(
                 for token in surname_tokens
                 if token
             ]
+            name_filters = [or_(*surname_filters)] if surname_filters else []
+            if first_name:
+                name_filters.append(ProfessorDB.first_name.ilike(f"{first_name[:1]}%"))
+            # Also profiles with the names swapped: first_name is the surname.
+            swapped_filter = func.lower(func.trim(ProfessorDB.first_name)).in_(
+                ["".join(surname_tokens)]
+            )
             prof_query = db.query(ProfessorDB)
             prof_query = prof_query.filter(ProfessorDB.university_id == university_id)
-            if surname_filters:
-                prof_query = prof_query.filter(or_(*surname_filters))
-            if first_name:
-                prof_query = prof_query.filter(
-                    ProfessorDB.first_name.ilike(f"{first_name[:1]}%")
+            prof_query = prof_query.filter(or_(and_(*name_filters), swapped_filter))
+            swapped_names = {}
+            candidates = []
+            for candidate in prof_query.all():
+                matched = profile_match_name(
+                    instructor_name, candidate.first_name, candidate.last_name
                 )
-            candidates = [
-                candidate
-                for candidate in prof_query.all()
-                if professor_name_score(
-                    instructor_name, f"{candidate.first_name} {candidate.last_name}"
-                )
-                >= NAME_MATCH_THRESHOLD
-            ]
+                if matched:
+                    candidates.append(candidate)
+                    if matched[1]:
+                        swapped_names[candidate.id] = matched[0]
 
             # A name match is not an identity match: check whose teaching
             # history each profile's reviews fit (see professor_identity).
             professor = None
             if candidates:
                 instructor, namesakes = load_people(db, instructor_name, pidm, dept)
+                profiles = [
+                    replace(profile, name=swapped_names[profile.id], swapped=True)
+                    if profile.id in swapped_names
+                    else profile
+                    for profile in load_profiles(db, candidates, aliases)
+                ]
                 chosen = choose_profile(
-                    instructor,
-                    target_course_code,
-                    load_profiles(db, candidates, aliases),
-                    namesakes,
+                    instructor, target_course_code, profiles, namesakes
                 )
                 if chosen:
                     # The canonical row of a merge may not be a name candidate.
@@ -1905,9 +1915,16 @@ async def get_course_professors_details(
                         **structured_overall_fields(overall_summary, structured),
                     }
 
-                # Match individual GPA rows by identity. Last-name-only SQL matching
-                # can merge two instructors who happen to share a surname.
-                canonical_name = f"{professor.first_name} {professor.last_name}"
+            # Match individual GPA rows by identity. Last-name-only SQL matching
+            # can merge two instructors who happen to share a surname. Done
+            # without a profile too: an instructor with no reviews still has
+            # official grades ("TAK H" is Hee Yeon Tak).
+            gpa_names = [instructor_name]
+            if professor:
+                gpa_names.append(swapped_names.get(
+                    professor.id, f"{professor.first_name} {professor.last_name}"
+                ))
+            if university_id == TEXAS_AM_ID and course_gpa_rows is None:
                 course_gpa_rows = (
                     db.query(GpaDataDB)
                     .filter(
@@ -1915,42 +1932,39 @@ async def get_course_professors_details(
                         GpaDataDB.course_number == course_num,
                     )
                     .all()
-                ) if university_id == TEXAS_AM_ID else []
-                matched_gpa_rows = [
-                    row
-                    for row in course_gpa_rows
-                    if max(
-                        professor_name_score(row.professor, instructor_name),
-                        professor_name_score(row.professor, canonical_name),
-                    )
-                    >= 0.82
-                ]
-                total_students = sum(row.total_students or 0 for row in matched_gpa_rows)
+                )
+            matched_gpa_rows = [
+                row
+                for row in (course_gpa_rows if university_id == TEXAS_AM_ID else None) or []
+                if max(professor_name_score(row.professor, name) for name in gpa_names)
+                >= 0.82
+            ]
+            total_students = sum(row.total_students or 0 for row in matched_gpa_rows)
 
-                if total_students > 0:
-                    gpa_students = sum(
-                        row.total_students or 0
-                        for row in matched_gpa_rows
-                        if row.gpa is not None
-                    )
-                    weighted_gpa_points = sum(
-                        (row.gpa or 0) * (row.total_students or 0)
-                        for row in matched_gpa_rows
-                        if row.gpa is not None
-                    )
-                    prof_data["grades"] = {
-                        "avgGpa": round(weighted_gpa_points / gpa_students, 2)
-                        if gpa_students
-                        else None,
-                        "totalStudents": total_students,
-                        "distribution": {
-                            "A": sum(row.grade_a or 0 for row in matched_gpa_rows),
-                            "B": sum(row.grade_b or 0 for row in matched_gpa_rows),
-                            "C": sum(row.grade_c or 0 for row in matched_gpa_rows),
-                            "D": sum(row.grade_d or 0 for row in matched_gpa_rows),
-                            "F": sum(row.grade_f or 0 for row in matched_gpa_rows),
-                        },
-                    }
+            if total_students > 0:
+                gpa_students = sum(
+                    row.total_students or 0
+                    for row in matched_gpa_rows
+                    if row.gpa is not None
+                )
+                weighted_gpa_points = sum(
+                    (row.gpa or 0) * (row.total_students or 0)
+                    for row in matched_gpa_rows
+                    if row.gpa is not None
+                )
+                prof_data["grades"] = {
+                    "avgGpa": round(weighted_gpa_points / gpa_students, 2)
+                    if gpa_students
+                    else None,
+                    "totalStudents": total_students,
+                    "distribution": {
+                        "A": sum(row.grade_a or 0 for row in matched_gpa_rows),
+                        "B": sum(row.grade_b or 0 for row in matched_gpa_rows),
+                        "C": sum(row.grade_c or 0 for row in matched_gpa_rows),
+                        "D": sum(row.grade_d or 0 for row in matched_gpa_rows),
+                        "F": sum(row.grade_f or 0 for row in matched_gpa_rows),
+                    },
+                }
 
             result_professors.append(prof_data)
 
@@ -5745,6 +5759,81 @@ async def search_professors(
 
     except Exception as e:
         logger.error(f"Error in search_professors: {str(e)}")
+        raise _db_error(e)
+
+
+@app.get(
+    "/instructors/search",
+    summary="/instructors/search",
+    description=(
+        "Instructors teaching in recent terms whose name matches, including "
+        "those with no review profile, with their courses and official grades. "
+        "Used when a professor search finds no profile."
+    ),
+)
+@limiter.limit("60/minute")
+@cached(ttl=TTL_LONG)
+async def search_instructors(
+    request: Request,
+    name: str = Query(..., min_length=2, max_length=80),
+    limit: int = Query(8, ge=1, le=20),
+    db: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    from sqlalchemy import bindparam
+    from ..core.instructor_search import (
+        attach_grades, group_instructors, instructor_name_condition, to_json,
+    )
+
+    try:
+        condition, params = instructor_name_condition(name)
+        # The latest semester of every campus (term codes end in the campus).
+        rows = db.execute(
+            text(f"""
+                WITH recent AS (
+                    SELECT DISTINCT term_code FROM section_instructors
+                    ORDER BY term_code DESC LIMIT 6
+                )
+                SELECT si.instructor_name, si.instructor_pidm, si.term_code,
+                       s.dept, s.course_number, s.campus,
+                       COALESCE(c.name, s.course_title) AS course_title
+                FROM section_instructors si
+                JOIN sections s ON s.id = si.section_id
+                LEFT JOIN courses c
+                  ON c.subject_id = s.dept AND c.course_number = s.course_number
+                WHERE si.term_code IN (SELECT term_code FROM recent)
+                  AND {condition}
+                LIMIT 500
+            """),
+            params,
+        ).fetchall()
+        instructors = group_instructors(rows, name, limit)
+        codes = sorted({code for person in instructors for code in person.courses})
+        if codes:
+            gpa_rows = db.execute(
+                text("""
+                    SELECT professor, dept, course_number, gpa, total_students,
+                           grade_a, grade_b, grade_c, grade_d, grade_f
+                    FROM gpa_data WHERE dept || course_number IN :codes
+                """).bindparams(bindparam("codes", expanding=True)),
+                {"codes": codes},
+            ).fetchall()
+            attach_grades(instructors, gpa_rows)
+        term_codes = sorted({person.term_code for person in instructors if person.term_code})
+        term_names = {}
+        if term_codes:
+            term_names = {
+                row.term_code: row.term_desc
+                for row in db.execute(
+                    text("SELECT term_code, term_desc FROM terms WHERE term_code IN :codes")
+                    .bindparams(bindparam("codes", expanding=True)),
+                    {"codes": term_codes},
+                ).fetchall()
+            }
+        return {"instructors": [to_json(person, term_names) for person in instructors]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in search_instructors: {str(e)}")
         raise _db_error(e)
 
 

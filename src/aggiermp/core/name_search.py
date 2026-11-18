@@ -17,6 +17,9 @@ def professor_name_condition(raw: str, key: str = "name") -> Tuple[str, Dict[str
       plus the first initial. Middle names are ignored, since review
       profiles rarely have them, and only the initial is used because the
       first name is often spelled or shortened differently.
+    * ``"Furth, Brett Howard"`` against a profile with the names swapped
+      ("FURTH HOWARD"): the last name is the profile's first name and a
+      first or middle name is its last name.
     * ``"kim bryan"``: every word appears in the full name, in any order.
     """
     text_ = raw.strip()
@@ -39,6 +42,17 @@ def professor_name_condition(raw: str, key: str = "name") -> Tuple[str, Dict[str
                 params[f"{key}_initial"] = f"{first_words[0][0]}%"
                 condition += f" AND p.first_name ILIKE :{key}_initial"
             conditions.append(condition)
+            given_words = [w for w in re.split(r"[\s\-]+", first) if len(w) >= 2]
+            if given_words:
+                params[f"{key}_swapfirst"] = " ".join(last_words)
+                given_parts = []
+                for i, word in enumerate(given_words):
+                    params[f"{key}_swaplast{i}"] = word
+                    given_parts.append(f"TRIM(p.last_name) ILIKE :{key}_swaplast{i}")
+                conditions.append(
+                    f"TRIM(p.first_name) ILIKE :{key}_swapfirst AND ("
+                    + " OR ".join(given_parts) + ")"
+                )
     else:
         words = [w for w in text_.split() if len(w) >= 2]
         if len(words) >= 2:

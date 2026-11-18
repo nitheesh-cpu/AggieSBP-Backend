@@ -2,7 +2,11 @@
 
 import unittest
 
-from aggiermp.core.professor_identity import Person, Profile, choose_profile
+from dataclasses import replace
+
+from aggiermp.core.professor_identity import (
+    Person, Profile, choose_profile, profile_match_name,
+)
 from aggiermp.core.subjects import parse_course_code
 
 VALID = frozenset({"AGEC", "ECON", "CSCE", "ENGR", "BIOL", "MATH", "CHEM", "MEEN"})
@@ -103,6 +107,35 @@ class ChooseProfileTests(unittest.TestCase):
         self.assertIsNone(
             choose_profile(CS_YU, "CSCE470", [profile("x", "Ying Zhao", "CSCE470")])
         )
+
+
+class SwappedNameTests(unittest.TestCase):
+    """RMP sometimes swaps first and last name: "FURTH HOWARD" (Brett H. Furth)."""
+
+    def test_swapped_profile_name_is_a_candidate(self):
+        self.assertEqual(profile_match_name("Brett H. Furth", "FURTH ", "HOWARD"),
+                         ("HOWARD FURTH", True))
+        self.assertEqual(profile_match_name("Brett H. Furth", "Brett", "Furth"),
+                         ("Brett Furth", False))
+        # The first name must be exactly the surname, and the rest must fit.
+        self.assertIsNone(profile_match_name("Brett H. Furth", "Furth", "Smith"))
+        self.assertIsNone(profile_match_name("Brett H. Furth", "Furthe", "Howard"))
+
+    def test_swapped_profile_needs_review_evidence(self):
+        furth = Person("Brett H. Furth", frozenset({"ANTH", "MAST"}))
+        base = Profile("f", "HOWARD FURTH", frozenset({"ANTH"}), frozenset({"ANTH210"}),
+                       swapped=True)
+        self.assertEqual(choose_profile(furth, "ANTH210", [base]).id, "f")
+        unrelated = replace(base, subjects=frozenset({"CHEM"}), course_codes=frozenset())
+        self.assertIsNone(choose_profile(furth, "ANTH210", [unrelated]))
+
+    def test_exactly_reversed_name_without_evidence_is_not_trusted(self):
+        # "Thomas James" may be a different person from "James Thomas".
+        person = Person("James Thomas", frozenset({"MATH"}))
+        reversed_profile = Profile("tj", "James Thomas", frozenset(), frozenset(), swapped=True)
+        self.assertIsNone(choose_profile(person, "MATH151", [reversed_profile]))
+        same = replace(reversed_profile, swapped=False)
+        self.assertEqual(choose_profile(person, "MATH151", [same]).id, "tj")
 
 
 class CourseCodeTests(unittest.TestCase):

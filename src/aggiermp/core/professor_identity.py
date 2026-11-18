@@ -19,7 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
-from aggiermp.core.name_matching import parse_person_name, professor_name_score
+from aggiermp.core.name_matching import (
+    _normalize_token, parse_person_name, professor_name_score,
+)
 from aggiermp.core.subjects import normalize_course_code, parse_course_code
 
 NAME_MATCH_THRESHOLD = 0.82
@@ -58,6 +60,9 @@ class Profile:
     department: str = ""
     num_ratings: int = 0
     legacy_id: Optional[int] = None
+    # The review site has the first and last names swapped (see
+    # profile_match_name); ``name`` is then given in the corrected order.
+    swapped: bool = False
 
 
 def _same_name(left: str, right: str) -> bool:
@@ -129,10 +134,41 @@ def choose_profile(
     # No review evidence for this instructor. Trust the name only when it is
     # exact and unique on both sides: one instructor and one profile have it.
     # (A nickname like "Josh" for "Joshua" needs review evidence instead.)
+    # A swapped profile name ("FURTH HOWARD") always needs review evidence:
+    # "Thomas James" may be someone other than "James Thomas".
     if rivals:
         return None
-    exact = [p for p in remaining if _same_name(p.name, instructor.name)]
+    exact = [
+        p for p in remaining
+        if not p.swapped and _same_name(p.name, instructor.name)
+    ]
     return exact[0] if len(exact) == 1 else None
+
+
+def profile_match_name(
+    instructor_name: str, first_name: Optional[str], last_name: Optional[str]
+) -> Optional[tuple[str, bool]]:
+    """The profile's name in the order that matches the instructor, and
+    whether that order is swapped; None when neither order matches.
+
+    Normally "First Last". Some review profiles have the two swapped:
+    "FURTH HOWARD" is the registrar's "Brett H. Furth". When the profile's
+    first name is exactly the instructor's surname, "Last First" is tried
+    too. Such a match is only a candidate: choose_profile still needs review
+    evidence for it (see Profile.swapped).
+    """
+    first_name, last_name = (first_name or "").strip(), (last_name or "").strip()
+    normal = f"{first_name} {last_name}"
+    if professor_name_score(instructor_name, normal) >= NAME_MATCH_THRESHOLD:
+        return normal, False
+    surname = "".join(parse_person_name(instructor_name).surname)
+    first = "".join(_normalize_token(token) for token in first_name.split())
+    if not surname or first != surname or not last_name:
+        return None
+    swapped = f"{last_name} {first_name}"
+    if professor_name_score(instructor_name, swapped) >= NAME_MATCH_THRESHOLD:
+        return swapped, True
+    return None
 
 
 def _valid_subjects(db: Any) -> frozenset[str]:

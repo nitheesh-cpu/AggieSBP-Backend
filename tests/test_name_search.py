@@ -13,6 +13,8 @@ def matches(search: str, first: str, last: str) -> bool:
         "p.first_name": first,
         "p.last_name": last,
         "(p.first_name || ' ' || p.last_name)": f"{first} {last}",
+        "TRIM(p.first_name)": first.strip(),
+        "TRIM(p.last_name)": last.strip(),
     }
 
     def ilike(column: str, key: str) -> str:
@@ -21,7 +23,8 @@ def matches(search: str, first: str, last: str) -> bool:
         return str(bool(re.match(regex, values[column], re.IGNORECASE)))
 
     expr = re.sub(
-        r"(\(p\.first_name \|\| ' ' \|\| p\.last_name\)|p\.first_name|p\.last_name) ILIKE :(\w+)",
+        r"(\(p\.first_name \|\| ' ' \|\| p\.last_name\)|TRIM\(p\.first_name\)|TRIM\(p\.last_name\)"
+        r"|p\.first_name|p\.last_name) ILIKE :(\w+)",
         lambda m: ilike(m.group(1), m.group(2)),
         condition,
     )
@@ -47,6 +50,12 @@ class ProfessorNameConditionTest(unittest.TestCase):
 
     def test_registrar_format_rejects_other_first_initial(self):
         self.assertFalse(matches("Kim, Bryan", "Daniel", "Kim"))
+
+    def test_registrar_format_finds_swapped_profile(self):
+        # The review site lists Brett Howard Furth as first "FURTH", last "HOWARD".
+        self.assertTrue(matches("furth, brett howard", "FURTH ", "HOWARD"))
+        self.assertFalse(matches("furth, brett", "FURTH", "HOWARD"))
+        self.assertFalse(matches("furth, brett howard", "FURTHER", "HOWARD"))
 
     def test_words_in_any_order(self):
         self.assertTrue(matches("kim bryan", "Bryan", "Kim"))
