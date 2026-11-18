@@ -110,6 +110,46 @@ class RMPReviewCollector:
             seen_cursors.add(cursor)
             print(f"Collected {len(professors)} professors")
 
+    def search_professors(
+        self, text: str, university_id: str, count: int = 20
+    ) -> List[Dict[str, Any]]:
+        """One page of RMP name-search hits at one school (no fallback)."""
+        query = """
+        query SearchProfessors($count: Int!, $query: TeacherSearchQuery!) {
+          search: newSearch {
+            teachers(query: $query, first: $count) {
+              edges { node {
+                id legacyId firstName lastName department avgRating numRatings
+                school { id }
+              } }
+            }
+          }
+        }
+        """
+        response = self.session.post(
+            self.url,
+            headers=self.headers,
+            cookies=self.cookies,
+            json={
+                "query": query,
+                "variables": {
+                    "count": min(max(count, 1), 100),
+                    "query": {"text": text, "schoolID": university_id, "fallback": False},
+                },
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body.get("errors"):
+            raise ValueError("RMP professor search returned GraphQL errors")
+        edges = body["data"]["search"]["teachers"]["edges"]
+        return [
+            edge["node"]
+            for edge in edges
+            if (edge["node"].get("school") or {}).get("id") == university_id
+        ]
+
     def get_professor(self, professor_name: str, university_id: str) -> Professor:
         """Returns the professor details for a given professor name"""
         response = self.session.post(

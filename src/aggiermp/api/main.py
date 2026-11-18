@@ -1657,20 +1657,16 @@ async def get_course_professors_details(
     from aggiermp.database.base import (
         SectionDB,
         SectionInstructorDB,
-        ProfessorDB,
         ProfessorSummaryNewDB,
         GpaDataDB,
         TermDB,
     )
-    from aggiermp.core.name_matching import parse_person_name, professor_name_score
-    from aggiermp.core.professor_identity import (
-        choose_profile, load_aliases, load_people, load_profiles, profile_match_name,
-    )
+    from aggiermp.core.name_matching import professor_name_score
+    from aggiermp.core.professor_identity import load_aliases, match_instructor
     from aggiermp.core.campuses import (
         TEXAS_AM_ID, university_id_for_campus, campus_from_term_description,
     )
-    from dataclasses import replace
-    from sqlalchemy import and_, or_, func
+    from sqlalchemy import or_, func
     from sqlalchemy.orm import undefer
     from aggiermp.api.structured_summaries import (
         STRUCTURED_SUMMARY_COLUMNS,
@@ -1760,58 +1756,15 @@ async def get_course_professors_details(
 
         for (instructor_name, pidm, instructor_campus), sections in instructor_sections.items():
             university_id = university_id_for_campus(instructor_campus)
-            parsed_instructor = parse_person_name(instructor_name)
-            first_name = parsed_instructor.given[0] if parsed_instructor.given else ""
-            surname_tokens = list(parsed_instructor.surname)
-            if not surname_tokens:
-                continue
-
-            # Query broad candidate pool, then score in Python for robust matching.
-            surname_filters = [
-                ProfessorDB.last_name.ilike(f"{token[:1]}%")
-                for token in surname_tokens
-                if token
-            ]
-            name_filters = [or_(*surname_filters)] if surname_filters else []
-            if first_name:
-                name_filters.append(ProfessorDB.first_name.ilike(f"{first_name[:1]}%"))
-            # Also profiles with the names swapped: first_name is the surname.
-            swapped_filter = func.lower(func.trim(ProfessorDB.first_name)).in_(
-                ["".join(surname_tokens)]
+            # Shared with pipelines/professors/unmatched_instructors.py.
+            matched = match_instructor(
+                db, instructor_name, pidm, university_id, dept,
+                target_course_code, aliases,
             )
-            prof_query = db.query(ProfessorDB)
-            prof_query = prof_query.filter(ProfessorDB.university_id == university_id)
-            prof_query = prof_query.filter(or_(and_(*name_filters), swapped_filter))
-            swapped_names = {}
-            candidates = []
-            for candidate in prof_query.all():
-                matched = profile_match_name(
-                    instructor_name, candidate.first_name, candidate.last_name
-                )
-                if matched:
-                    candidates.append(candidate)
-                    if matched[1]:
-                        swapped_names[candidate.id] = matched[0]
-
-            # A name match is not an identity match: check whose teaching
-            # history each profile's reviews fit (see professor_identity).
-            professor = None
-            if candidates:
-                instructor, namesakes = load_people(db, instructor_name, pidm, dept)
-                profiles = [
-                    replace(profile, name=swapped_names[profile.id], swapped=True)
-                    if profile.id in swapped_names
-                    else profile
-                    for profile in load_profiles(db, candidates, aliases)
-                ]
-                chosen = choose_profile(
-                    instructor, target_course_code, profiles, namesakes
-                )
-                if chosen:
-                    # The canonical row of a merge may not be a name candidate.
-                    professor = next(
-                        (c for c in candidates if c.id == chosen.id), None
-                    ) or db.get(ProfessorDB, chosen.id)
+            if not matched.shown:
+                continue
+            professor = matched.professor
+            swapped_names = matched.swapped_names
 
             # Merged profiles show the ratings of every merged entry.
             avg_rating = professor.avg_rating if professor else None

@@ -15,7 +15,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -93,15 +93,32 @@ def choose_profile(
     ``instructor.subjects`` must include the subject of ``course_code``.
     ``namesakes`` are other instructors (other PIDMs) with similar names.
     """
+    return explain_choice(instructor, course_code, profiles, namesakes)[0]
+
+
+def _subjects_text(subjects: Iterable[str]) -> str:
+    return ", ".join(sorted(subjects)) or "none"
+
+
+def explain_choice(
+    instructor: Person,
+    course_code: str,
+    profiles: Sequence[Profile],
+    namesakes: Sequence[Person] = (),
+) -> tuple[Optional[Profile], dict[str, str]]:
+    """choose_profile's decision plus, per profile not chosen, why not."""
     match = re.match(r"^([A-Z]+)(\d{3})", normalize_course_code(course_code))
     target_subject = match.group(1) if match else ""
     target_course = match.group(1) + match.group(2) if match else ""
+    reasons: dict[str, str] = {}
 
-    named = [
-        profile
-        for profile in profiles
-        if professor_name_score(instructor.name, profile.name) >= NAME_MATCH_THRESHOLD
-    ]
+    named = []
+    for profile in profiles:
+        score = professor_name_score(instructor.name, profile.name)
+        if score >= NAME_MATCH_THRESHOLD:
+            named.append(profile)
+        else:
+            reasons[profile.id] = f"name score {score:.2f} is below {NAME_MATCH_THRESHOLD}"
     rivals = [
         person
         for person in namesakes
@@ -109,13 +126,24 @@ def choose_profile(
     ]
 
     # Drop profiles a same-name colleague explains at least as well.
-    remaining = [
-        profile
-        for profile in named
-        if not any(
-            _fit(profile, rival) >= _fit(profile, instructor) for rival in rivals
+    remaining = []
+    for profile in named:
+        rival = next(
+            (r for r in rivals if _fit(profile, r) >= _fit(profile, instructor)), None
         )
-    ]
+        if rival is None:
+            remaining.append(profile)
+        else:
+            reasons[profile.id] = (
+                f"another instructor, {rival.name} (taught "
+                f"{_subjects_text(rival.subjects)}), fits its reviews at least as well"
+            )
+
+    def no_evidence(profile: Profile) -> str:
+        return (
+            f"its reviews are for {_subjects_text(profile.subjects)}; the instructor "
+            f"taught {_subjects_text(instructor.subjects)}"
+        )
 
     supported = [p for p in remaining if p.subjects & instructor.subjects]
     if supported:
@@ -129,20 +157,51 @@ def choose_profile(
 
         best = max(strength(profile) for profile in supported)
         winners = [p for p in supported if strength(p) == best]
-        return winners[0] if len(winners) == 1 else None
+        chosen = winners[0] if len(winners) == 1 else None
+        for profile in remaining:
+            if profile is chosen:
+                continue
+            if profile not in supported:
+                reasons[profile.id] = (
+                    no_evidence(profile) + "; another profile has reviews in a subject they taught"
+                )
+            elif profile not in winners:
+                reasons[profile.id] = (
+                    f"another profile has stronger review evidence for {target_course}"
+                )
+            else:
+                reasons[profile.id] = (
+                    f"tied with {len(winners) - 1} other profile(s) on review evidence"
+                )
+        return chosen, reasons
 
     # No review evidence for this instructor. Trust the name only when it is
     # exact and unique on both sides: one instructor and one profile have it.
     # (A nickname like "Josh" for "Joshua" needs review evidence instead.)
     # A swapped profile name ("FURTH HOWARD") always needs review evidence:
     # "Thomas James" may be someone other than "James Thomas".
-    if rivals:
-        return None
     exact = [
         p for p in remaining
         if not p.swapped and _same_name(p.name, instructor.name)
     ]
-    return exact[0] if len(exact) == 1 else None
+    chosen = exact[0] if len(exact) == 1 and not rivals else None
+    for profile in remaining:
+        if profile is chosen:
+            continue
+        why = no_evidence(profile)
+        if rivals:
+            why += (
+                "; without that evidence the name is not enough, since "
+                f"{', '.join(sorted(r.name for r in rivals))} has a similar name"
+            )
+        elif profile.swapped:
+            why += "; a swapped RMP name needs review evidence"
+        elif profile not in exact:
+            why += "; the name is not an exact match (initial, nickname or spelling)"
+        else:
+            why += f"; {len(exact)} profiles have this exact name"
+        reasons[profile.id] = why
+    return chosen, reasons
 
 
 def profile_match_name(
@@ -297,6 +356,122 @@ def load_profiles(
         )
         for candidate in candidates
     ]
+
+
+@dataclass
+class InstructorMatch:
+    """The profile chosen for one instructor teaching one course, and why."""
+
+    professor: Any = None  # ProfessorDB row, or None
+    # False when the registrar name has no surname: the course page skips it.
+    shown: bool = True
+    # Rows returned by the SQL name prefilter, and those whose name matched.
+    pool: list[Any] = field(default_factory=list)
+    candidates: list[Any] = field(default_factory=list)
+    profiles: list[Profile] = field(default_factory=list)
+    # Candidate id -> profile name in the corrected order (swapped RMP names).
+    swapped_names: dict[str, str] = field(default_factory=dict)
+    # Profile id -> why it was not chosen.
+    rejected: dict[str, str] = field(default_factory=dict)
+    # Why no profile was chosen; empty when one was.
+    reason: str = ""
+
+
+def match_instructor(
+    db: Any,
+    instructor_name: str,
+    pidm: Optional[int],
+    university_id: Optional[str],
+    dept: str,
+    course_code: str,
+    aliases: Optional[dict[str, str]] = None,
+    cache: Optional[dict[Any, Any]] = None,
+) -> InstructorMatch:
+    """Find the profile a course page shows for an instructor.
+
+    Used by the course professors endpoint and the unmatched-instructors
+    report, so both decide the same way. ``cache`` (optional) keeps query
+    results between calls for a batch job; without it every call runs the
+    same queries in the same order.
+    """
+    from sqlalchemy import and_, func, or_
+    from aggiermp.database.base import ProfessorDB
+
+    cache = {} if cache is None else cache
+    parsed = parse_person_name(instructor_name)
+    first_name = parsed.given[0] if parsed.given else ""
+    surname_tokens = list(parsed.surname)
+    if not surname_tokens:
+        return InstructorMatch(shown=False, reason="the registrar name has no surname")
+
+    pool_key = ("pool", instructor_name, university_id)
+    if pool_key not in cache:
+        # Query broad candidate pool, then score in Python for robust matching.
+        surname_filters = [
+            ProfessorDB.last_name.ilike(f"{token[:1]}%")
+            for token in surname_tokens
+            if token
+        ]
+        name_filters = [or_(*surname_filters)] if surname_filters else []
+        if first_name:
+            name_filters.append(ProfessorDB.first_name.ilike(f"{first_name[:1]}%"))
+        # Also profiles with the names swapped: first_name is the surname.
+        swapped_filter = func.lower(func.trim(ProfessorDB.first_name)).in_(
+            ["".join(surname_tokens)]
+        )
+        prof_query = db.query(ProfessorDB)
+        prof_query = prof_query.filter(ProfessorDB.university_id == university_id)
+        prof_query = prof_query.filter(or_(and_(*name_filters), swapped_filter))
+        pool = list(prof_query.all())
+        swapped_names: dict[str, str] = {}
+        candidates = []
+        for candidate in pool:
+            matched = profile_match_name(
+                instructor_name, candidate.first_name, candidate.last_name
+            )
+            if matched:
+                candidates.append(candidate)
+                if matched[1]:
+                    swapped_names[candidate.id] = matched[0]
+        cache[pool_key] = {"pool": pool, "candidates": candidates, "swapped": swapped_names}
+    entry = cache[pool_key]
+    result = InstructorMatch(
+        pool=entry["pool"],
+        candidates=entry["candidates"],
+        swapped_names=entry["swapped"],
+    )
+    if not result.candidates:
+        result.reason = "no profile at this school has a matching name"
+        return result
+
+    # A name match is not an identity match: check whose teaching history
+    # each profile's reviews fit.
+    people_key = ("people", instructor_name, pidm, dept)
+    if people_key not in cache:
+        cache[people_key] = load_people(db, instructor_name, pidm, dept)
+    instructor, namesakes = cache[people_key]
+    if "profiles" not in entry:
+        entry["profiles"] = [
+            replace(profile, name=result.swapped_names[profile.id], swapped=True)
+            if profile.id in result.swapped_names
+            else profile
+            for profile in load_profiles(db, result.candidates, aliases)
+        ]
+    result.profiles = entry["profiles"]
+    chosen, result.rejected = explain_choice(
+        instructor, course_code, result.profiles, namesakes
+    )
+    if chosen is None:
+        result.reason = "no name candidate's reviews identify this instructor"
+        return result
+    # The canonical row of a merge may not be a name candidate.
+    result.professor = next((c for c in result.candidates if c.id == chosen.id), None)
+    if result.professor is None:
+        row_key = ("row", chosen.id)
+        if row_key not in cache:
+            cache[row_key] = db.get(ProfessorDB, chosen.id)
+        result.professor = cache[row_key]
+    return result
 
 
 # ---------------------------------------------------------------------------
