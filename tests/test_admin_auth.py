@@ -9,12 +9,13 @@ No database, Redis or network is used: sessions are mocked and sockets blocked.
 import re
 import socket
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from aggiermp.api.main import app
+from aggiermp.api.routers import admin_monitoring
 from aggiermp.core.admin_auth import require_admin_key
 from aggiermp.core.config import settings
 from aggiermp.database.base import request_session
@@ -111,7 +112,9 @@ class AdminAuthTests(unittest.TestCase):
                             )
 
     def test_right_key_passes_authentication(self):
-        with patch.object(settings, "admin_api_key", KEY):
+        with patch.object(settings, "admin_api_key", KEY), patch.object(
+            admin_monitoring.freshness_reader, "read", AsyncMock(return_value={})
+        ), patch.object(admin_monitoring, "read_seat_alerts", return_value={}):
             for method, route in admin_routes():
                 with self.subTest(route=f"{method} {route.path}"):
                     response = self.call(method, route, {"X-Admin-Key": KEY})
