@@ -10,11 +10,41 @@ import unittest
 import uuid
 from unittest.mock import patch
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 from aggiermp.core import admin_jobs, admin_worker
 from aggiermp.core.summary_lock import summary_execution_lock, SummaryBusyError
 
 URL = os.environ.get("ADMIN_JOBS_TEST_DATABASE_URL")
+
+
+class WorkerLoggingTests(unittest.TestCase):
+    def test_exception_diagnostics_omit_messages_and_query_data(self):
+        class DatabaseFailure(Exception):
+            pgcode = "42703"
+
+        sensitive = "confidential review text"
+        for error, detail in (
+            (
+                ModuleNotFoundError(sensitive, name="sentence_transformers"),
+                "missing module sentence_transformers",
+            ),
+            (
+                DBAPIError(sensitive, {"value": sensitive}, DatabaseFailure(sensitive)),
+                "SQLSTATE 42703",
+            ),
+        ):
+            with self.subTest(detail=detail), self.assertLogs(admin_worker.logger) as log:
+                try:
+                    raise error
+                except Exception as exc:
+                    admin_worker.log_rebuild_exception("sample-job", exc)
+            output = log.output[0]
+            self.assertIn("sample-job", output)
+            self.assertIn(type(error).__name__, output)
+            self.assertIn("test_admin_jobs.py:", output)
+            self.assertIn(detail, output)
+            self.assertNotIn(sensitive, output)
 
 
 @unittest.skipUnless(URL, "Requires explicit isolated ADMIN_JOBS_TEST_DATABASE_URL")

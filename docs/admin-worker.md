@@ -51,7 +51,9 @@ summary but before recording progress can regenerate that professor (at-least-on
 execution). Each batch is capped at 500 professors, history at 100 jobs, and the
 visible event log at 100 entries. Events contain IDs and outcomes, not review text,
 prompts or provider exception messages. Provider output may still be in the
-restricted service journal. Quota exhaustion requires an explicit retry after the
+restricted service journal. Unexpected worker failures log the job ID, exception
+type and code location there, plus the missing module name or SQLSTATE when
+available. Quota exhaustion requires an explicit retry after the
 allowance resets; it never loops through paid requests automatically.
 
 Merge revisions are checked when clearing stale markers, so a merge edited during

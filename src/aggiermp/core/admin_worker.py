@@ -6,7 +6,12 @@ import os
 import socket
 import threading
 import time
+import traceback
+from pathlib import Path
+
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+
 from ..database.base import get_session, create_db_engine
 from .summary_lock import summary_execution_lock, SummaryBusyError
 from .config import settings
@@ -16,6 +21,42 @@ logger = logging.getLogger(__name__)
 
 class CacheUnavailableError(RuntimeError):
     pass
+
+
+def log_rebuild_exception(job_id, exc):
+    """Log diagnostic metadata without exception messages or traceback source."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    origin = next(
+        (
+            frame
+            for frame in reversed(frames)
+            if {"aggiermp", "pipelines"}.intersection(Path(frame.filename).parts)
+        ),
+        frames[-1] if frames else None,
+    )
+    location = (
+        f"{Path(origin.filename).name}:{origin.lineno} in {origin.name}"
+        if origin
+        else "unknown location"
+    )
+    detail = ""
+    if (
+        isinstance(exc, ModuleNotFoundError)
+        and exc.name
+        and all(part.isidentifier() for part in exc.name.split("."))
+    ):
+        detail = f"; missing module {exc.name}"
+    elif isinstance(exc, DBAPIError):
+        sqlstate = getattr(exc.orig, "pgcode", None)
+        if isinstance(sqlstate, str) and len(sqlstate) == 5 and sqlstate.isalnum():
+            detail = f"; SQLSTATE {sqlstate}"
+    logger.warning(
+        "Summary rebuild failed for job %s (%s at %s%s)",
+        job_id,
+        type(exc).__name__,
+        location,
+        detail,
+    )
 
 
 def ensure_cache_available():
@@ -234,11 +275,10 @@ def run_once():
                         db.rollback()
                         outcome = "failed"
                         cache_failed = True
-                    except Exception:
+                    except Exception as exc:
+                        log_rebuild_exception(job_id, exc)
                         db.rollback()
                         outcome = "failed"
-                        # Deliberately omit exception text, prompts, reviews and credentials.
-                        logger.warning("Summary rebuild failed for job %s", job_id)
                     logs.append(f"Professor {professor_id}: {outcome}")
                     if outcome == "succeeded":
                         completed.append(professor_id)
