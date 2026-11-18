@@ -7,11 +7,12 @@ from typing import AbstractSet, Optional
 
 # RMP course codes are free text typed by students. Map the common
 # shorthand, retired codes, and spelled-out names to registrar subjects.
+# A code that is itself a registrar subject is never aliased (see
+# parse_course_code): COSC is Construction Science, not computer science.
 SUBJECT_ALIASES: dict[str, str] = {
     # Computer Science department changes
     "CPCS": "CSCE",
     "CPSC": "CSCE",
-    "COSC": "CSCE",
     "CS": "CSCE",
     # Electrical Engineering variations
     "ELEN": "ECEN",
@@ -118,7 +119,8 @@ def parse_course_code(
 
     ``"Honors AGEC-105H"`` -> ``("AGEC", "105")``. Codes that do not resolve
     to a real subject (bare numbers, typos, unknown abbreviations) return
-    ``None`` so they never count as evidence.
+    ``None`` so they never count as evidence. A real subject is kept as is,
+    even when it is also someone's shorthand.
     """
     code = normalize_course_code(raw)
     if code.startswith("HONORS"):
@@ -126,5 +128,7 @@ def parse_course_code(
     match = _COURSE_CODE.match(code)
     if not match:
         return None
-    subject = SUBJECT_ALIASES.get(match.group(1), match.group(1))
+    subject = match.group(1)
+    if subject not in valid_subjects:
+        subject = SUBJECT_ALIASES.get(subject, subject)
     return (subject, match.group(2)) if subject in valid_subjects else None

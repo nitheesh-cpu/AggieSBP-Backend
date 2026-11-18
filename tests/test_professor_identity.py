@@ -4,10 +4,13 @@ import unittest
 
 from dataclasses import replace
 
+from unittest.mock import MagicMock
+
 from aggiermp.core.professor_identity import (
-    Person, Profile, choose_profile, profile_match_name,
+    Person, Profile, _same_name, _similar_person, choose_profile, given_initials,
+    load_people, profile_match_name, rmp_name, surname_tokens, swapped_needs_course,
 )
-from aggiermp.core.subjects import parse_course_code
+from aggiermp.core.subjects import course_search_key, parse_course_code
 
 VALID = frozenset({"AGEC", "ECON", "CSCE", "ENGR", "BIOL", "MATH", "CHEM", "MEEN"})
 
@@ -115,8 +118,9 @@ class SwappedNameTests(unittest.TestCase):
     def test_swapped_profile_name_is_a_candidate(self):
         self.assertEqual(profile_match_name("Brett H. Furth", "FURTH ", "HOWARD"),
                          ("HOWARD FURTH", True))
+        # Normal order keeps RMP's own split, as "Last, First".
         self.assertEqual(profile_match_name("Brett H. Furth", "Brett", "Furth"),
-                         ("Brett Furth", False))
+                         ("Furth, Brett", False))
         # The first name must be exactly the surname, and the rest must fit.
         self.assertIsNone(profile_match_name("Brett H. Furth", "Furth", "Smith"))
         self.assertIsNone(profile_match_name("Brett H. Furth", "Furthe", "Howard"))
@@ -138,11 +142,144 @@ class SwappedNameTests(unittest.TestCase):
         self.assertEqual(choose_profile(person, "MATH151", [same]).id, "tj")
 
 
+class RivalTests(unittest.TestCase):
+    """A namesake blocks a profile only when their names could really be one."""
+
+    def test_middle_initials_and_fuzzy_names_are_not_rivals(self):
+        # Real report cases (Nov 2026): exact-name profiles rejected only
+        # because of these "similar" names.
+        for name, exact_name, other in [
+            ("Brian A. Anderson", "Brian Anderson", "Arden Anderson"),
+            ("Christine M. Griffith", "Christine Griffith", "Jennifer M. Griffith"),
+            ("Han Xu", "Han Xu", "Chang Xu"),
+            ("Arum Han", "Arum Han", "Irfan A. Khan"),
+            ("Sumi Lee", "Sumi Lee", "Sumin Lee"),
+            ("Mariano A. Castillo", "Mariano Castillo", "Victor A. Castillo"),
+        ]:
+            self.assertFalse(_similar_person(name, other), (name, other))
+            person = Person(name, frozenset({"ECON"}))
+            namesake = Person(other, frozenset({"ECON"}))
+            exact = profile("p", exact_name)
+            self.assertEqual(choose_profile(person, "ECON202", [exact], [namesake]).id, "p")
+
+    def test_real_namesakes_still_block(self):
+        for name, other in [
+            ("Yu Zhang", "Yu Zhang"),
+            ("J. Smith", "John Smith"),
+            ("M. E. Rister", "Edward Rister"),
+            ("William Jones", "Bill Jones"),
+            ("Abigail Songok", "Abigael Songok"),
+            ("Stephen K. Bender", "Steven D. Bender"),
+            ("Juan Garcia-Lopez", "Juan Garcia"),
+            ("John Taylor Smith", "John Taylor"),
+            ("Hee Yeon Tak", "Heeyeon Tak"),
+        ]:
+            self.assertTrue(_similar_person(name, other), (name, other))
+        person = Person("John Taylor Smith", frozenset({"HIST"}))
+        taylor = profile("t", "Taylor, John", "HIST101")
+        namesake = Person("John Taylor", frozenset({"HIST"}))
+        self.assertIsNone(choose_profile(person, "HIST101", [taylor], [namesake]))
+
+    def test_rivals_never_create_a_match(self):
+        person = Person("Brian A. Anderson", frozenset({"ECON"}))
+        other = profile("o", "Brian Andrews", "ECON202")
+        namesake = Person("Brian Anderson", frozenset())
+        self.assertIsNone(choose_profile(person, "ECON202", [other], [namesake]))
+
+    def test_load_people_searches_every_surname_word(self):
+        db = MagicMock()
+        rows = db.query.return_value.join.return_value.filter.return_value
+        rows.distinct.return_value.all.return_value = [
+            (1, "John Taylor Smith", "HIST"),
+            (2, "John Taylor", "HIST"),
+            (3, "Jane Smith", "HIST"),
+            (4, "Arden Smith", "HIST"),
+        ]
+        person, namesakes = load_people(db, "John Taylor Smith", 1, "HIST")
+        self.assertEqual(person.subjects, frozenset({"HIST"}))
+        self.assertEqual([p.name for p in namesakes], ["John Taylor"])
+        clause = db.query.return_value.join.return_value.filter.call_args.args[0]
+        sql = str(clause.compile(compile_kwargs={"literal_binds": True}))
+        self.assertIn("'%taylor%'", sql)
+        self.assertIn("'%smith%'", sql)
+        self.assertIn("translate", sql)  # cheap letters-only form
+        self.assertEqual(surname_tokens("Douglas M. O'Brien"), ["obrien"])
+        self.assertEqual(surname_tokens("Juan De La Cruz"), ["cruz"])
+
+
+class ExactNameTests(unittest.TestCase):
+    def test_exact_names_across_splits(self):
+        self.assertTrue(_same_name("Hee Yeon Tak", "Tak, Heeyeon"))
+        self.assertTrue(_same_name("Heidi K. Vanden Brink", "Vanden Brink, Heidi"))
+        self.assertTrue(_same_name("Alejandro Castillo Ayala", "Castillo Ayala, Alejandro"))
+        self.assertFalse(_same_name("John Taylor Smith", "Taylor, John"))
+        self.assertFalse(_same_name("Alejandro Castillo Ayala", "Castillo, Alejandro"))
+        # Nicknames still need review evidence.
+        self.assertFalse(_same_name("Michael J. McShane", "McShane, Mike"))
+
+    def test_rmp_names_keep_their_own_split(self):
+        self.assertEqual(rmp_name("Alejandro", "Castillo Ayala"), "Castillo Ayala, Alejandro")
+        self.assertEqual(rmp_name("Delbert", "Gatlin, Jr."), "Gatlin, Delbert")
+        self.assertEqual(rmp_name("", "Briers"), "Briers")
+        self.assertEqual(
+            profile_match_name("Alejandro Castillo Ayala", "Alejandro", "Castillo"),
+            ("Castillo, Alejandro", False),
+        )
+        self.assertEqual(profile_match_name("Delbert Gatlin", "Delbert", "Gatlin, Jr."),
+                         ("Gatlin, Delbert", False))
+
+
+class PrefilterTests(unittest.TestCase):
+    def test_first_name_initials(self):
+        self.assertEqual(given_initials("J. Michael Smith"), ["j", "m"])
+        self.assertIn("b", given_initials("William R. Jones"))
+        self.assertEqual(given_initials("M. E. Rister"), ["m", "e"])
+        self.assertEqual(given_initials("Hee Yeon Tak"), ["h", "y"])
+        # A middle initial is not a name the person goes by.
+        self.assertEqual(given_initials("Brian A. Anderson"), ["b"])
+        self.assertEqual(sorted(surname_tokens("Alejandro Castillo Ayala")), ["ayala", "castillo"])
+
+
+class SwappedInitialTests(unittest.TestCase):
+    def test_swapped_name_on_a_middle_initial_needs_course_reviews(self):
+        self.assertEqual(profile_match_name("Andee S. Scott", "Scott", "Socolofsky"),
+                         ("Socolofsky Scott", True))
+        self.assertTrue(swapped_needs_course("Andee S. Scott", "Socolofsky Scott"))
+        andee = Person("Andee S. Scott", frozenset({"OCEN"}))
+        base = Profile("s", "Socolofsky Scott", frozenset({"OCEN"}), frozenset({"OCEN300"}),
+                       swapped=True, needs_course=True)
+        self.assertIsNone(choose_profile(andee, "OCEN201", [base]))
+        self.assertEqual(choose_profile(andee, "OCEN300", [base]).id, "s")
+        # A nickname of the surname is not the surname.
+        self.assertIsNone(profile_match_name("Michael S. Alexander", "Alex", "Sprintson"))
+
+    def test_furth_still_matches_where_his_course_is_reviewed(self):
+        self.assertTrue(swapped_needs_course("Brett H. Furth", "HOWARD FURTH"))
+        furth = Person("Brett H. Furth", frozenset({"ANTH", "MAST"}))
+        base = Profile("f", "HOWARD FURTH", frozenset({"ANTH"}), frozenset({"ANTH210"}),
+                       swapped=True, needs_course=True)
+        self.assertEqual(choose_profile(furth, "ANTH210", [base]).id, "f")
+        self.assertIsNone(choose_profile(furth, "ANTH301", [base]))
+
+    def test_swapped_name_on_a_full_middle_name_keeps_subject_evidence(self):
+        self.assertFalse(swapped_needs_course("Mary Howard Furth", "Howard Furth"))
+        mary = Person("Mary Howard Furth", frozenset({"ANTH"}))
+        base = Profile("f", "Howard Furth", frozenset({"ANTH"}), frozenset({"ANTH210"}),
+                       swapped=True)
+        self.assertEqual(choose_profile(mary, "ANTH301", [base]).id, "f")
+
+
 class CourseCodeTests(unittest.TestCase):
     def test_parses_free_text_codes(self):
         self.assertEqual(parse_course_code("Honors AGEC-105H", VALID), ("AGEC", "105"))
         self.assertEqual(parse_course_code("bio 111", VALID), ("BIOL", "111"))
         self.assertEqual(parse_course_code("CPSC 121", VALID), ("CSCE", "121"))
+
+    def test_real_subject_is_never_aliased(self):
+        # COSC is Construction Science, not old computer science.
+        self.assertEqual(parse_course_code("COSC 222", VALID | {"COSC"}), ("COSC", "222"))
+        self.assertIsNone(parse_course_code("COSC 222", VALID))
+        self.assertEqual(course_search_key("cosc 222"), "COSC222")
 
     def test_unresolvable_codes_are_not_evidence(self):
         for raw in ["105200", "AGRICULTURE105", "XYZW101", "", None]:

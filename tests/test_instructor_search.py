@@ -76,6 +76,13 @@ class GradeTests(unittest.TestCase):
         self.assertEqual(grades["avgGpa"], 3.77)
         self.assertEqual(grades["distribution"]["A"], 34)
 
+    def test_grade_rows_of_other_people_are_not_attached(self):
+        people = group_instructors([section("John D. Smith", "MATH151", pidm=1),
+                                    section("Wei Liu", "STAT211", pidm=2)], "s", 8)
+        attach_grades(people, [gpa("SMITH D", "MATH151", 30, 2.0),
+                               gpa("LI W", "STAT211", 30, 2.0)])
+        self.assertEqual([p.grades for p in people], [None, None])
+
     def test_no_grades_outside_college_station(self):
         people = group_instructors([section("Brett H. Furth", "ANTH210", campus="Galveston")],
                                    "furth", 8)

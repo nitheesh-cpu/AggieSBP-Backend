@@ -1661,7 +1661,7 @@ async def get_course_professors_details(
         GpaDataDB,
         TermDB,
     )
-    from aggiermp.core.name_matching import professor_name_score
+    from aggiermp.core.name_matching import grade_row_matches
     from aggiermp.core.professor_identity import load_aliases, match_instructor
     from aggiermp.core.campuses import (
         TEXAS_AM_ID, university_id_for_campus, campus_from_term_description,
@@ -1751,6 +1751,14 @@ async def get_course_professors_details(
             if row.section_number not in instructor_sections[identity]:
                 instructor_sections[identity].append(row.section_number)
 
+        # Instructors whose grades the reports may hold (College Station);
+        # a grade row two of them fit belongs to neither.
+        graded_names = [
+            name
+            for name, _, campus_name in instructor_sections
+            if university_id_for_campus(campus_name) == TEXAS_AM_ID
+        ]
+
         # Step 2: Match instructors to professor profiles and get summaries
         result_professors = []
 
@@ -1764,7 +1772,6 @@ async def get_course_professors_details(
             if not matched.shown:
                 continue
             professor = matched.professor
-            swapped_names = matched.swapped_names
 
             # Merged profiles show the ratings of every merged entry.
             avg_rating = professor.avg_rating if professor else None
@@ -1871,12 +1878,8 @@ async def get_course_professors_details(
             # Match individual GPA rows by identity. Last-name-only SQL matching
             # can merge two instructors who happen to share a surname. Done
             # without a profile too: an instructor with no reviews still has
-            # official grades ("TAK H" is Hee Yeon Tak).
-            gpa_names = [instructor_name]
-            if professor:
-                gpa_names.append(swapped_names.get(
-                    professor.id, f"{professor.first_name} {professor.last_name}"
-                ))
+            # official grades ("TAK H" is Hee Yeon Tak). Only the registrar
+            # name counts: the profile's name may be a nickname or a variant.
             if university_id == TEXAS_AM_ID and course_gpa_rows is None:
                 course_gpa_rows = (
                     db.query(GpaDataDB)
@@ -1889,8 +1892,8 @@ async def get_course_professors_details(
             matched_gpa_rows = [
                 row
                 for row in (course_gpa_rows if university_id == TEXAS_AM_ID else None) or []
-                if max(professor_name_score(row.professor, name) for name in gpa_names)
-                >= 0.82
+                if grade_row_matches(row.professor, instructor_name)
+                and sum(grade_row_matches(row.professor, name) for name in graded_names) == 1
             ]
             total_students = sum(row.total_students or 0 for row in matched_gpa_rows)
 

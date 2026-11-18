@@ -12,9 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from aggiermp.core.name_matching import professor_name_score
-
-GPA_NAME_THRESHOLD = 0.82
+from aggiermp.core.name_matching import grade_row_matches
 
 
 def _like(value: str) -> str:
@@ -97,7 +95,10 @@ def attach_grades(instructors: List[Instructor], gpa_rows: Iterable[Any]) -> Non
     ``gpa_rows`` have professor ("TAK H"), dept, course_number, gpa,
     total_students and grade_a..grade_f. Grade reports exist for College
     Station only and name instructors as "LAST I", so a row counts only for
-    a course the instructor teaches and when the name fits.
+    a course the instructor teaches and when the name fits (see
+    grade_row_matches). Other instructors of the course are not known
+    here, so a row two of them would fit is not set aside as it is on the
+    course page.
     """
     by_course: Dict[str, List[Any]] = {}
     for row in gpa_rows:
@@ -109,7 +110,7 @@ def attach_grades(instructors: List[Instructor], gpa_rows: Iterable[Any]) -> Non
             row
             for code in person.courses
             for row in by_course.get(code, [])
-            if professor_name_score(row.professor, person.name) >= GPA_NAME_THRESHOLD
+            if grade_row_matches(row.professor, person.name)
         ]
         total = sum(row.total_students or 0 for row in rows)
         if not total:

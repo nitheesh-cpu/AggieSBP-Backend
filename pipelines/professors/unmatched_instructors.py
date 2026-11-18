@@ -76,6 +76,7 @@ from aggiermp.core.professor_identity import (
     load_aliases,
     match_instructor,
     profile_match_name,
+    rmp_name,
 )
 
 logger = logging.getLogger("unmatched_instructors")
@@ -249,7 +250,9 @@ def rejected_candidates(instructor: Instructor, limit: int = 8) -> list[dict[str
             if row.id in seen or row.id in candidate_ids:
                 continue
             seen.add(row.id)
-            score = professor_name_score(instructor.name, _display_name(row))
+            score = professor_name_score(
+                instructor.name, rmp_name(row.first_name, row.last_name)
+            )
             if score > 0:
                 near.append((score, {
                     "id": row.id,
@@ -273,10 +276,12 @@ def rejection_reason(row: Any, instructor: Instructor, aliases: dict[str, str]) 
             per_course[code] = match.rejected[canonical]
         elif row.id not in {c.id for c in match.pool}:
             per_course[code] = (
-                "not fetched by the name prefilter (surname initial and first initial)"
+                "not fetched by the name prefilter (surname and given-name initials)"
             )
         elif row.id not in {c.id for c in match.candidates}:
-            score = professor_name_score(instructor.name, _display_name(row))
+            score = professor_name_score(
+                instructor.name, rmp_name(row.first_name, row.last_name)
+            )
             per_course[code] = f"name check failed (score {score:.2f} < {NAME_MATCH_THRESHOLD})"
         else:
             per_course[code] = match.reason or "not chosen"

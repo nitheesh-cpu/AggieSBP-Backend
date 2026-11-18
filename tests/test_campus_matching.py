@@ -53,9 +53,10 @@ def query(all_rows=None, first=None):
     return result
 
 
-def evidence(subjects_by_id=None, people=None):
+def evidence(subjects_by_id=None, people=None, courses_by_id=None):
     """Patch the identity loaders with fixed teaching and review evidence."""
     subjects_by_id = subjects_by_id or {}
+    courses_by_id = courses_by_id or {}
 
     def load_people(db, name, pidm, dept):
         own, namesakes = (people or {}).get(pidm, (frozenset(), []))
@@ -64,7 +65,8 @@ def evidence(subjects_by_id=None, people=None):
     def load_profiles(db, candidates, aliases=None):
         return [
             Profile(c.id, f"{c.first_name} {c.last_name}",
-                    frozenset(subjects_by_id.get(c.id, ())), frozenset())
+                    frozenset(subjects_by_id.get(c.id, ())),
+                    frozenset(courses_by_id.get(c.id, ())))
             for c in candidates
         ]
 
@@ -110,7 +112,7 @@ class CampusMatchingTests(unittest.TestCase):
             university_id=TEXAS_AM_GALVESTON_ID, num_ratings=12, avg_rating=4.7, legacy_id=2924307,
         )
 
-        def run(subjects):
+        def run(subjects, courses=()):
             db = Mock()
             candidates = query([profile])
             db.query.side_effect = [
@@ -119,7 +121,7 @@ class CampusMatchingTests(unittest.TestCase):
                                        section_number="500", campus="Galveston")]),
                 candidates, query(), query(), query(),
             ]
-            patchers = evidence({"furth": subjects})
+            patchers = evidence({"furth": subjects}, courses_by_id={"furth": courses})
             for patcher in patchers:
                 patcher.start()
             try:
@@ -131,9 +133,12 @@ class CampusMatchingTests(unittest.TestCase):
             self.assertIn("furth", bound_values(filters[1]))
             return result["professors"][0]
 
-        matched = run({"ANTH"})
+        # The swapped name fits only through his middle initial, so reviews
+        # of this very course are needed.
+        matched = run({"ANTH"}, {"ANTH210"})
         self.assertEqual(matched["id"], "furth")
         self.assertEqual(matched["name"], "Brett H. Furth")
+        self.assertIsNone(run({"ANTH"}, {"ANTH301"})["id"])
         # No reviews in a subject he teaches: the swapped name alone is not enough.
         self.assertIsNone(run({"CHEM"})["id"])
 
@@ -211,6 +216,56 @@ class CampusMatchingTests(unittest.TestCase):
         self.assertEqual(professor["grades"]["totalStudents"], 44)
         self.assertEqual(professor["grades"]["avgGpa"], 3.77)
         self.assertEqual(professor["grades"]["distribution"]["A"], 34)
+
+    def grades_for(self, instructors, gpa_names):
+        gpa = [SimpleNamespace(professor=name, total_students=10, gpa=3.0, grade_a=10,
+                               grade_b=0, grade_c=0, grade_d=0, grade_f=0)
+               for name in gpa_names]
+        rows = [SimpleNamespace(instructor_name=name, instructor_pidm=i, section_number=str(500 + i),
+                                campus="College Station")
+                for i, name in enumerate(instructors)]
+        db = Mock()
+        # Term, sections, then per instructor its candidate pool (grades once).
+        db.query.side_effect = [
+            query(first=SimpleNamespace(term_desc="Spring 2027 - College Station")),
+            query(rows), query([]), query(gpa), *[query([]) for _ in instructors[1:]],
+        ]
+        professors = asyncio.run(details_endpoint()(None, "202711", "MATH151", db, None))["professors"]
+        return {p["name"]: (p["grades"] or {}).get("totalStudents") for p in professors}
+
+    def test_grade_rows_need_the_whole_surname_and_first_initial(self):
+        self.assertEqual(self.grades_for(["John D. Smith"], ["SMITH D", "SMITH J"]),
+                         {"John D. Smith": 10})
+        self.assertEqual(self.grades_for(["Wei Liu"], ["LI W"]), {"Wei Liu": None})
+        self.assertEqual(self.grades_for(["Juan Garcia-Lopez"], ["GARCIA J"]),
+                         {"Juan Garcia-Lopez": None})
+
+    def test_grade_row_two_instructors_fit_goes_to_neither(self):
+        self.assertEqual(
+            self.grades_for(["John Smith", "James Smith", "Mary Smith"],
+                            ["SMITH J", "SMITH M"]),
+            {"James Smith": None, "John Smith": None, "Mary Smith": 10},
+        )
+
+    def test_prefilter_fetches_nickname_middle_name_and_compound_surname_profiles(self):
+        for name, expected in [
+            ("William R. Jones", ["b%", "w%"]),
+            ("J. Michael Smith", ["j%", "m%"]),
+            ("Alejandro Castillo Ayala", ["%castillo%", "%ayala%"]),
+        ]:
+            candidates = query([])
+            db = Mock()
+            db.query.side_effect = [
+                query(first=SimpleNamespace(term_desc="Spring 2027 - College Station")),
+                query([SimpleNamespace(instructor_name=name, instructor_pidm=1,
+                                       section_number="500", campus="College Station")]),
+                candidates, query(),
+            ]
+            asyncio.run(details_endpoint()(None, "202711", "MATH151", db, None))
+            filters = [arg for call in candidates.filter.call_args_list for arg in call.args]
+            values = bound_values(filters[1])
+            for pattern in expected:
+                self.assertIn(pattern, values, (name, pattern))
 
     def test_sql_rejects_untrusted_columns(self):
         with self.assertRaises(ValueError):

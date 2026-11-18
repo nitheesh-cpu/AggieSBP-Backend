@@ -36,7 +36,7 @@ def section(name, pidm, term="202711", campus="College Station", dept="ENGL",
                            course_title=title, campus=campus)
 
 
-def evidence(subjects_by_id, own=frozenset(), namesakes=()):
+def evidence(subjects_by_id, own=frozenset(), namesakes=(), courses_by_id=None):
     calls = {"people": 0, "profiles": 0}
 
     def load_people(db, name, pidm, dept):
@@ -46,7 +46,8 @@ def evidence(subjects_by_id, own=frozenset(), namesakes=()):
     def load_profiles(db, candidates, aliases=None):
         calls["profiles"] += 1
         return [Profile(c.id, f"{c.first_name} {c.last_name}",
-                        frozenset(subjects_by_id.get(c.id, ())), frozenset())
+                        frozenset(subjects_by_id.get(c.id, ())),
+                        frozenset((courses_by_id or {}).get(c.id, ())))
                 for c in candidates]
 
     patchers = [
@@ -93,13 +94,13 @@ class HitFilteringTests(unittest.TestCase):
             {"legacyId": 2924307, "firstName": "FURTH", "lastName": "HOWARD", "numRatings": 12},
             {"legacyId": 1, "firstName": "Brett", "lastName": "Smith", "numRatings": 3},
             {"legacyId": 2, "firstName": "Anna", "lastName": "Furth", "numRatings": 3},
-            # Real Galveston hit (Nov 2026): close spelling, scores 0.84.
+            # Real Galveston hit (Nov 2026). Close spellings of short
+            # surnames are other families too often (Li/Liu), so no match.
             {"legacyId": 2961743, "firstName": "Brett", "lastName": "Ferth", "numRatings": 1},
         ]
         plausible, near = report.classify_hits("Brett H. Furth", hits)
-        self.assertEqual([h["legacyId"] for h in plausible], [2924307, 2961743])
+        self.assertEqual([h["legacyId"] for h in plausible], [2924307])
         self.assertTrue(plausible[0]["swapped"])
-        self.assertFalse(plausible[1]["swapped"])
         self.assertEqual([h["legacyId"] for h in near], [2])
 
     def test_fuzzy_search_noise_is_not_plausible(self):
@@ -259,7 +260,8 @@ class SharedMatcherTests(unittest.TestCase):
     def test_swapped_profile_needs_evidence_and_reports_why(self):
         furth = professor("furth", "FURTH ", "HOWARD", TEXAS_AM_GALVESTON_ID, 2924307)
         other = professor("bf", "Bob", "Fuller", TEXAS_AM_GALVESTON_ID)
-        matched, _, _ = self.run_match([furth, other], {"furth": {"ANTH"}})
+        matched, _, _ = self.run_match([furth, other], {"furth": {"ANTH"}},
+                                       courses_by_id={"furth": {"ANTH210"}})
         self.assertEqual(matched.professor.id, "furth")
         self.assertEqual(matched.swapped_names, {"furth": "HOWARD FURTH"})
         self.assertEqual([c.id for c in matched.pool], ["furth", "bf"])

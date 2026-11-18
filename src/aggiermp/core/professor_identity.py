@@ -8,6 +8,11 @@ subjects its person taught. A profile is attached only when that evidence
 points to this instructor and not to a same-name colleague. When the
 evidence cannot decide, no profile is attached: showing nothing is better
 than showing another person's reviews.
+
+Same-name colleagues (rivals) are found with a stricter name test than the
+one that finds candidate profiles (see _similar_person): a middle initial
+or a fuzzy spelling must not make "Brian A. Anderson" a rival of "Arden
+Anderson". Rivals only ever block a profile, never attach one.
 """
 
 from __future__ import annotations
@@ -20,7 +25,8 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 from aggiermp.core.name_matching import (
-    _normalize_token, parse_person_name, professor_name_score,
+    _SURNAME_PARTICLES, NICKNAME_GROUPS, ParsedName, _normalize_token,
+    name_parses, nickname_alternates, parse_person_name, professor_name_score,
 )
 from aggiermp.core.subjects import normalize_course_code, parse_course_code
 
@@ -63,14 +69,93 @@ class Profile:
     # The review site has the first and last names swapped (see
     # profile_match_name); ``name`` is then given in the corrected order.
     swapped: bool = False
+    # The swapped name fits only through an initial ("Andee S. Scott" for
+    # "Scott Socolofsky"), so only reviews of the course itself count.
+    needs_course: bool = False
+    # ``name`` in RMP's own split, "Last, First" (see rmp_name); empty when
+    # unknown. match_instructor scores instructors against this form.
+    match_name: str = ""
 
 
 def _same_name(left: str, right: str) -> bool:
-    """True when surname and first given name agree exactly (not just fuzzily)."""
-    a, b = parse_person_name(left), parse_person_name(right)
+    """True when surname and first given name agree exactly (not just fuzzily).
+
+    Every reading of a name counts (see name_parses), but the whole surname
+    must agree: "Heidi K. Vanden Brink" is exactly "Vanden Brink, Heidi",
+    while "John Taylor Smith" is not exactly "Taylor, John". Given names
+    written apart or joined ("Hee Yeon", "Heeyeon") are one name.
+    """
+    return any(
+        _same_parsed_name(a, b) for a in name_parses(left) for b in name_parses(right)
+    )
+
+
+def _same_parsed_name(a: ParsedName, b: ParsedName) -> bool:
     if "".join(a.surname) != "".join(b.surname):
         return False
-    return bool(a.given and b.given and a.given[0] == b.given[0])
+    if not a.given or not b.given:
+        return False
+    if a.given[0] == b.given[0]:
+        return True
+    joined = "".join(t for t in a.given if len(t) > 1)
+    return bool(joined) and joined == "".join(t for t in b.given if len(t) > 1)
+
+
+def _usable_given(name: ParsedName) -> tuple[str, ...]:
+    # A middle initial stands for a name only when the first given name is
+    # an initial too ("M. E. Rister"); "Brian A." is not "Arden".
+    if not name.given:
+        return ()
+    first_is_initial = len(name.given[0]) == 1
+    return tuple(
+        token
+        for i, token in enumerate(name.given)
+        if i == 0 or len(token) > 1 or first_is_initial
+    )
+
+
+def _given_names_agree(a: ParsedName, b: ParsedName) -> bool:
+    joined = "".join(t for t in a.given if len(t) > 1)
+    if joined and joined == "".join(t for t in b.given if len(t) > 1):
+        return True
+    for x in _usable_given(a):
+        for y in _usable_given(b):
+            if x == y:
+                return True
+            if len(x) == 1 or len(y) == 1:
+                if x[0] == y[0]:
+                    return True
+            elif _spelling_variant(x, y) or any(
+                # Any two names of one nickname line: Steve, Stephen, Steven.
+                x in group and y in group for group in _NICKNAMES
+            ):
+                return True
+    return False
+
+
+def _surnames_agree(a: ParsedName, b: ParsedName) -> bool:
+    if "".join(a.surname) == "".join(b.surname):
+        return True
+    # A whole part of a compound surname: "Garcia" and "Garcia-Lopez".
+    core_a = {t for t in a.surname if t not in _SURNAME_PARTICLES}
+    core_b = {t for t in b.surname if t not in _SURNAME_PARTICLES}
+    return bool(core_a & core_b)
+
+
+def _similar_person(left: str, right: str) -> bool:
+    """Could two registrar names be one person's name? Used to find rivals.
+
+    Surnames must be equal (spaces and hyphens aside) or share a whole part.
+    First given names must agree exactly, by initial when one of them is an
+    initial, as related names (Steve/Stephen/Steven), or by a one-letter
+    spelling variant (Abigail/Abigael); a middle
+    initial counts only when that person's first given name is an initial.
+    """
+    return any(
+        _surnames_agree(a, b) and _given_names_agree(a, b)
+        for a in name_parses(left)
+        for b in name_parses(right)
+    )
 
 
 def _fit(profile: Profile, person: Person) -> tuple[bool, bool, float]:
@@ -119,11 +204,7 @@ def explain_choice(
             named.append(profile)
         else:
             reasons[profile.id] = f"name score {score:.2f} is below {NAME_MATCH_THRESHOLD}"
-    rivals = [
-        person
-        for person in namesakes
-        if professor_name_score(instructor.name, person.name) >= NAME_MATCH_THRESHOLD
-    ]
+    rivals = [person for person in namesakes if _similar_person(instructor.name, person.name)]
 
     # Drop profiles a same-name colleague explains at least as well.
     remaining = []
@@ -140,12 +221,22 @@ def explain_choice(
             )
 
     def no_evidence(profile: Profile) -> str:
+        if profile.needs_course and profile.subjects & instructor.subjects:
+            return (
+                "its swapped name fits only through an initial, so it needs reviews "
+                f"for {target_course}; it has reviews for "
+                f"{_subjects_text(profile.course_codes)}"
+            )
         return (
             f"its reviews are for {_subjects_text(profile.subjects)}; the instructor "
             f"taught {_subjects_text(instructor.subjects)}"
         )
 
-    supported = [p for p in remaining if p.subjects & instructor.subjects]
+    supported = [
+        p for p in remaining
+        if p.subjects & instructor.subjects
+        and (not p.needs_course or target_course in p.course_codes)
+    ]
     if supported:
 
         def strength(profile: Profile) -> tuple[bool, bool, bool]:
@@ -204,20 +295,43 @@ def explain_choice(
     return chosen, reasons
 
 
+_RMP_SUFFIX = re.compile(r"\s*,\s*(?:jr|sr|ii|iii|iv|v)\.?\s*$", re.IGNORECASE)
+
+
+def rmp_name(first_name: Optional[str], last_name: Optional[str]) -> str:
+    """An RMP profile's name as "Last, First", keeping RMP's own split.
+
+    Re-parsing "First Last" would read "Alejandro Castillo Ayala" as surname
+    "Ayala". A trailing ", Jr." on the last name is dropped first.
+    """
+    first = (first_name or "").replace(",", " ").strip()
+    last = _RMP_SUFFIX.sub("", (last_name or "").strip()).replace(",", " ").strip()
+    if not last:
+        return first
+    return f"{last}, {first}" if first else last
+
+
+def _without_initials(name: str) -> str:
+    parsed = parse_person_name(name)
+    given = " ".join(t for t in parsed.given if len(t) > 1)
+    return f"{' '.join(parsed.surname)}, {given}"
+
+
 def profile_match_name(
     instructor_name: str, first_name: Optional[str], last_name: Optional[str]
 ) -> Optional[tuple[str, bool]]:
     """The profile's name in the order that matches the instructor, and
     whether that order is swapped; None when neither order matches.
 
-    Normally "First Last". Some review profiles have the two swapped:
-    "FURTH HOWARD" is the registrar's "Brett H. Furth". When the profile's
-    first name is exactly the instructor's surname, "Last First" is tried
-    too. Such a match is only a candidate: choose_profile still needs review
-    evidence for it (see Profile.swapped).
+    Normally RMP's own split, "Last, First" (see rmp_name). Some review
+    profiles have the two swapped: "FURTH HOWARD" is the registrar's
+    "Brett H. Furth". When the profile's first name is exactly the
+    instructor's surname, "Last First" is tried too. Such a match is only a
+    candidate: choose_profile still needs review evidence for it (see
+    Profile.swapped).
     """
     first_name, last_name = (first_name or "").strip(), (last_name or "").strip()
-    normal = f"{first_name} {last_name}"
+    normal = rmp_name(first_name, last_name)
     if professor_name_score(instructor_name, normal) >= NAME_MATCH_THRESHOLD:
         return normal, False
     surname = "".join(parse_person_name(instructor_name).surname)
@@ -230,6 +344,15 @@ def profile_match_name(
     return None
 
 
+def swapped_needs_course(instructor_name: str, swapped_name: str) -> bool:
+    """True when a swapped profile name fits the instructor only through an
+    initial: "Socolofsky Scott" fits "Andee S. Scott" by the "S." alone."""
+    return (
+        professor_name_score(_without_initials(instructor_name), swapped_name)
+        < NAME_MATCH_THRESHOLD
+    )
+
+
 def _valid_subjects(db: Any) -> frozenset[str]:
     from sqlalchemy import text
 
@@ -239,6 +362,38 @@ def _valid_subjects(db: Any) -> frozenset[str]:
     return frozenset(str(row[0]).upper().strip() for row in rows if row[0])
 
 
+def surname_tokens(instructor_name: str) -> list[str]:
+    """Every surname word of every reading of the name (see name_parses),
+    particles left out unless the surname is nothing else ("De")."""
+    tokens: dict[str, None] = {}
+    for parsed in name_parses(instructor_name):
+        core = [t for t in parsed.surname if t not in _SURNAME_PARTICLES] or list(parsed.surname)
+        tokens.update(dict.fromkeys(core))
+    return list(tokens)
+
+
+def given_initials(instructor_name: str) -> list[str]:
+    """First letters a matching profile's first name may start with.
+
+    The first given name's, a full middle name's (people who go by it:
+    "J. Michael Smith" is "Michael Smith"), their nicknames' ("Bill" for
+    William), and middle initials only when the first name is an initial.
+    """
+    given = parse_person_name(instructor_name).given
+    if not given:
+        return []
+    first_is_initial = len(given[0]) == 1
+    initials: dict[str, None] = {}
+    for i, token in enumerate(given):
+        if len(token) == 1:
+            if i == 0 or first_is_initial:
+                initials[token] = None
+            continue
+        initials[token[0]] = None
+        initials.update(dict.fromkeys(sorted(n[0] for n in nickname_alternates(token))))
+    return list(initials)
+
+
 def load_people(
     db: Any, instructor_name: str, pidm: Optional[int], subject: str
 ) -> tuple[Person, list[Person]]:
@@ -246,11 +401,9 @@ def load_people(
     from sqlalchemy import or_
     from aggiermp.database.base import SectionDB, SectionInstructorDB
 
-    surname = parse_person_name(instructor_name).surname
-    longest = max(surname, key=len) if surname else ""
-    filters = (
-        [SectionInstructorDB.instructor_name.ilike(f"%{longest}%")] if longest else []
-    )
+    # Letters only, so "O'Brien" and "Moreira-Tamayo" contain their parts.
+    letters = _letters(SectionInstructorDB.instructor_name)
+    filters = [letters.like(f"%{token}%") for token in surname_tokens(instructor_name)]
     if pidm is not None:
         filters.append(SectionInstructorDB.instructor_pidm == pidm)
     rows = (
@@ -281,8 +434,7 @@ def load_people(
     namesakes = [
         Person(names[key], frozenset(subjects[key]))
         for key in names
-        if key != own_key
-        and professor_name_score(instructor_name, names[key]) >= NAME_MATCH_THRESHOLD
+        if key != own_key and names[key] and _similar_person(instructor_name, names[key])
     ]
     return instructor, namesakes
 
@@ -346,6 +498,7 @@ def load_profiles(
     return [
         Profile(
             id=candidate.id,
+            # "First Last" for the duplicate-merge code; matching uses match_name.
             name=f"{candidate.first_name} {candidate.last_name}",
             subjects=frozenset(subjects[candidate.id]),
             course_codes=frozenset(codes[candidate.id]),
@@ -353,6 +506,7 @@ def load_profiles(
             department=str(getattr(candidate, "department", "") or ""),
             num_ratings=int(getattr(candidate, "num_ratings", 0) or 0),
             legacy_id=getattr(candidate, "legacy_id", None),
+            match_name=rmp_name(candidate.first_name, candidate.last_name),
         )
         for candidate in candidates
     ]
@@ -377,6 +531,21 @@ class InstructorMatch:
     reason: str = ""
 
 
+# Accented letters folded, and name punctuation dropped, in SQL. One
+# translate() call: characters past the end of _UNACCENTED are deleted. It is
+# much cheaper than regexp_replace on the section_instructors scan.
+_ACCENTED = "áàâäãåāéèêëēíìîïīóòôöõøōúùûüūñçýÿłđı"
+_UNACCENTED = "aaaaaaaeeeeeiiiiiooooooouuuuuncyyldi"
+_DROPPED = " '’`-.,"
+
+
+def _letters(column: Any) -> Any:
+    """SQL: the column lowercased, accents folded, spaces and punctuation dropped."""
+    from sqlalchemy import func
+
+    return func.translate(func.lower(column), _ACCENTED + _DROPPED, _UNACCENTED)
+
+
 def match_instructor(
     db: Any,
     instructor_name: str,
@@ -394,42 +563,39 @@ def match_instructor(
     results between calls for a batch job; without it every call runs the
     same queries in the same order.
     """
-    from sqlalchemy import and_, func, or_
+    from sqlalchemy import and_, or_
     from aggiermp.database.base import ProfessorDB
 
     cache = {} if cache is None else cache
     parsed = parse_person_name(instructor_name)
-    first_name = parsed.given[0] if parsed.given else ""
-    surname_tokens = list(parsed.surname)
-    if not surname_tokens:
+    if not parsed.surname:
         return InstructorMatch(shown=False, reason="the registrar name has no surname")
 
     pool_key = ("pool", instructor_name, university_id)
     if pool_key not in cache:
         # Query broad candidate pool, then score in Python for robust matching.
+        tokens = surname_tokens(instructor_name)
+        last_name, first_name = _letters(ProfessorDB.last_name), _letters(ProfessorDB.first_name)
         surname_filters = [
-            ProfessorDB.last_name.ilike(f"{token[:1]}%")
-            for token in surname_tokens
-            if token
+            last_name.like(f"{initial}%")
+            for initial in dict.fromkeys(token[:1] for token in tokens)
         ]
         # A profile whose last name only contains the surname: RMP's
         # "Dugat-Wickliff" for the registrar's "Tanya V. Wickliff".
         surname_filters += [
-            ProfessorDB.last_name.ilike(f"%{token}%")
-            for token in surname_tokens
-            if len(token) >= 3
+            last_name.like(f"%{token}%") for token in tokens if len(token) >= 3
         ]
-        name_filters = [or_(*surname_filters)] if surname_filters else []
-        if first_name:
-            name_filters.append(ProfessorDB.first_name.ilike(f"{first_name[:1]}%"))
+        name_filters = [or_(*surname_filters)]
+        initials = given_initials(instructor_name)
+        if initials:
+            name_filters.append(or_(*(first_name.like(f"{i}%") for i in initials)))
         # Also profiles with the names swapped: first_name is the surname.
-        swapped_filter = func.lower(func.trim(ProfessorDB.first_name)).in_(
-            ["".join(surname_tokens)]
-        )
+        swapped_filter = first_name == "".join(parsed.surname)
         prof_query = db.query(ProfessorDB)
         prof_query = prof_query.filter(ProfessorDB.university_id == university_id)
         prof_query = prof_query.filter(or_(and_(*name_filters), swapped_filter))
         pool = list(prof_query.all())
+        names: dict[str, str] = {}
         swapped_names: dict[str, str] = {}
         candidates = []
         for candidate in pool:
@@ -438,9 +604,12 @@ def match_instructor(
             )
             if matched:
                 candidates.append(candidate)
+                names[candidate.id] = matched[0]
                 if matched[1]:
                     swapped_names[candidate.id] = matched[0]
-        cache[pool_key] = {"pool": pool, "candidates": candidates, "swapped": swapped_names}
+        cache[pool_key] = {
+            "pool": pool, "candidates": candidates, "names": names, "swapped": swapped_names,
+        }
     entry = cache[pool_key]
     result = InstructorMatch(
         pool=entry["pool"],
@@ -458,10 +627,22 @@ def match_instructor(
         cache[people_key] = load_people(db, instructor_name, pidm, dept)
     instructor, namesakes = cache[people_key]
     if "profiles" not in entry:
+        # Score RMP's own name split; a merge's canonical row may not be a
+        # name candidate, so it brings its own.
         entry["profiles"] = [
-            replace(profile, name=result.swapped_names[profile.id], swapped=True)
+            replace(
+                profile,
+                name=result.swapped_names[profile.id],
+                swapped=True,
+                needs_course=swapped_needs_course(
+                    instructor_name, result.swapped_names[profile.id]
+                ),
+            )
             if profile.id in result.swapped_names
-            else profile
+            else replace(
+                profile,
+                name=entry["names"].get(profile.id) or profile.match_name or profile.name,
+            )
             for profile in load_profiles(db, result.candidates, aliases)
         ]
     result.profiles = entry["profiles"]
@@ -507,55 +688,10 @@ def match_instructor(
 _parsed = functools.lru_cache(maxsize=None)(parse_person_name)
 
 
+# Any two names in one nickname line are related (Larry/Lawrence, and also
+# Christina/Christine): a "nickname" variant never merges.
 _NICKNAMES: tuple[frozenset[str], ...] = tuple(
-    frozenset(group.split())
-    for group in (
-        "william bill will billy",
-        "robert bob rob bobby robbie",
-        "james jim jimmy jamie",
-        "michael mike",
-        "christopher chris",
-        "christina christine chris tina",
-        "thomas tom tommy",
-        "richard rick rich dick",
-        "joseph joe joey",
-        "daniel dan danny",
-        "david dave",
-        "stephen steven steve",
-        "matthew matt",
-        "andrew andy drew",
-        "anthony tony",
-        "edward ed eddie ted",
-        "elizabeth liz beth betsy lizzy",
-        "katherine catherine kathryn kate kathy katie cathy",
-        "jennifer jen jenny",
-        "margaret maggie peggy meg",
-        "patricia patty trish",
-        "samuel sam",
-        "benjamin ben",
-        "alexander alex",
-        "nicholas nick",
-        "jonathan jon",
-        "timothy tim",
-        "kenneth ken kenny",
-        "ronald ron",
-        "donald don",
-        "gregory greg",
-        "jeffrey jeff",
-        "lawrence larry",
-        "charles chuck charlie",
-        "susan sue",
-        "deborah debbie deb",
-        "rebecca becky",
-        "joshua josh",
-        "zachary zach zack",
-        "frederick fred",
-        "douglas doug",
-        "gerald jerry",
-        "raymond ray",
-        "phillip philip phil",
-        "jacob jake",
-    )
+    formal | nicknames for formal, nicknames in NICKNAME_GROUPS
 )
 
 _VOWELS = frozenset("aeiouy")
