@@ -18,12 +18,24 @@ def _normalize_token(value: str) -> str:
 
 
 def _tokens(value: str) -> tuple[str, ...]:
+    return tuple("".join(group) for group in _token_groups(value))
+
+
+def _token_groups(value: str) -> list[tuple[str, ...]]:
+    """Whitespace-separated words, each split into its hyphenated parts."""
     result = []
     for raw_token in re.split(r"\s+", value.strip()):
-        token = _normalize_token(raw_token)
-        if token and token not in _SUFFIXES:
-            result.append(token)
-    return tuple(result)
+        parts = tuple(p for p in (_normalize_token(x) for x in raw_token.split("-")) if p)
+        if parts and "".join(parts) not in _SUFFIXES:
+            result.append(parts)
+    return result
+
+
+def _surname_parts(groups: list[tuple[str, ...]]) -> tuple[str, ...]:
+    # A hyphenated surname keeps its parts as separate tokens: the registrar's
+    # "Moreira-Tamayo" is "Tamayo" on RMP, and "Dugat-Wickliff" is "Wickliff"
+    # in the registrar. Joined, the parts still equal the unhyphenated form.
+    return tuple(part for group in groups for part in group)
 
 
 @dataclass(frozen=True)
@@ -47,23 +59,24 @@ def parse_person_name(full_name: str) -> ParsedName:
 
     if "," in full_name:
         surname_text, given_text = full_name.split(",", 1)
-        return ParsedName(_tokens(given_text), _tokens(surname_text))
+        return ParsedName(_tokens(given_text), _surname_parts(_token_groups(surname_text)))
 
-    parts = _tokens(full_name)
+    groups = _token_groups(full_name)
+    parts = tuple("".join(group) for group in groups)
     if not parts:
         return ParsedName((), ())
     if len(parts) == 1:
-        return ParsedName((), parts)
+        return ParsedName((), _surname_parts(groups))
 
     # ANEX/GPA exports use "SURNAME [SURNAME ...] INITIAL".
     if len(parts[-1]) == 1:
-        return ParsedName((parts[-1],), parts[:-1])
+        return ParsedName((parts[-1],), _surname_parts(groups[:-1]))
 
     surname_start = len(parts) - 1
     # Keep particles with the surname, while preserving at least one given name.
     while surname_start > 1 and parts[surname_start - 1] in _SURNAME_PARTICLES:
         surname_start -= 1
-    return ParsedName(parts[:surname_start], parts[surname_start:])
+    return ParsedName(parts[:surname_start], _surname_parts(groups[surname_start:]))
 
 
 def _token_similarity(left: str, right: str) -> float:

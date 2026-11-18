@@ -9,6 +9,8 @@ This script:
 
 With --fetch-only, steps 3-4 are replaced by queueing professors in
 admin_summary_rebuilds so the admin worker rebuilds them later (no AI calls).
+A full --fetch-only run first imports professors new on RMP (see
+upsert_professors.py), so new profiles get reviews and summaries too.
 
 Optimized for processing thousands of professors efficiently.
 """
@@ -854,8 +856,14 @@ def fetch_reviews_and_queue_rebuilds(
     min_new_review_percent: float = 10.0,
     dry_run: bool = False,
     invalidate_cache: bool = True,
+    discover_professors: bool = True,
 ) -> Dict[str, Any]:
     """Nightly mode: store new RMP reviews and queue summary rebuilds.
+
+    For a full run (no ``professor_ids``), professors new on RMP at each
+    campus are imported first. Without that, a profile created after the
+    last manual upsert_professors.py run (Allison Goetz, RMP 5108901) never
+    reached the professors table, so no course page could show it.
 
     No AI provider is created or called. Reviews are fetched for professors
     whose RMP rating count changed (as in the full pipeline), stored, their
@@ -877,10 +885,26 @@ def fetch_reviews_and_queue_rebuilds(
         "professors_fetched": 0,
         "reviews_added": 0,
         "professors_queued": 0,
+        "professors_added": 0,
         "queue_unavailable": False,
         "errors": [],
     }
     try:
+        if professor_ids is None and discover_professors:
+            if dry_run:
+                print("Dry run: not importing professors new on RMP", flush=True)
+            else:
+                from pipelines.professors.campuses import get_university_ids
+                from pipelines.professors.upsert_professors import upsert_all_professors
+
+                for university_id in get_university_ids(None):
+                    imported = upsert_all_professors(university_id, session)
+                    if "error" in imported:
+                        # Review fetching for known professors still runs.
+                        results["errors"].append(
+                            f"Professor import failed for {university_id}: {imported['error']}"
+                        )
+                    results["professors_added"] += imported.get("new", 0)
         if professor_ids is None:
             professor_ids = [prof.id for prof in session.query(ProfessorDB).all()]
         results["professors_checked"] = len(professor_ids)

@@ -412,6 +412,13 @@ def match_instructor(
             for token in surname_tokens
             if token
         ]
+        # A profile whose last name only contains the surname: RMP's
+        # "Dugat-Wickliff" for the registrar's "Tanya V. Wickliff".
+        surname_filters += [
+            ProfessorDB.last_name.ilike(f"%{token}%")
+            for token in surname_tokens
+            if len(token) >= 3
+        ]
         name_filters = [or_(*surname_filters)] if surname_filters else []
         if first_name:
             name_filters.append(ProfessorDB.first_name.ilike(f"{first_name[:1]}%"))

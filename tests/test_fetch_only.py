@@ -70,6 +70,7 @@ class FetchOnlyTests(unittest.TestCase):
         queue_available=True,
         fetch_errors=(),
         percent=10.0,
+        discovery=None,
     ):
         session = FakeSession(professors, stored, summaries)
         pipeline = Mock()
@@ -80,6 +81,11 @@ class FetchOnlyTests(unittest.TestCase):
             "summary_save": patch.object(runner, "upsert_professor_summary"),
             "aliases": patch.object(runner, "load_aliases", return_value=aliases or {}),
             "counts": patch.object(runner, "fetch_rating_counts", return_value={}),
+            # A full run first imports professors new on RMP; never hit RMP here.
+            "discover": patch(
+                "pipelines.professors.upsert_professors.upsert_all_professors",
+                side_effect=discovery or (lambda uid, session: {"new": 0}),
+            ),
             "fetch": patch.object(
                 runner,
                 "get_new_reviews_for_professor",
@@ -206,6 +212,30 @@ class FetchOnlyTests(unittest.TestCase):
         m["pipeline"].assert_not_called()
         self.assertEqual(result["reviews_added"], 2)
         self.assertEqual(result["professors_queued"], 2)  # counted, not written
+
+    def test_full_run_imports_new_rmp_professors_first(self):
+        # Allison Goetz (RMP 5108901) was created after the last professor
+        # import, so no course page could show her.
+        result, mocks = self.run_fetch(
+            ["p1"], {}, {}, {},
+            discovery=lambda uid, session: {"new": 2},
+        )
+        self.assertEqual(mocks["discover"].call_count, 2)  # both campuses
+        self.assertEqual(result["professors_added"], 4)
+        self.assertEqual(result["errors"], [])
+
+    def test_professor_import_failure_is_reported_and_reviews_still_fetched(self):
+        result, mocks = self.run_fetch(
+            ["p1"], {}, {}, {},
+            discovery=lambda uid, session: {"new": 0, "error": "rmp down"},
+        )
+        self.assertEqual(len(result["errors"]), 2)
+        self.assertIn("Professor import failed", result["errors"][0])
+        self.assertEqual(result["professors_checked"], 1)
+
+    def test_dry_run_does_not_import_professors(self):
+        _, mocks = self.run_fetch(["p1"], {}, {}, {}, dry_run=True)
+        mocks["discover"].assert_not_called()
 
     def test_missing_table_warns_once_and_does_not_fail(self):
         with self.assertLogs(runner.logger, level=logging.WARNING) as logs:

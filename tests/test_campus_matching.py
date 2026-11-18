@@ -168,6 +168,30 @@ class CampusMatchingTests(unittest.TestCase):
             filters = [arg for call in candidate_query.filter.call_args_list for arg in call.args]
             self.assertTrue(any(getattr(getattr(f, "right", None), "value", None) == school for f in filters))
 
+    def test_profile_with_longer_hyphenated_surname_is_a_candidate(self):
+        # RMP "Tanya Dugat-Wickliff" teaches as "Tanya V. Wickliff"; her last
+        # name does not start with W, so the prefilter must look inside it.
+        profile = SimpleNamespace(
+            id="tw", first_name="Tanya", last_name="Dugat-Wickliff",
+            university_id=TEXAS_AM_ID, num_ratings=100, avg_rating=3.2, legacy_id=1,
+        )
+        candidates = query([profile])
+        db = Mock()
+        db.query.side_effect = [
+            query(first=SimpleNamespace(term_desc="Spring 2027 - College Station")),
+            query([SimpleNamespace(instructor_name="Tanya V. Wickliff", instructor_pidm=556672,
+                                   section_number="501", campus="College Station")]),
+            candidates, query(), query(), query(),
+        ]
+        patchers = evidence({"tw": {"ENGR"}})
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = asyncio.run(details_endpoint()(None, "202711", "ENGR216", db, None))
+        self.assertEqual(result["professors"][0]["id"], "tw")
+        filters = [arg for call in candidates.filter.call_args_list for arg in call.args]
+        self.assertIn("%wickliff%", bound_values(filters[1]))
+
     def test_instructor_without_profile_still_gets_official_grades(self):
         gpa = [SimpleNamespace(professor=name, total_students=n, gpa=g, grade_a=a,
                                grade_b=b, grade_c=0, grade_d=0, grade_f=0)

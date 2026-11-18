@@ -48,3 +48,22 @@ def test_multiple_surname_particles_preserve_given_names() -> None:
     parsed = parse_person_name("Maria Elena de la Cruz")
     assert parsed.given == ("maria", "elena")
     assert parsed.surname == ("de", "la", "cruz")
+
+
+def test_hyphenated_surname_keeps_its_parts() -> None:
+    parsed = parse_person_name("Oscar Moreira-Tamayo")
+    assert parsed.given == ("oscar",)
+    assert parsed.surname == ("moreira", "tamayo")
+    # A hyphenated given name stays one name.
+    assert parse_person_name("Chiang-Yu Wang").given == ("chiangyu",)
+
+
+def test_hyphenated_surname_matches_either_part() -> None:
+    # Registrar "Moreira-Tamayo" is "Oscar Tamayo" on RMP and "MOREIRA-TAMAYO O"
+    # in grade reports; RMP "Dugat-Wickliff" is the registrar's "Tanya V. Wickliff".
+    assert professor_name_score("Oscar Moreira-Tamayo", "Oscar Tamayo") >= 0.82
+    assert professor_name_score("Oscar Moreira-Tamayo", "Oscar Moreira") >= 0.82
+    assert professor_name_score("Oscar Moreira-Tamayo", "MOREIRA-TAMAYO O") == 1.0
+    assert professor_name_score("Tanya V. Wickliff", "Tanya Dugat-Wickliff") >= 0.82
+    # A different given name still fails.
+    assert professor_name_score("Maria Garcia-Lopez", "Mario Lopez") < 0.82
