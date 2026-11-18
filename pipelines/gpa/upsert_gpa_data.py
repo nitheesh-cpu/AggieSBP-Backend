@@ -23,7 +23,9 @@ import sys
 import tempfile
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta
+from collections.abc import Coroutine
+from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
@@ -34,6 +36,7 @@ from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 
+from aggiermp.core.gpa_progress import GpaProgress
 from aggiermp.database.base import GpaDataDB, get_session
 from pipelines.gpa.anex_scraping import (
     DEFAULT_REQUEST_INTERVAL,
@@ -258,9 +261,12 @@ class GaveUp(Exception):
 class BlockHandler:
     """Waits out anex.us blocks with growing cooldowns and slows the pacer."""
 
-    def __init__(self, pacer: RequestPacer, cooldown_minutes: float):
+    def __init__(
+        self, pacer: RequestPacer, cooldown_minutes: float, progress: GpaProgress | None = None
+    ):
         self.pacer = pacer
         self.base_cooldown = cooldown_minutes * 60
+        self.progress = progress
         self.consecutive = 0
         self.total = 0
 
@@ -281,14 +287,27 @@ class BlockHandler:
             )
             cooldown = max(cooldown, response.get("retry_after") or 0)
             self.pacer.slow_down()
-            resume_at = (datetime.now() + timedelta(seconds=cooldown)).strftime("%H:%M")
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=cooldown)
+            resume_at = retry_at.astimezone().strftime("%H:%M")
             print(
                 f"[BLOCKED] {dept} {number}: {response['error']}. Cooling down "
                 f"{cooldown / 60:.0f} min (until ~{resume_at}), then retrying at "
                 f"{self.pacer.interval:.1f}s between requests.",
                 flush=True,
             )
-            await asyncio.sleep(cooldown)
+            if self.progress:
+                previous_status = self.progress.run.status
+                self.progress.run.status = "cooldown"
+                self.progress.run.retry_at = retry_at
+                self.progress.publish()
+                try:
+                    await asyncio.sleep(cooldown)
+                finally:
+                    self.progress.run.status = previous_status
+                    self.progress.run.retry_at = None
+                    self.progress.publish()
+            else:
+                await asyncio.sleep(cooldown)
 
 
 async def main_async(
@@ -297,13 +316,14 @@ async def main_async(
     request_interval: float,
     cooldown_minutes: float,
     checkpoint: Optional[Path],
+    progress: GpaProgress | None = None,
 ) -> None:
     print("GPA Data Upsert" + (" (FULL)" if full else ""), flush=True)
     start_time = datetime.now()
 
     completed = load_checkpoint(checkpoint)
     pacer = RequestPacer(request_interval)
-    blocks = BlockHandler(pacer, cooldown_minutes)
+    blocks = BlockHandler(pacer, cooldown_minutes, progress)
 
     async with make_http_session() as http:
         if full:
@@ -355,6 +375,9 @@ async def fetch_and_upsert(
         )
     finally:
         # Also after a stop or error: batches already written are live.
+        if blocks.progress:
+            blocks.progress.run.status = "finalizing"
+            blocks.progress.publish()
         invalidate_gpa_caches(touched)
 
 
@@ -370,6 +393,11 @@ async def _fetch_and_upsert(
 ) -> None:
     request_interval = blocks.pacer.interval
     to_fetch = [c for c in courses if c not in completed]
+    progress = blocks.progress
+    if progress:
+        progress.run.status = "fetching"
+        progress.run.total_courses = len(to_fetch)
+        progress.publish()
     print(
         f"[INFO] {len(to_fetch)} courses to fetch ({len(courses) - len(to_fetch)} already "
         f"done in checkpoint), ~{len(to_fetch) * request_interval * 1.25 / 3600:.1f}h "
@@ -411,6 +439,9 @@ async def _fetch_and_upsert(
                 print(f"[ERROR] {dept} {number}: {exc}", flush=True)
             else:
                 finished.add(course)
+            if progress:
+                progress.run.attempted_courses += 1
+                progress.run.failed_courses = len(failed)
 
         # Save what this batch got before stopping or moving on
         if records:
@@ -420,12 +451,17 @@ async def _fetch_and_upsert(
         if checkpoint is not None and finished:
             save_checkpoint(checkpoint, completed)
         processed += len(finished)
+        attempted = processed + len(failed)
+        if progress:
+            progress.run.records_written = written
+            progress.publish()
 
         elapsed = time.monotonic() - fetch_start
-        rate = processed / elapsed if elapsed else 0
-        eta = (len(to_fetch) - processed) / rate / 3600 if rate else 0
+        rate = attempted / elapsed if elapsed else 0
+        eta = (len(to_fetch) - attempted) / rate / 3600 if rate else 0
         print(
-            f"[INFO] {processed}/{len(to_fetch)} courses, {written} records upserted, "
+            f"[INFO] {attempted}/{len(to_fetch)} courses attempted ({len(failed)} failed), "
+            f"{written} records upserted, "
             f"~{eta:.1f}h left",
             flush=True,
         )
@@ -446,6 +482,30 @@ async def _fetch_and_upsert(
         print(f"[WARNING] {len(failed)} courses failed and will be retried next run:")
         for line in failed[:20]:
             print(f"    {line}")
+
+
+async def run_with_progress(
+    job: Coroutine[Any, Any, None], progress: GpaProgress
+) -> None:
+    progress.publish()
+    heartbeat = asyncio.create_task(progress.heartbeat())
+    try:
+        await job
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        progress.run.status = "interrupted"
+        raise
+    except (Exception, SystemExit):
+        progress.run.status = "failed"
+        raise
+    else:
+        progress.run.status = (
+            "completed_with_errors" if progress.run.failed_courses else "succeeded"
+        )
+    finally:
+        heartbeat.cancel()
+        progress.publish()
+        with suppress(asyncio.CancelledError):
+            await heartbeat
 
 
 def main() -> None:
@@ -482,6 +542,11 @@ def main() -> None:
         type=Path,
         help="Save/resume progress in this file. Use a new file for each fresh run.",
     )
+    parser.add_argument(
+        "--report-progress",
+        action="store_true",
+        help="Publish this run's progress to the admin dashboard",
+    )
     args = parser.parse_args()
     for name in ("request_interval", "cooldown"):
         value = getattr(args, name)
@@ -491,16 +556,17 @@ def main() -> None:
         parser.error("--include-no-history has no effect with --full")
     if args.checkpoint is not None and not args.checkpoint.parent.is_dir():
         parser.error("--checkpoint must be in an existing directory")
+    progress = GpaProgress() if args.report_progress else None
+    job = main_async(
+        args.full,
+        args.include_no_history,
+        args.request_interval,
+        args.cooldown,
+        args.checkpoint,
+        progress,
+    )
     try:
-        asyncio.run(
-            main_async(
-                args.full,
-                args.include_no_history,
-                args.request_interval,
-                args.cooldown,
-                args.checkpoint,
-            )
-        )
+        asyncio.run(run_with_progress(job, progress) if progress else job)
     except KeyboardInterrupt:
         print("\n[INFO] Operation interrupted by user")
         raise SystemExit(130) from None

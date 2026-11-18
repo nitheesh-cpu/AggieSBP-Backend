@@ -38,6 +38,40 @@ the newest stored professor review. A dataset with no recorded date returns
 `null`. Results are cached for five minutes and probe failures return HTTP 503
 for up to 30 seconds before retrying.
 
+## GPA upsert
+
+On the backend VM, install `tmux` and replace the existing GPA entry in
+`opc`'s crontab with this line. Keep the PATH that currently finds `cronitor`
+and make sure it also finds `tmux`.
+
+```cron
+0 0 1,15 * * /bin/bash /home/opc/backend/pipelines/gpa/run_in_tmux.sh
+```
+
+The launcher starts a detached session named `gpa` and runs Cronitor monitor
+`PpJGqD` around the Python command inside it. As `opc`, attach with
+`tmux attach -t =gpa` and detach with Ctrl+B, then D. The session closes when
+the command exits. tmux rejects a launch while that session already exists.
+Wait for any run started by the old crontab command to finish before starting
+one with the launcher.
+
+For a manual run, use
+`/bin/bash /home/opc/backend/pipelines/gpa/run_in_tmux.sh`. The launcher
+forwards GPA options such as `--full` and `--checkpoint /absolute/path.json`.
+
+After deploying the backend and frontend, Admin → Operations → GPA upsert
+shows courses attempted, records upserted, failures and cooldown retry times.
+The page refreshes every 30 seconds while visible. The authenticated
+`GET /admin/operations/gpa` endpoint reads the latest snapshot from
+`data/gpa-upsert.json` under the backend checkout (or the directory configured
+by `DATA_DIR`). Run the API and importer as `opc` on the same VM so both can
+access the private snapshot. If you set `DATA_DIR`, use the same absolute
+directory for the API and the importer.
+A run with no heartbeat for five minutes is shown as stale. The final
+snapshot stays available after the tmux session closes. Direct Python runs
+can opt in with `--report-progress`; use the tmux launcher for scheduled
+and manual runs on the VM so their progress updates cannot overlap.
+
 Local isolated verification (does not load the live-database pytest fixtures):
 
 ```sh
