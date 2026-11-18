@@ -257,19 +257,21 @@ class SharedMatcherTests(unittest.TestCase):
                 patcher.stop()
         return result, calls, db
 
-    def test_swapped_profile_needs_evidence_and_reports_why(self):
+    def test_swapped_initial_profile_is_never_picked_and_reports_why(self):
         furth = professor("furth", "FURTH ", "HOWARD", TEXAS_AM_GALVESTON_ID, 2924307)
         other = professor("bf", "Bob", "Fuller", TEXAS_AM_GALVESTON_ID)
-        matched, _, _ = self.run_match([furth, other], {"furth": {"ANTH"}},
-                                       courses_by_id={"furth": {"ANTH210"}})
-        self.assertEqual(matched.professor.id, "furth")
-        self.assertEqual(matched.swapped_names, {"furth": "HOWARD FURTH"})
-        self.assertEqual([c.id for c in matched.pool], ["furth", "bf"])
+        # Even with reviews of the course: the name fits only through "H.".
+        withheld, _, _ = self.run_match([furth, other], {"furth": {"ANTH"}},
+                                        courses_by_id={"furth": {"ANTH210"}})
+        self.assertIsNone(withheld.professor)
+        self.assertEqual(withheld.swapped_names, {"furth": "HOWARD FURTH"})
+        self.assertEqual([c.id for c in withheld.pool], ["furth", "bf"])
+        self.assertIn("middle initial", withheld.rejected["furth"])
+        self.assertIn("ANTH210", withheld.rejected["furth"])
 
         missed, _, _ = self.run_match([furth, other], {"furth": {"CHEM"}})
         self.assertIsNone(missed.professor)
-        self.assertIn("swapped RMP name needs review evidence", missed.rejected["furth"])
-        self.assertIn("reviews are for CHEM", missed.rejected["furth"])
+        self.assertIn("proposed for review", missed.rejected["furth"])
         self.assertTrue(missed.reason)
 
         instructor = report.Instructor("Brett H. Furth", 3, "Galveston", TEXAS_AM_GALVESTON_ID)

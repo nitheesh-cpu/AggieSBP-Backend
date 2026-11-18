@@ -20,9 +20,11 @@ DB=(-h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DA
 psql "${DB[@]}" -f $M/002_professor_aliases.sql     # skip if already applied; re-running is harmless
 psql "${DB[@]}" -f $M/003_push_notifications.sql
 psql "${DB[@]}" -f $M/004_admin_jobs.sql            # needs 002; first run marks existing reviewed merges for one summary rebuild
+psql "${DB[@]}" -f $M/005_instructor_links.sql      # instructor <-> RMP profile links reviewed in /admin
 ```
 
-Re-running 004 does not mark merges as pending again. No AI calls run during migration.
+Re-running 004 does not mark merges as pending again. No AI calls run during migration. Until 005 is applied the
+course pages behave as before and `/admin/instructor-links` answers 409.
 
 ## 3. `.env` additions (`/home/opc/backend/.env`)
 
@@ -76,6 +78,32 @@ Fetches new RateMyProfessors reviews (only for professors whose rating count cha
 
 It does not take the summary lock, so it can overlap a worker rebuild safely: a review arriving mid-rebuild bumps the queue revision and the professor stays pending.
 
+### Monthly instructor link proposals
+
+Runs the unmatched-instructors report for the current terms, searches RateMyProfessors for instructors whose course
+cards show no profile (throttled, about 1.5 s per new name, cached in `rmp_search_cache.json`), and stores every
+candidate the matcher would only attach on an assumption (middle initial, swapped name, fuzzy RMP hit) as a proposal
+in `instructor_profile_links`. Review them in the admin UI's instructor links page: confirm a profile, mark "no RMP
+profile", or reject candidates; the course pages update right away. Confirmed and rejected pairs are never proposed
+again; new candidates for an instructor you already decided show up under Conflicts. Needs migration 005 (without it
+the report is written and the run exits 1). Without `--write-proposals` the report writes nothing to the database.
+
+First run by hand (it fills the search cache, so it takes a while):
+
+```sh
+mkdir -p /home/opc/reports
+.venv/bin/python pipelines/professors/unmatched_instructors.py --rmp \
+    --rmp-cache /home/opc/reports/rmp_search_cache.json --write-proposals \
+    --out-html /home/opc/reports/unmatched.html --out-csv /home/opc/reports/unmatched.csv
+```
+
+It prints how many proposals were added, refreshed and removed. Then create the "instructor link proposals" monitor
+(monthly) in Cronitor, add its key to `CRONITOR_MONITOR_KEYS`, and `crontab -e`:
+
+```cron
+0 4 1 * * cronitor exec <KEY> /home/opc/backend/.venv/bin/python /home/opc/backend/pipelines/professors/unmatched_instructors.py --rmp --rmp-cache /home/opc/reports/rmp_search_cache.json --write-proposals --out-html /home/opc/reports/unmatched.html
+```
+
 Existing cron jobs keep their lines; the scheduled summary runner shares a PostgreSQL lock with the worker, so it needs the updated code from step 1 (nothing to change in crontab).
 
 ## 7. Vercel (website project, then redeploy)
@@ -100,6 +128,7 @@ Nothing needs clearing by hand. Each job clears what it changed, in the API's Re
 | Trigger | Clears |
 | --- | --- |
 | Merge confirmed or undone (admin page or `merge_duplicates.py`) | both professors, the courses they teach, professor/course lists |
+| Instructor link confirmed, rejected, "no profile" or undone (admin page) | the instructor's courses (course pages and section professor lists) |
 | Summary rebuild (admin worker or the cron summary runner) | that professor and its merged entries, their courses, lists |
 | GPA upsert | courses with new grade data, and professor pages (they show grades) |
 | Course catalog upsert | every upserted course and all course pages |
@@ -120,6 +149,8 @@ curl -s -H "X-Admin-Key: $KEY" $API/admin/operations/monitors | head -c 600     
 curl -s -X POST -H "X-Admin-Key: $KEY" -H 'Content-Type: application/json' -d '{"all":true}' $API/admin/cache/clear
                                                                                  # revalidation "ok" (or "skipped" if unset)
 .venv/bin/python pipelines/professors/merge_duplicates.py --propose              # one manual run, then check the Cronitor monitor
+curl -s -H "X-Admin-Key: $KEY" "$API/admin/instructor-links?tab=proposed&limit=1" | head -c 600
+                                                                                 # counts per tab (409 = migration 005 missing)
 ```
 
 Then open `/admin/summaries`, rebuild one professor, and confirm the job reaches `succeeded` in `/admin/jobs` and the

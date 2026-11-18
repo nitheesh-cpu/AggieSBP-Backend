@@ -265,18 +265,27 @@ class SwappedInitialTests(unittest.TestCase):
         andee = Person("Andee S. Scott", frozenset({"OCEN"}))
         base = Profile("s", "Socolofsky Scott", frozenset({"OCEN"}), frozenset({"OCEN300"}),
                        swapped=True, needs_course=True)
+        # Never matched automatically, even with reviews of the course.
         self.assertIsNone(choose_profile(andee, "OCEN201", [base]))
-        self.assertEqual(choose_profile(andee, "OCEN300", [base]).id, "s")
+        self.assertIsNone(choose_profile(andee, "OCEN300", [base]))
         # A nickname of the surname is not the surname.
         self.assertIsNone(profile_match_name("Michael S. Alexander", "Alex", "Sprintson"))
 
-    def test_furth_still_matches_where_his_course_is_reviewed(self):
+    def test_furth_is_never_matched_automatically(self):
+        # "FURTH HOWARD" fits Brett H. Furth only through the "H.": the
+        # unmatched-instructors report proposes it for a person to confirm.
         self.assertTrue(swapped_needs_course("Brett H. Furth", "HOWARD FURTH"))
         furth = Person("Brett H. Furth", frozenset({"ANTH", "MAST"}))
         base = Profile("f", "HOWARD FURTH", frozenset({"ANTH"}), frozenset({"ANTH210"}),
                        swapped=True, needs_course=True)
-        self.assertEqual(choose_profile(furth, "ANTH210", [base]).id, "f")
-        self.assertIsNone(choose_profile(furth, "ANTH301", [base]))
+        for course in ("ANTH210", "ANTH301"):
+            chosen, reasons = explain_choice(furth, course, [base])
+            self.assertIsNone(chosen)
+            self.assertIn("middle initial", reasons["f"])
+            self.assertIn("proposed for review", reasons["f"])
+        # It does not block a profile that has evidence either.
+        plain = Profile("p", "Brett Furth", frozenset({"ANTH"}), frozenset({"ANTH210"}))
+        self.assertEqual(choose_profile(furth, "ANTH210", [base, plain]).id, "p")
 
     def test_swapped_name_on_a_full_middle_name_keeps_subject_evidence(self):
         self.assertFalse(swapped_needs_course("Mary Howard Furth", "Howard Furth"))

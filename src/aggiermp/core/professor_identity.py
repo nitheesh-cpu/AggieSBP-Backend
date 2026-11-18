@@ -29,6 +29,7 @@ from aggiermp.core.name_matching import (
     name_parses, nickname_alternates, parse_person_name, professor_name_score,
 )
 from aggiermp.core.subjects import current_subject, normalize_course_code, parse_course_code
+from aggiermp.core.instructor_links import LoadedLinks, instructor_key
 
 NAME_MATCH_THRESHOLD = 0.82
 
@@ -69,8 +70,9 @@ class Profile:
     # The review site has the first and last names swapped (see
     # profile_match_name); ``name`` is then given in the corrected order.
     swapped: bool = False
-    # The swapped name fits only through an initial ("Andee S. Scott" for
-    # "Scott Socolofsky"), so only reviews of the course itself count.
+    # The swapped name fits only through an initial ("Brett H. Furth" for
+    # "FURTH HOWARD"): an assumption, so the matcher never picks it. The
+    # unmatched-instructors report proposes it for a person to confirm.
     needs_course: bool = False
     # ``name`` in RMP's own split, "Last, First" (see rmp_name); empty when
     # unknown. match_instructor scores instructors against this form.
@@ -227,11 +229,11 @@ def explain_choice(
             )
 
     def no_evidence(profile: Profile) -> str:
-        if profile.needs_course and profile.subjects & instructor.subjects:
+        if profile.needs_course:
             return (
-                "its swapped name fits only through an initial, so it needs reviews "
-                f"for {target_course}; it has reviews for "
-                f"{_subjects_text(profile.course_codes)}"
+                "its swapped RMP name fits only through a middle initial, which is an "
+                "assumption, so it is never matched automatically (it is proposed for "
+                f"review instead); it has reviews for {_subjects_text(profile.course_codes)}"
             )
         return (
             f"its reviews are for {_subjects_text(profile.subjects)}; the instructor "
@@ -239,9 +241,7 @@ def explain_choice(
         )
 
     supported = [
-        p for p in remaining
-        if p.subjects & instructor.subjects
-        and (not p.needs_course or target_course in p.course_codes)
+        p for p in remaining if p.subjects & instructor.subjects and not p.needs_course
     ]
     if supported:
 
@@ -258,7 +258,9 @@ def explain_choice(
         for profile in remaining:
             if profile is chosen:
                 continue
-            if profile not in supported:
+            if profile.needs_course:
+                reasons[profile.id] = no_evidence(profile)
+            elif profile not in supported:
                 reasons[profile.id] = (
                     no_evidence(profile) + "; another profile has reviews in a subject they taught"
                 )
@@ -286,6 +288,9 @@ def explain_choice(
         if profile is chosen:
             continue
         why = no_evidence(profile)
+        if profile.needs_course:
+            reasons[profile.id] = why
+            continue
         if not name_alone:
             why += "; at another campus's RMP school the name alone is not enough"
         elif rivals:
@@ -336,7 +341,8 @@ def profile_match_name(
     "Brett H. Furth". When the profile's first name is exactly the
     instructor's surname, "Last First" is tried too. Such a match is only a
     candidate: choose_profile still needs review evidence for it (see
-    Profile.swapped).
+    Profile.swapped), and never picks it when it fits only through an
+    initial (see swapped_needs_course).
     """
     first_name, last_name = (first_name or "").strip(), (last_name or "").strip()
     normal = rmp_name(first_name, last_name)
@@ -354,7 +360,8 @@ def profile_match_name(
 
 def swapped_needs_course(instructor_name: str, swapped_name: str) -> bool:
     """True when a swapped profile name fits the instructor only through an
-    initial: "Socolofsky Scott" fits "Andee S. Scott" by the "S." alone."""
+    initial: "Socolofsky Scott" fits "Andee S. Scott" by the "S." alone.
+    Such a profile is never matched automatically (see Profile.needs_course)."""
     return (
         professor_name_score(_without_initials(instructor_name), swapped_name)
         < NAME_MATCH_THRESHOLD
@@ -564,13 +571,16 @@ def match_instructor(
     aliases: Optional[dict[str, str]] = None,
     cache: Optional[dict[Any, Any]] = None,
     name_alone: bool = True,
+    rejected_ids: frozenset[str] = frozenset(),
 ) -> InstructorMatch:
     """Find the profile a course page shows for an instructor.
 
     Used by the course professors endpoint and the unmatched-instructors
     report, so both decide the same way. ``cache`` (optional) keeps query
     results between calls for a batch job; without it every call runs the
-    same queries in the same order.
+    same queries in the same order. ``rejected_ids`` are profiles a person
+    turned down for this instructor (instructor_links): they are removed
+    from the candidates before choosing.
     """
     from sqlalchemy import and_, or_
     from aggiermp.database.base import ProfessorDB
@@ -620,13 +630,23 @@ def match_instructor(
             "pool": pool, "candidates": candidates, "names": names, "swapped": swapped_names,
         }
     entry = cache[pool_key]
+    # The pool is shared by everyone with this name; rejections are per person.
+    turned_down = set(rejected_ids)
+    turned_down |= {(aliases or {}).get(pid, pid) for pid in rejected_ids}
     result = InstructorMatch(
         pool=entry["pool"],
-        candidates=entry["candidates"],
+        candidates=[
+            c for c in entry["candidates"]
+            if c.id not in turned_down and (aliases or {}).get(c.id, c.id) not in turned_down
+        ] if turned_down else entry["candidates"],
         swapped_names=entry["swapped"],
     )
     if not result.candidates:
-        result.reason = "no profile at this school has a matching name"
+        result.reason = (
+            "every name candidate was rejected in the admin console"
+            if entry["candidates"]
+            else "no profile at this school has a matching name"
+        )
         return result
 
     # A name match is not an identity match: check whose teaching history
@@ -652,9 +672,13 @@ def match_instructor(
                 profile,
                 name=entry["names"].get(profile.id) or profile.match_name or profile.name,
             )
-            for profile in load_profiles(db, result.candidates, aliases)
+            for profile in load_profiles(db, entry["candidates"], aliases)
         ]
-    result.profiles = entry["profiles"]
+    result.profiles = (
+        [p for p in entry["profiles"] if p.id not in turned_down]
+        if turned_down
+        else entry["profiles"]
+    )
     chosen, result.rejected = explain_choice(
         instructor, course_code, result.profiles, namesakes, name_alone
     )
@@ -671,6 +695,39 @@ def match_instructor(
     return result
 
 
+def _decided_match(
+    db: Any,
+    instructor_name: str,
+    pidm: Optional[int],
+    aliases: Optional[dict[str, str]],
+    cache: Optional[dict[Any, Any]],
+    links: "LoadedLinks",
+) -> Optional[InstructorMatch]:
+    """The match a confirmed decision dictates, or None to run the matcher.
+
+    A confirmed link whose profile no longer exists falls back to the
+    matcher (the admin console lists it under Conflicts).
+    """
+    from aggiermp.database.base import ProfessorDB
+
+    if not parse_person_name(instructor_name).surname:
+        return InstructorMatch(shown=False, reason="the registrar name has no surname")
+    key = instructor_key(instructor_name, pidm)
+    if key in links.no_profile:
+        return InstructorMatch(reason="marked in the admin console as having no RMP profile")
+    professor_id = links.confirmed.get(key)
+    if not professor_id:
+        return None
+    professor_id = (aliases or {}).get(professor_id, professor_id)
+    cache = {} if cache is None else cache
+    row_key = ("row", professor_id)
+    if row_key not in cache:
+        cache[row_key] = db.get(ProfessorDB, professor_id)
+    if cache[row_key] is None:
+        return None
+    return InstructorMatch(professor=cache[row_key])
+
+
 def match_instructor_any_campus(
     db: Any,
     instructor_name: str,
@@ -680,6 +737,7 @@ def match_instructor_any_campus(
     course_code: str,
     aliases: Optional[dict[str, str]] = None,
     cache: Optional[dict[Any, Any]] = None,
+    links: Optional["LoadedLinks"] = None,
 ) -> InstructorMatch:
     """match_instructor at the campus's RMP school, then at College Station's.
 
@@ -687,19 +745,31 @@ def match_instructor_any_campus(
     Bryan, partner colleges) have university_id None, and some Galveston
     faculty are reviewed under College Station. Their profile is found at
     College Station, but only on review evidence, never on the name alone.
+
+    ``links`` (load_instructor_links, loaded once per request) are a
+    person's decisions: a confirmed link wins, a confirmed "no profile"
+    shows none, and rejected profiles are never picked.
     """
     from aggiermp.core.campuses import TEXAS_AM_ID
+
+    rejected_ids: frozenset[str] = frozenset()
+    if links:
+        decided = _decided_match(db, instructor_name, pidm, aliases, cache, links)
+        if decided is not None:
+            return decided
+        rejected_ids = links.rejected_ids(instructor_key(instructor_name, pidm))
 
     primary = None
     if university_id is not None:
         primary = match_instructor(
-            db, instructor_name, pidm, university_id, dept, course_code, aliases, cache
+            db, instructor_name, pidm, university_id, dept, course_code, aliases, cache,
+            rejected_ids=rejected_ids,
         )
         if primary.professor is not None or not primary.shown or university_id == TEXAS_AM_ID:
             return primary
     fallback = match_instructor(
         db, instructor_name, pidm, TEXAS_AM_ID, dept, course_code, aliases, cache,
-        name_alone=False,
+        name_alone=False, rejected_ids=rejected_ids,
     )
     if fallback.professor is not None or primary is None:
         return fallback

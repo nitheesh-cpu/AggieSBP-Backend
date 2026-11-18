@@ -133,13 +133,13 @@ class CampusMatchingTests(unittest.TestCase):
             self.assertIn("furth", bound_values(filters[1]))
             return result["professors"][0]
 
-        # The swapped name fits only through his middle initial, so reviews
-        # of this very course are needed.
-        matched = run({"ANTH"}, {"ANTH210"})
-        self.assertEqual(matched["id"], "furth")
-        self.assertEqual(matched["name"], "Brett H. Furth")
+        # The swapped name fits only through his middle initial: an
+        # assumption, so it is never matched automatically, not even with
+        # reviews of this very course (the report proposes it instead).
+        unmatched = run({"ANTH"}, {"ANTH210"})
+        self.assertIsNone(unmatched["id"])
+        self.assertEqual(unmatched["name"], "Brett H. Furth")
         self.assertIsNone(run({"ANTH"}, {"ANTH301"})["id"])
-        # No reviews in a subject he teaches: the swapped name alone is not enough.
         self.assertIsNone(run({"CHEM"})["id"])
 
     def test_campus_mapping_is_explicit_and_unknown_is_not_college_station(self):
