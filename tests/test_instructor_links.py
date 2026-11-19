@@ -23,7 +23,7 @@ from aggiermp.core.admin_auth import require_admin_key
 from aggiermp.core.campuses import TEXAS_AM_GALVESTON_ID, TEXAS_AM_ID
 from aggiermp.core.instructor_links import (
     LinkError, LinkRow, LoadedLinks, Proposal, build_instructors, instructor_key,
-    load_instructor_links, plan_link, plan_no_profile, plan_proposals, plan_reject,
+    load_instructor_links, plan_links, plan_no_profile, plan_proposals, plan_reject,
     plan_undo, rmp_search_url, select_tab,
 )
 from aggiermp.core.professor_identity import Person, Profile, match_instructor_any_campus
@@ -59,7 +59,8 @@ def evidence(subjects_by_id, courses_by_id=None):
     def load_profiles(db, candidates, aliases=None):
         return [Profile(c.id, f"{c.first_name} {c.last_name}",
                         frozenset(subjects_by_id.get(c.id, ())),
-                        frozenset((courses_by_id or {}).get(c.id, ())))
+                        frozenset((courses_by_id or {}).get(c.id, ())),
+                        num_ratings=getattr(c, "num_ratings", 0))
                 for c in candidates]
 
     return [
@@ -103,12 +104,12 @@ class LoadLinksTests(unittest.TestCase):
         exists.scalar.return_value = "instructor_profile_links"
         rows.fetchall.return_value = [
             ("pidm:1", "a", "rejected"), ("pidm:1", "b", "confirmed"),
-            ("pidm:2", None, "confirmed"), ("pidm:3", "c", "confirmed"),
-            ("pidm:3", "d", "confirmed"),  # latest decision wins
+            ("pidm:2", None, "confirmed"), ("pidm:3", "d", "confirmed"),
+            ("pidm:3", "c", "confirmed"),
         ]
         db.execute.side_effect = [exists, rows]
         links = load_instructor_links(db)
-        self.assertEqual(links.confirmed, {"pidm:1": "b", "pidm:3": "d"})
+        self.assertEqual(links.confirmed, {"pidm:1": ["b"], "pidm:3": ["d", "c"]})
         self.assertEqual(links.no_profile, {"pidm:2"})
         self.assertEqual(links.rejected_ids("pidm:1"), {"a"})
         self.assertEqual(links.rejected_only().confirmed, {})
@@ -129,17 +130,37 @@ class MatcherLinkTests(unittest.TestCase):
         gwan = professor("gwan", "Gwan", "Choi", legacy_id=2229614)
         db = Mock()
         db.get.return_value = gwan
-        links = LoadedLinks(confirmed={"pidm:7": "gwan"})
+        links = LoadedLinks(confirmed={"pidm:7": ["gwan"]})
         result = match_instructor_any_campus(db, "Seong G. Choi", 7, TEXAS_AM_ID, "ECEN",
                                              "ECEN214", {}, links=links)
         self.assertIs(result.professor, gwan)
         db.query.assert_not_called()
         self.assertEqual(db.get.call_args.args[1], "gwan")
 
+    def test_multiple_confirmed_links_prefer_course_evidence_then_rating_count(self):
+        started(self, evidence({}, {"course": {"ECEN214"}}))
+        more_ratings = professor("popular", "Gwan", "Choi", num_ratings=40)
+        course_profile = professor("course", "Gwan", "Choi", num_ratings=2)
+        db = Mock()
+        rows = {p.id: p for p in (more_ratings, course_profile)}
+        db.get.side_effect = lambda model, pid: rows.get(pid)
+        links = LoadedLinks(confirmed={"pidm:7": ["course", "popular", "gone", "alias"]})
+        cache = {}
+
+        def match(course):
+            return match_instructor_any_campus(
+                db, "Seong G. Choi", 7, TEXAS_AM_ID, "ECEN", course,
+                {"alias": "course"}, cache, links,
+            ).professor
+
+        self.assertIs(match("ECEN 214"), course_profile)
+        self.assertIs(match("ECEN248"), more_ratings)
+        self.assertEqual(db.get.call_count, 3)
+
     def test_confirmed_link_to_a_merged_alias_shows_the_canonical_row(self):
         db = Mock()
         db.get.return_value = professor("canon", "Gwan", "Choi")
-        links = LoadedLinks(confirmed={"pidm:7": "alias"})
+        links = LoadedLinks(confirmed={"pidm:7": ["alias"]})
         result = match_instructor_any_campus(db, "Seong G. Choi", 7, TEXAS_AM_ID, "ECEN",
                                              "ECEN214", {"alias": "canon"}, links=links)
         self.assertEqual(result.professor.id, "canon")
@@ -149,7 +170,7 @@ class MatcherLinkTests(unittest.TestCase):
         db = Mock()
         db.get.return_value = None
         db.query.side_effect = [query([professor("yu", "Yu", "Zhang")])]
-        links = LoadedLinks(confirmed={"pidm:7": "gone"})
+        links = LoadedLinks(confirmed={"pidm:7": ["gone"]})
         result = match_instructor_any_campus(db, "Yu Zhang", 7, TEXAS_AM_ID, "CSCE",
                                              "CSCE411", {}, links=links)
         self.assertEqual(result.professor.id, "yu")
@@ -212,7 +233,7 @@ class EndpointLinkTests(unittest.TestCase):
                                             section_number="501", campus="College Station")]),
             endpoint_query(), endpoint_query(), endpoint_query(), endpoint_query(),
         ]
-        links = LoadedLinks(confirmed={"pidm:7": "gwan"})
+        links = LoadedLinks(confirmed={"pidm:7": ["gwan"]})
         with patch.object(links_module, "load_instructor_links", return_value=links):
             result = asyncio.run(details_endpoint()(None, "202711", "ECEN214", db, None))
         shown = result["professors"][0]
@@ -329,7 +350,7 @@ class ReportRowTests(unittest.TestCase):
                                        "reason": "r", "score": 0.9}]
         decided = instructor("Decided Person", pidm=5)
         decided.rejected = [{"id": "z", "name": "Decided Person", "reason": "r"}]
-        links = LoadedLinks(confirmed={"pidm:5": "z"})
+        links = LoadedLinks(confirmed={"pidm:5": ["z"]})
         listed, dropped, decided_count = report.report_rows(
             [empty, hit, rejected, initial, decided], links)
         self.assertEqual({i.name for i in listed}, {"Has Hit", "Has Rejected", "Has I. Initial"})
@@ -468,7 +489,7 @@ class DecisionTests(unittest.TestCase):
         ]
 
     def test_link_confirms_and_rejects_the_rest_and_undo_restores(self):
-        after = statuses(self.items, plan_link(self.items, "gwan", NOW))
+        after = statuses(self.items, plan_links(self.items, ["gwan"], NOW, {}))
         self.assertEqual({r.professor_id: r.status for r in after.values()},
                          {"gwan": "confirmed", "sam": "rejected", "old": "rejected"})
         undone = statuses(list(after.values()), plan_undo(list(after.values())))
@@ -478,15 +499,16 @@ class DecisionTests(unittest.TestCase):
 
     def test_manual_link_needs_a_known_professor(self):
         with self.assertRaises(LinkError) as caught:
-            plan_link(self.items, "nobody", NOW)
+            plan_links(self.items, ["nobody"], NOW, {})
         self.assertEqual(caught.exception.status_code, 404)
-        after = statuses(self.items, plan_link(self.items, "new", NOW, {"name": "G Choi",
-                                                                        "legacyId": 5}))
+        after = statuses(self.items, plan_links(
+            self.items, ["new"], NOW, {"new": {"name": "G Choi", "legacyId": 5}},
+        ))
         manual = next(r for r in after.values() if r.professor_id == "new")
         self.assertEqual((manual.kind, manual.status, manual.source, manual.rmp_legacy_id),
                          ("manual", "confirmed", "admin", 5))
         with self.assertRaises(LinkError):
-            plan_link([], "gwan", NOW)
+            plan_links([], ["gwan"], NOW, {})
 
     def test_no_profile_and_undo(self):
         after = statuses(self.items, plan_no_profile(self.items, NOW))
@@ -502,7 +524,7 @@ class DecisionTests(unittest.TestCase):
 
     def test_linking_replaces_a_no_profile_decision(self):
         after = statuses(self.items, plan_no_profile(self.items, EARLIER))
-        relinked = statuses(list(after.values()), plan_link(list(after.values()), "sam", NOW))
+        relinked = statuses(list(after.values()), plan_links(list(after.values()), ["sam"], NOW, {}))
         self.assertEqual({r.professor_id: r.status for r in relinked.values()},
                          {"gwan": "rejected", "sam": "confirmed", "old": "rejected"})
 
@@ -519,7 +541,9 @@ class DecisionTests(unittest.TestCase):
 class ApplyOpsTests(unittest.TestCase):
     def test_sql_casts_and_commit(self):
         db = MagicMock()
-        ops = plan_link([row(1, "pidm:7", "gwan")], "new", NOW, {"name": "G", "legacyId": 2})
+        ops = plan_links(
+            [row(1, "pidm:7", "gwan")], ["new"], NOW, {"new": {"name": "G", "legacyId": 2}},
+        )
         links_module.apply_ops(db, ops)
         statements = [str(call.args[0]) for call in db.execute.call_args_list]
         self.assertTrue(any("CAST(:courses AS text[])" in s for s in statements))
@@ -626,6 +650,49 @@ class AdminApiTests(unittest.TestCase):
                                     json={"key": "pidm:7", "professorIds": ["other"]})
         self.assertEqual(rejected.status_code, 200)
         self.assertEqual(rejected.json()["instructor"]["tab"], "rejected")
+
+    def test_link_selection_is_atomic_and_preserves_existing_links(self):
+        path = "/admin/instructor-links/link"
+        bad = self.client.post(path, json={"key": "pidm:7", "professorIds": ["gwan", "missing"]})
+        self.assertEqual(bad.status_code, 404)
+        self.assertTrue(all(r.status == "proposed" for r in self.store.rows.values()))
+        self.invalidate.assert_not_awaited()
+
+        self.store.rows[3] = row(3, "pidm:7", "unused")
+        for selected, expected in [
+            (["gwan", "sam", "gwan"], {"gwan", "sam"}),
+            (["other"], {"gwan", "sam", "other"}),
+        ]:
+            response = self.client.post(path, json={"key": "pidm:7", "professorIds": selected})
+            self.assertEqual(response.status_code, 200)
+            instructor = response.json()["instructor"]
+            self.assertEqual(instructor["tab"], "confirmed")
+            self.assertEqual(set(instructor["linkedProfessorIds"]), expected)
+            self.assertEqual(next(c["status"] for c in instructor["candidates"]
+                                  if c["professorId"] == "unused"), "rejected")
+        self.assertEqual(self.invalidate.await_count, 2)
+        undo = self.client.post("/admin/instructor-links/undo", json={"key": "pidm:7"}).json()
+        self.assertEqual(undo["instructor"]["linkedProfessorIds"], [])
+        self.assertTrue(all(c["status"] == "proposed" for c in undo["instructor"]["candidates"]))
+
+    def test_reject_all_only_rejects_pending_candidates_for_the_given_instructor(self):
+        path = "/admin/instructor-links/reject-all"
+        self.store.rows[3] = row(3, "pidm:8", "other")
+        response = self.client.post(path, json={"key": "pidm:7"})
+        self.assertEqual(response.status_code, 200)
+        instructor = response.json()["instructor"]
+        self.assertEqual(instructor["tab"], "rejected")
+        self.assertFalse(instructor["noProfile"])
+        self.assertTrue(all(c["status"] == "rejected" for c in instructor["candidates"]))
+        self.assertEqual(self.store.rows[3].status, "proposed")
+        self.invalidate.assert_awaited_once()
+
+        self.store.rows[1].status = "confirmed"
+        self.store.rows[2].status = "proposed"
+        response = self.client.post(path, json={"key": "pidm:7"}).json()
+        self.assertEqual(response["instructor"]["tab"], "confirmed")
+        self.assertEqual(response["instructor"]["linkedProfessorIds"], ["gwan"])
+        self.assertEqual(self.store.rows[2].status, "rejected")
 
     def test_errors(self):
         unknown_key = self.client.post("/admin/instructor-links/no-profile", json={"key": "pidm:1"})

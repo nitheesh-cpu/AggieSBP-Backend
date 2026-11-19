@@ -8,9 +8,10 @@ list them and record a person's decision, which the course page matcher
 then applies (core/instructor_links.py).
 
   GET  /admin/instructor-links?tab=&q=&limit=&offset=
-  POST /admin/instructor-links/link        {"key", "professorId"}
+  POST /admin/instructor-links/link        {"key", "professorIds": [...]}
   POST /admin/instructor-links/no-profile  {"key"}
   POST /admin/instructor-links/reject      {"key", "professorIds": [...]}
+  POST /admin/instructor-links/reject-all  {"key"}
   POST /admin/instructor-links/undo        {"key"}
 
 Each POST returns {"instructor": InstructorLinks, "invalidatedCourses": [...]}
@@ -18,10 +19,10 @@ after clearing the cached course pages of the instructor's courses.
 """
 
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from ...core.admin_auth import require_admin_key
@@ -51,7 +52,16 @@ class _Body(BaseModel):
 
 
 class LinkBody(_Body):
-    professor_id: str = Field(..., alias="professorId", min_length=1, max_length=200)
+    professor_id: Optional[str] = Field(None, alias="professorId", min_length=1, max_length=200)
+    professor_ids: Optional[List[Annotated[str, Field(min_length=1, max_length=200)]]] = Field(
+        None, alias="professorIds", min_length=1,
+    )
+
+    @model_validator(mode="after")
+    def require_one_selection(self) -> "LinkBody":
+        if (self.professor_id is None) == (self.professor_ids is None):
+            raise ValueError("supply either professorId or professorIds")
+        return self
 
 
 class RejectBody(_Body):
@@ -98,9 +108,9 @@ async def _change(
     return {"instructor": instructor, "invalidatedCourses": courses}
 
 
-@router.post("/instructor-links/link", summary="Confirm an instructor's RMP profile")
+@router.post("/instructor-links/link", summary="Confirm an instructor's RMP profiles")
 async def link(body: LinkBody, db: Session = Depends(request_session)) -> Dict[str, Any]:
-    return await _change(db, "link", body.key, professor_id=body.professor_id)
+    return await _change(db, "link", body.key, body.professor_id, body.professor_ids)
 
 
 @router.post("/instructor-links/no-profile", summary="Confirm an instructor has no RMP profile")
@@ -111,6 +121,11 @@ async def no_profile(body: _Body, db: Session = Depends(request_session)) -> Dic
 @router.post("/instructor-links/reject", summary="Turn candidate profiles down")
 async def reject(body: RejectBody, db: Session = Depends(request_session)) -> Dict[str, Any]:
     return await _change(db, "reject", body.key, professor_ids=body.professor_ids)
+
+
+@router.post("/instructor-links/reject-all", summary="Reject all pending candidates for an instructor")
+async def reject_all(body: _Body, db: Session = Depends(request_session)) -> Dict[str, Any]:
+    return await _change(db, "reject-all", body.key)
 
 
 @router.post("/instructor-links/undo", summary="Reopen an instructor's decision")

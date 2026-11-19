@@ -7,7 +7,7 @@ a fuzzy RMP search hit) are stored in ``instructor_profile_links`` as
 proposals by pipelines/professors/unmatched_instructors.py --write-proposals.
 A person decides in the admin console (routers/admin_links.py):
 
-* confirmed link: the course page shows that profile, whatever the matcher says;
+* confirmed links: the course page chooses among those profiles;
 * confirmed "no profile" (professor_id NULL): the course page shows none;
 * rejected pair: the matcher never picks that profile for that instructor.
 
@@ -89,8 +89,8 @@ def rmp_search_url(name: str, campus: Optional[str]) -> str:
 class LoadedLinks:
     """Decisions the matcher applies, loaded once per request."""
 
-    # instructor key -> confirmed professor id
-    confirmed: Dict[str, str] = field(default_factory=dict)
+    # instructor key -> confirmed professor ids, most recent first
+    confirmed: Dict[str, List[str]] = field(default_factory=dict)
     # instructor keys confirmed as having no RMP profile
     no_profile: Set[str] = field(default_factory=set)
     # instructor key -> professor ids rejected for that instructor
@@ -134,7 +134,7 @@ def load_instructor_links(db: Any) -> LoadedLinks:
         text(
             f"SELECT instructor_key, professor_id, status FROM {TABLE} "
             "WHERE status IN ('confirmed', 'rejected') "
-            "ORDER BY reviewed_at NULLS FIRST, id"
+            "ORDER BY reviewed_at DESC NULLS LAST, id DESC"
         )
     ).fetchall()
     for key, professor_id, status in rows:
@@ -142,7 +142,7 @@ def load_instructor_links(db: Any) -> LoadedLinks:
             if professor_id:
                 links.rejected.setdefault(key, set()).add(str(professor_id))
         elif professor_id:
-            links.confirmed[key] = str(professor_id)  # the latest decision wins
+            links.confirmed.setdefault(key, []).append(str(professor_id))
         else:
             links.no_profile.add(key)
     return links
@@ -378,25 +378,25 @@ def build_instructors(
         confirmed = sorted(
             (r for r in items if r.status == "confirmed"), key=_latest, reverse=True
         )
-        link = next((r for r in confirmed if r.professor_id), None)
+        linked_ids = [r.professor_id for r in confirmed if r.professor_id]
         no_profile = any(r.professor_id is None for r in confirmed)
         proposed = [r for r in items if r.status == "proposed" and r.professor_id]
         problems = []
         if confirmed:
-            if len(confirmed) > 1:
-                problems.append("more than one confirmed decision")
-            if link is not None:
-                if link.professor_id not in professors:
+            if no_profile and linked_ids:
+                problems.append("marked as having no RMP profile and also linked to a profile")
+            for professor_id in linked_ids:
+                if professor_id not in professors:
                     problems.append(
-                        f"the linked profile {link.professor_id} is not in our professors "
+                        f"the linked profile {professor_id} is not in our professors "
                         "table (removed, or not imported yet)"
                     )
                 others = sorted(
-                    names[k] for k in confirmed_for.get(link.professor_id or "", set()) - {key}
+                    names[k] for k in confirmed_for[professor_id] - {key}
                 )
                 if others:
                     problems.append(
-                        "the linked profile is also confirmed for " + ", ".join(others)
+                        f"the linked profile {professor_id} is also confirmed for " + ", ".join(others)
                     )
             if proposed:
                 problems.append(
@@ -427,7 +427,8 @@ def build_instructors(
             "courses": sorted(info.courses or []),
             "sections": info.sections,
             "tab": tab,
-            "linkedProfessorId": link.professor_id if link else None,
+            "linkedProfessorId": linked_ids[0] if linked_ids else None,
+            "linkedProfessorIds": linked_ids,
             "noProfile": no_profile,
             "conflict": "; ".join(problems) or None,
             "rmpSearchUrl": rmp_search_url(info.instructor_name, info.campus),
@@ -507,12 +508,14 @@ def _metadata(items: Sequence[LinkRow]) -> Dict[str, Any]:
     }
 
 
-def _reject_others(items: Sequence[LinkRow], keep: Optional[LinkRow], now: datetime) -> List[Op]:
+def _reject_others(
+    items: Sequence[LinkRow], keep: Set[Optional[str]], now: datetime,
+) -> List[Op]:
     """A new decision turns every other open candidate and decision down; a
     previous "no profile" row is removed."""
     ops = []
     for row in items:
-        if row is keep:
+        if row.professor_id in keep:
             continue
         if row.professor_id is None:
             ops.append(Op("delete", row.id))
@@ -521,42 +524,51 @@ def _reject_others(items: Sequence[LinkRow], keep: Optional[LinkRow], now: datet
     return ops
 
 
-def plan_link(
+def plan_links(
     items: Sequence[LinkRow],
-    professor_id: str,
+    professor_ids: Sequence[str],
     now: datetime,
-    professor: Optional[Dict[str, Any]] = None,
+    professors: Dict[str, Dict[str, Any]],
 ) -> List[Op]:
-    """Confirm (key, professor_id), creating a manual row when it was not
-    proposed, and reject the instructor's other candidates."""
+    """Confirm the chosen profiles and resolve the remaining proposals together."""
     if not items:
         raise LinkError(404, "unknown instructor key")
-    target = next((r for r in items if r.professor_id == professor_id), None)
-    if target is None and professor is None:
-        raise LinkError(404, f"unknown professor {professor_id}")
-    already = target is not None and target.status == "confirmed"
-    if already and target.reviewed_at is not None:
-        # Confirming again (a conflict resolved in favour of the link): new
-        # rejections share the decision's time, so undo restores them too.
-        now = target.reviewed_at
-    ops = _reject_others(items, target, now)
-    if target is None:
-        evidence = {}
-        if professor:
+    by_id = {r.professor_id: r for r in items if r.professor_id is not None}
+    selected = dict.fromkeys(professor_ids)
+    if not selected:
+        raise LinkError(422, "select at least one professor")
+    for pid in selected:
+        if pid not in by_id and pid not in professors:
+            raise LinkError(404, f"unknown professor {pid}")
+
+    # When only reconfirming existing links, attach any new rejections to a
+    # decision's existing timestamp so undo can still find them.
+    existing_stamps = [
+        by_id[pid].reviewed_at for pid in selected
+        if pid in by_id and by_id[pid].status == "confirmed" and by_id[pid].reviewed_at is not None
+    ]
+    if len(existing_stamps) == len(selected):
+        now = max(existing_stamps)
+    keep: Set[Optional[str]] = set(selected)
+    ops = _reject_others(items, keep, now)
+    for pid in selected:
+        target = by_id.get(pid)
+        if target is None:
+            professor = professors[pid]
             evidence = {
                 "rmpName": professor.get("name"),
                 "department": professor.get("department"),
                 "numRatings": professor.get("numRatings"),
                 "avgRating": professor.get("avgRating"),
             }
-        ops.append(Op("insert", row=LinkRow(
-            id=None, **_metadata(items), professor_id=professor_id,
-            rmp_legacy_id=(professor or {}).get("legacyId"), kind="manual",
-            reason="linked by hand in the admin console", evidence=evidence,
-            status="confirmed", source="admin", reviewed_at=now,
-        )))
-    elif not already:
-        ops.append(Op("update", target.id, {"status": "confirmed", "reviewed_at": now}))
+            ops.append(Op("insert", row=LinkRow(
+                id=None, **_metadata(items), professor_id=pid,
+                rmp_legacy_id=professor.get("legacyId"), kind="manual",
+                reason="linked by hand in the admin console", evidence=evidence,
+                status="confirmed", source="admin", reviewed_at=now,
+            )))
+        elif target.status != "confirmed" or target.reviewed_at is None:
+            ops.append(Op("update", target.id, {"status": "confirmed", "reviewed_at": now}))
     return ops
 
 
@@ -566,8 +578,8 @@ def plan_no_profile(items: Sequence[LinkRow], now: datetime) -> List[Op]:
         raise LinkError(404, "unknown instructor key")
     current = next((r for r in items if r.professor_id is None), None)
     if current is not None and current.reviewed_at is not None:
-        now = current.reviewed_at  # see plan_link
-    ops = _reject_others(items, current, now)
+        now = current.reviewed_at  # Keep the timestamp used by undo.
+    ops = _reject_others(items, {None}, now)
     if current is None:
         ops.append(Op("insert", row=LinkRow(
             id=None, **_metadata(items), professor_id=None, kind="manual",
@@ -627,25 +639,45 @@ def change_links(
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Apply an admin decision; returns the instructor afterwards (InstructorLinks)."""
+    from sqlalchemy import text
+
+    # Serialize decisions for this instructor, including inserts for manual links.
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"{TABLE}:{key}"},
+    )
     now = now or datetime.now(timezone.utc)
     items = fetch_rows(db, [key])
+    if not items:
+        raise LinkError(404, "unknown instructor key")
     if action == "link":
-        professor = None
-        if not any(r.professor_id == professor_id for r in items):
-            professor = fetch_professors(db, [professor_id or ""]).get(professor_id or "")
-        ops = plan_link(items, professor_id or "", now, professor)
+        if professor_id is not None:
+            # Legacy single-profile requests replace the previous decision.
+            selected = [professor_id]
+        else:
+            selected = [
+                r.professor_id for r in items if r.status == "confirmed" and r.professor_id
+            ]
+            selected.extend(professor_ids)
+        existing_ids = {r.professor_id for r in items}
+        professors = fetch_professors(db, (pid for pid in selected if pid not in existing_ids))
+        ops = plan_links(items, selected, now, professors)
     elif action == "no-profile":
         ops = plan_no_profile(items, now)
     elif action == "reject":
         ops = plan_reject(items, professor_ids, now)
+    elif action == "reject-all":
+        pending_ids = (r.professor_id for r in items if r.status == "proposed" and r.professor_id)
+        ops = plan_reject(items, pending_ids, now)
     elif action == "undo":
         ops = plan_undo(items)
     else:
         raise ValueError(f"unknown action {action!r}")
-    apply_ops(db, ops)
+    apply_ops(db, ops, commit=False)
     instructor = next((i for i in load_instructors(db) if i["key"] == key), None)
     if instructor is None:
         raise LinkError(404, "unknown instructor key")
+    db.commit()
     return instructor
 
 

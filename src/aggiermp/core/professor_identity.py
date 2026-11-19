@@ -699,6 +699,7 @@ def _decided_match(
     db: Any,
     instructor_name: str,
     pidm: Optional[int],
+    course_code: str,
     aliases: Optional[dict[str, str]],
     cache: Optional[dict[Any, Any]],
     links: "LoadedLinks",
@@ -715,17 +716,32 @@ def _decided_match(
     key = instructor_key(instructor_name, pidm)
     if key in links.no_profile:
         return InstructorMatch(reason="marked in the admin console as having no RMP profile")
-    professor_id = links.confirmed.get(key)
-    if not professor_id:
+    confirmed_ids = links.confirmed.get(key)
+    if not confirmed_ids:
         return None
-    professor_id = (aliases or {}).get(professor_id, professor_id)
+    aliases = aliases or {}
+    professor_ids = tuple(dict.fromkeys(aliases.get(pid, pid) for pid in confirmed_ids))
     cache = {} if cache is None else cache
-    row_key = ("row", professor_id)
-    if row_key not in cache:
-        cache[row_key] = db.get(ProfessorDB, professor_id)
-    if cache[row_key] is None:
+    professors = {}
+    for professor_id in professor_ids:
+        row_key = ("row", professor_id)
+        if row_key not in cache:
+            cache[row_key] = db.get(ProfessorDB, professor_id)
+        if cache[row_key] is not None:
+            professors[professor_id] = cache[row_key]
+    if not professors:
         return None
-    return InstructorMatch(professor=cache[row_key])
+    if len(professors) == 1:
+        return InstructorMatch(professor=next(iter(professors.values())))
+
+    evidence_key = ("confirmed_profiles", professor_ids)
+    if evidence_key not in cache:
+        cache[evidence_key] = load_profiles(db, professors.values(), aliases)
+    course = normalize_course_code(course_code)
+    # Prefer reviews for this course, then the profile with more ratings.
+    # load_profiles preserves candidate order, so ties favor the latest link.
+    best = max(cache[evidence_key], key=lambda p: (course in p.course_codes, p.num_ratings))
+    return InstructorMatch(professor=professors[best.id])
 
 
 def match_instructor_any_campus(
@@ -747,14 +763,14 @@ def match_instructor_any_campus(
     College Station, but only on review evidence, never on the name alone.
 
     ``links`` (load_instructor_links, loaded once per request) are a
-    person's decisions: a confirmed link wins, a confirmed "no profile"
-    shows none, and rejected profiles are never picked.
+    person's decisions: confirmed links take precedence, a confirmed "no
+    profile" shows none, and rejected profiles are never picked.
     """
     from aggiermp.core.campuses import TEXAS_AM_ID
 
     rejected_ids: frozenset[str] = frozenset()
     if links:
-        decided = _decided_match(db, instructor_name, pidm, aliases, cache, links)
+        decided = _decided_match(db, instructor_name, pidm, course_code, aliases, cache, links)
         if decided is not None:
             return decided
         rejected_ids = links.rejected_ids(instructor_key(instructor_name, pidm))
