@@ -23,7 +23,8 @@ from aggiermp.core.admin_auth import require_admin_key
 from aggiermp.core.campuses import TEXAS_AM_GALVESTON_ID, TEXAS_AM_ID
 from aggiermp.core.instructor_links import (
     LinkError, LinkRow, LoadedLinks, Proposal, build_instructors, instructor_key,
-    load_instructor_links, plan_links, plan_no_profile, plan_proposals, plan_reject,
+    load_instructor_links, load_spring_section_counts, plan_links, plan_no_profile,
+    plan_proposals, plan_reject,
     plan_undo, rmp_search_url, select_tab,
 )
 from aggiermp.core.professor_identity import Person, Profile, match_instructor_any_campus
@@ -462,6 +463,48 @@ class ConflictTests(unittest.TestCase):
         filtered = select_tab(list(found.values()), "confirmed", q="linked")
         self.assertEqual([i["name"] for i in filtered["instructors"]], ["Linked Person"])
         self.assertEqual(filtered["counts"]["confirmed"], 1)
+
+
+class SpringSectionOrderTests(unittest.TestCase):
+    def test_latest_loaded_spring_ranks_all_campuses_before_pagination(self):
+        from sqlalchemy import create_engine
+
+        with create_engine("sqlite://").connect() as db:
+            db.exec_driver_sql("CREATE TABLE terms (term_code text, term_desc text)")
+            db.exec_driver_sql("CREATE TABLE sections (term_code text)")
+            db.exec_driver_sql("""CREATE TABLE section_instructors (
+                section_id text, term_code text, instructor_pidm integer, instructor_name text
+            )""")
+            db.exec_driver_sql("INSERT INTO terms VALUES (?, ?)", [
+                ("202611", "Spring 2026 - College Station"),
+                ("202711", "Spring 2027 - College Station"),
+                ("202712", "Spring 2027 - Galveston"),
+                ("202731", "Fall 2027 - College Station"),
+                ("202811", "Spring 2028 - College Station"),
+            ])
+            db.exec_driver_sql("INSERT INTO sections VALUES (?)", [
+                (term,) for term in ("202611", "202711", "202712", "202731")
+            ])
+            db.exec_driver_sql("INSERT INTO section_instructors VALUES (?, ?, ?, ?)", [
+                ("old", "202611", 3, "Earlier Instructor"),
+                ("a", "202711", 1, "Name A"),
+                ("a", "202711", 1, "Name Variant"),
+                ("b", "202712", 1, "Name Variant"),
+                ("c", "202711", None, " Name B "),
+                ("fall", "202731", 3, "Earlier Instructor"),
+            ])
+            counts = load_spring_section_counts(db)
+
+        self.assertEqual(counts, {"pidm:1": 2, "name:Name B": 1})
+        instructors = build_instructors([
+            row(1, "pidm:1", "a", name="Name A", sections=2),
+            row(2, "name:Name B", "b", name="Name B", sections=4),
+            row(3, "pidm:3", "c", name="Earlier Instructor", sections=30),
+        ], {})
+        first = select_tab(instructors, limit=2, spring_sections=counts)
+        self.assertEqual([i["key"] for i in first["instructors"]], ["pidm:1", "name:Name B"])
+        second = select_tab(instructors, limit=2, offset=2, spring_sections=counts)
+        self.assertEqual([i["key"] for i in second["instructors"]], ["pidm:3"])
 
 
 def statuses(items, ops):

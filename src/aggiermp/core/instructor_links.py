@@ -447,9 +447,42 @@ def _matches(instructor: Dict[str, Any], q: str) -> bool:
     return any(needle in str(text).casefold() for text in haystack if text)
 
 
-def sort_instructors(instructors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def load_spring_section_counts(db: Any) -> Dict[str, int]:
+    """Count distinct sections across campuses in the latest loaded Spring."""
+    from sqlalchemy import text
+
+    rows = db.execute(text("""
+        WITH spring_terms AS (
+            SELECT term_code, substr(term_code, 1, 4) AS term_year
+            FROM terms
+            WHERE lower(term_desc) LIKE 'spring %'
+        ), latest_spring AS (
+            SELECT max(term_year) AS term_year
+            FROM spring_terms AS t
+            WHERE EXISTS (SELECT 1 FROM sections AS s WHERE s.term_code = t.term_code)
+        )
+        SELECT CASE WHEN si.instructor_pidm IS NOT NULL
+                    THEN 'pidm:' || CAST(si.instructor_pidm AS text)
+                    ELSE 'name:' || trim(si.instructor_name)
+               END AS instructor_key,
+               count(DISTINCT si.section_id) AS section_count
+        FROM section_instructors AS si
+        JOIN spring_terms USING (term_code)
+        JOIN latest_spring USING (term_year)
+        GROUP BY instructor_key
+    """))
+    return dict(rows.all())
+
+
+def sort_instructors(
+    instructors: List[Dict[str, Any]], spring_sections: Dict[str, int],
+) -> List[Dict[str, Any]]:
     return sorted(
-        instructors, key=lambda i: (-(i["sections"] or 0), i["name"].casefold(), i["key"])
+        instructors,
+        key=lambda i: (
+            -spring_sections.get(i["key"], 0), -(i["sections"] or 0),
+            i["name"].casefold(), i["key"],
+        ),
     )
 
 
@@ -459,13 +492,14 @@ def select_tab(
     q: str = "",
     limit: int = 200,
     offset: int = 0,
+    spring_sections: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """The GET /admin/instructor-links response. Counts follow the name filter."""
     filtered = [i for i in instructors if _matches(i, (q or "").strip())]
     counts = {name: 0 for name in TABS}
     for instructor in filtered:
         counts[instructor["tab"]] += 1
-    in_tab = sort_instructors([i for i in filtered if i["tab"] == tab])
+    in_tab = sort_instructors([i for i in filtered if i["tab"] == tab], spring_sections or {})
     return {
         "instructors": in_tab[offset:offset + limit],
         "counts": counts,
@@ -481,7 +515,7 @@ def load_instructors(db: Any) -> List[Dict[str, Any]]:
 def list_instructor_links(
     db: Any, tab: str = "proposed", q: str = "", limit: int = 200, offset: int = 0
 ) -> Dict[str, Any]:
-    return select_tab(load_instructors(db), tab, q, limit, offset)
+    return select_tab(load_instructors(db), tab, q, limit, offset, load_spring_section_counts(db))
 
 
 # ---------------------------------------------------------------------------
