@@ -18,15 +18,19 @@ Each POST returns {"instructor": InstructorLinks, "invalidatedCourses": [...]}
 after clearing the cached course pages of the instructor's courses.
 """
 
+from datetime import datetime, timezone
 import logging
+from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from ...core.admin_auth import require_admin_key
 from ...core.cache_invalidation import ainvalidate_courses, normalize_course_code
+from ...core.config import settings
+from ...core.instructor_ai_report import parse_instructor_ai_report
 from ...core.instructor_links import (
     MISSING_TABLE,
     LinkError,
@@ -83,6 +87,30 @@ async def get_instructor_links(
 ) -> Dict[str, Any]:
     _require_table(db)
     return list_instructor_links(db, tab, q or "", limit, offset)
+
+
+@router.get("/instructor-links/ai-report", summary="Read the latest AI instructor review report")
+def get_instructor_ai_report(response: Response) -> Dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    path = settings.instructor_ai_report_path
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parents[4] / path
+
+    try:
+        with path.open(encoding="utf-8") as report:
+            modified_at = path.stat().st_mtime
+            contents = report.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="No AI instructor report has been saved on the backend yet.")
+    except (OSError, UnicodeError):
+        logger.exception("Could not read instructor AI report")
+        raise HTTPException(status_code=500, detail="Could not read the AI instructor report.")
+
+    try:
+        data = parse_instructor_ai_report(contents)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**data, "updatedAt": datetime.fromtimestamp(modified_at, timezone.utc).isoformat()}
 
 
 async def _change(

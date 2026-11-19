@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     google_oauth_client_id: Optional[str] = None
     google_oauth_client_secret: Optional[str] = None
 
+    instructor_ai_report_path: Path = Path("scratch/instructor-ai-review.html")
+
     # Per-user limits. The watcher reads section status the scraper already
     # collects, so watches are cheap; this only stops scripted abuse.
     max_tracked_sections_per_user: int = Field(100, alias="max_tracked_sections_per_user")

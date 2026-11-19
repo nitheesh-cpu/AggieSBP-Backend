@@ -114,12 +114,14 @@ Google search snippets. Pass `--no-web` to evaluate only the stored candidate
 evidence. Start with a small batch before running the entire queue.
 
 ```sh
-.venv/bin/python -m pipelines.professors.review_instructor_links \
-    --limit 20 --out /home/opc/reports/instructor-ai-review.html
+.venv/bin/python -m pipelines.professors.review_instructor_links --limit 20
 ```
 
-Open the HTML report and use **Open admin review** to confirm candidates in the
-usual UI. The report lists likely matches first and includes the sources TAMU AI
+Open **Admin → Instructors → View AI review report**. The API reads the existing
+`scratch/instructor-ai-review.html` in the backend checkout. If the report was
+saved elsewhere, set `INSTRUCTOR_AI_REPORT_PATH` to its absolute path in the
+backend `.env` and restart the API. Use **Open admin review** to confirm candidates
+in the usual UI. The report lists likely matches first and includes the sources TAMU AI
 cited. It reads pending candidates from both **To review** and **Conflicts**, in
 Spring section order. The script leaves the database unchanged. Omit `--limit`
 to process the full queue. After a quota stop, use the reported `--offset` with
