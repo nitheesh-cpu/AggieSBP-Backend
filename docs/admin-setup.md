@@ -129,6 +129,13 @@ to process the full queue. After a quota stop, use the reported `--offset` with
 a different `--out` path to retain the first batch's report. Offsets assume the
 pending queue has stayed in the same order.
 
+Use **Bulk reject AI mismatches** to preview and confirm rejections across the
+full queue. The action includes pending candidates rated **very unlikely** and
+older **unlikely** candidates with clear language-versus-quantitative department
+mismatches, such as French versus Statistics. Shared course or subject evidence
+excludes a candidate from bulk rejection. Confirmed links are preserved. The
+latest review script emits the stricter rating on new runs.
+
 ## 7. Vercel (website project, then redeploy)
 
 | Variable | Value |

@@ -21,7 +21,7 @@ from aggiermp.api.routers import admin_links
 from aggiermp.core import instructor_links as links_module
 from aggiermp.core.admin_auth import require_admin_key
 from aggiermp.core.campuses import TEXAS_AM_GALVESTON_ID, TEXAS_AM_ID
-from aggiermp.core.instructor_ai_report import parse_instructor_ai_report
+from aggiermp.core.instructor_ai_report import parse_instructor_ai_report, qualifies_for_ai_rejection
 from aggiermp.core.instructor_links import (
     LinkError, LinkRow, LoadedLinks, Proposal, build_instructors, instructor_key,
     load_instructor_links, load_spring_section_counts, plan_links, plan_no_profile,
@@ -543,6 +543,37 @@ class SpringSectionOrderTests(unittest.TestCase):
         self.assertEqual(select_tab(instructors, spring_sections=spring)["instructors"][0]["key"], "pidm:2")
 
 
+class AiBulkRejectionTests(unittest.TestCase):
+    def test_department_mismatch_needs_ai_evidence_and_no_shared_subject(self):
+        instructor = {"courses": ["STAT 211"]}
+        candidate = {"status": "proposed", "department": "French", "courseOverlap": [],
+                     "reviewedCourses": ["FREN 101"], "aiReview": {"confidence": "unlikely"}}
+        self.assertTrue(qualifies_for_ai_rejection(instructor, candidate))
+        self.assertFalse(qualifies_for_ai_rejection(instructor, dict(candidate, department="Mathematics")))
+        self.assertFalse(qualifies_for_ai_rejection(instructor, dict(candidate, reviewedCourses=["STAT 302"])))
+        self.assertFalse(qualifies_for_ai_rejection({"courses": ["STAT 211", "FREN 101"]}, candidate))
+        self.assertFalse(qualifies_for_ai_rejection(instructor, dict(candidate, aiReview={"confidence": "possible"})))
+        self.assertTrue(qualifies_for_ai_rejection(instructor, dict(
+            candidate, department=None, aiReview={"confidence": "very unlikely"},
+        )))
+
+    def test_late_confirmation_and_shared_teaching_evidence_are_protected(self):
+        key = "pidm:1"
+        items = [
+            row(1, key, "confirmed", status="confirmed", courses=["STAT 211"]),
+            row(2, key, "supported", courses=["STAT 211"], evidence={"reviewedCourses": ["STAT 302"]}),
+            row(3, key, "mismatch", courses=["STAT 211"]),
+        ]
+        with patch.object(links_module, "fetch_rows", return_value=items), \
+             patch.object(links_module, "apply_ops") as apply:
+            count, courses = links_module.reject_ai_candidates(Mock(), {
+                key: ["confirmed", "supported", "mismatch", "removed"],
+            })
+        self.assertEqual((count, courses), (1, {"STAT 211"}))
+        [operation] = apply.call_args.args[1]
+        self.assertEqual((operation.row_id, operation.fields["status"]), (3, "rejected"))
+
+
 def statuses(items, ops):
     """Apply ops to copies of rows, the way apply_ops would."""
     rows = {r.id: LinkRow(**r.__dict__) for r in items}
@@ -690,6 +721,26 @@ class AdminApiTests(unittest.TestCase):
             patcher = patch.object(admin_links, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def test_ai_bulk_rejection_from_existing_report_requires_current_preview(self):
+        path = "/admin/instructor-links/ai-reject"
+        for item in self.store.rows.values():
+            item.courses = ["STAT 211"]
+        self.store.professors["gwan"]["department"] = "French"
+        self.store.rows[2].status = "confirmed"
+        reviews = [{"key": "pidm:7", "confidence": "unlikely", "reason": "Different field.",
+                    "rmpUrl": "https://www.ratemyprofessors.com/professor/2229614", "sources": []}]
+        with patch.object(admin_links, "_load_ai_report", return_value={"reviews": reviews}):
+            preview = self.client.get(path).json()
+            self.assertEqual((preview["candidates"], preview["instructors"]), (1, 1))
+            stale = self.client.post(path, json={"token": "0" * 64})
+            self.assertEqual(stale.status_code, 409)
+            self.assertEqual(self.store.rows[1].status, "proposed")
+            applied = self.client.post(path, json={"token": preview["token"]})
+            self.assertEqual(applied.json(), {"rejected": 1})
+            self.assertEqual(self.store.rows[1].status, "rejected")
+            self.assertEqual(self.store.rows[2].status, "confirmed")
+        self.invalidate.assert_awaited_once_with(["STAT211"])
 
     def test_list(self):
         response = self.client.get("/admin/instructor-links", params={"tab": "proposed"})

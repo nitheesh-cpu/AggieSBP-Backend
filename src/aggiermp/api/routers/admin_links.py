@@ -19,6 +19,8 @@ after clearing the cached course pages of the instructor's courses.
 """
 
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 import logging
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, Optional
@@ -34,9 +36,11 @@ from ...core.instructor_ai_report import read_saved_ai_report
 from ...core.instructor_links import (
     MISSING_TABLE,
     LinkError,
+    ai_rejection_candidates,
     change_links,
     links_table_exists,
     list_instructor_links,
+    reject_ai_candidates,
 )
 from ...database.base import request_session
 
@@ -70,6 +74,10 @@ class LinkBody(_Body):
 
 class RejectBody(_Body):
     professor_ids: List[str] = Field(..., alias="professorIds", min_length=1, max_length=200)
+
+
+class AiRejectBody(BaseModel):
+    token: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def _require_table(db: Session) -> None:
@@ -119,6 +127,38 @@ def _load_ai_report() -> Dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {**data, "updatedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()}
+
+
+def _ai_reject_preview(db: Session) -> tuple[dict[str, list[str]], dict]:
+    _require_table(db)
+    report = _load_ai_report()
+    grouped = ai_rejection_candidates(db, report["reviews"])
+    token = sha256(json.dumps(grouped, sort_keys=True).encode()).hexdigest()
+    return grouped, {
+        "token": token,
+        "candidates": sum(len(ids) for ids in grouped.values()),
+        "instructors": len(grouped),
+        "hasVeryUnlikelyRatings": any(r["confidence"] == "very unlikely" for r in report["reviews"]),
+    }
+
+
+@router.get("/instructor-links/ai-reject", summary="Preview bulk rejection of strong AI mismatches")
+def preview_ai_reject(response: Response, db: Session = Depends(request_session)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return _ai_reject_preview(db)[1]
+
+
+@router.post("/instructor-links/ai-reject", summary="Reject the previewed strong AI mismatches")
+async def ai_reject(body: AiRejectBody, db: Session = Depends(request_session)) -> dict:
+    grouped, preview = _ai_reject_preview(db)
+    if body.token != preview["token"]:
+        raise HTTPException(status_code=409, detail="The AI rejection list changed. Preview it again.")
+    rejected, courses = reject_ai_candidates(db, grouped)
+    normalized = sorted({normalize_course_code(c) for c in courses} - {""})
+    if normalized:
+        await ainvalidate_courses(normalized)
+    logger.info("Admin bulk AI rejection rejected %d of %d candidates", rejected, preview["candidates"])
+    return {"rejected": rejected}
 
 
 async def _change(

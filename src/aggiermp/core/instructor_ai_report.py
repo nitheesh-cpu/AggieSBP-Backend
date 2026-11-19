@@ -2,11 +2,49 @@
 
 from functools import lru_cache
 from pathlib import Path
+import re
 from urllib.parse import parse_qs, urlsplit
 
 from bs4 import BeautifulSoup
 
 AI_REVIEW_PRIORITY = {"high": 0, "possible": 1}
+
+# Deliberately narrow: adjacent or ambiguous departments can share instructors.
+LANGUAGE_SUBJECTS = {"ARAB", "CHIN", "FREN", "GERM", "ITAL", "JAPN", "RUSS", "SPAN"}
+QUANTITATIVE_SUBJECTS = {"CSCE", "MATH", "STAT"}
+LANGUAGE_DEPARTMENTS = {
+    "arabic", "chinese", "foreign languages", "french", "german", "italian",
+    "japanese", "modern languages", "russian", "spanish",
+}
+QUANTITATIVE_DEPARTMENTS = {"computer science", "math", "mathematics", "statistics"}
+
+
+def _subjects(courses: list[str]) -> set[str]:
+    return {match[0] for course in courses
+            if (match := re.match(r"[A-Z]+", course.strip().upper()))}
+
+
+def has_shared_teaching_evidence(courses: list[str], evidence: dict) -> bool:
+    return bool(evidence.get("courseOverlap") or (
+        _subjects(courses) & _subjects(evidence.get("reviewedCourses") or [])
+    ))
+
+
+def qualifies_for_ai_rejection(instructor: dict, candidate: dict) -> bool:
+    confidence = candidate.get("aiReview", {}).get("confidence")
+    courses = instructor["courses"]
+    if (candidate["status"] != "proposed" or confidence not in {"unlikely", "very unlikely"}
+            or has_shared_teaching_evidence(courses, candidate)):
+        return False
+    if confidence == "very unlikely":
+        return True
+
+    subjects = _subjects(courses)
+    department = (candidate["department"] or "").strip().casefold()
+    return bool(subjects) and (
+        (subjects <= QUANTITATIVE_SUBJECTS and department in LANGUAGE_DEPARTMENTS)
+        or (subjects <= LANGUAGE_SUBJECTS and department in QUANTITATIVE_DEPARTMENTS)
+    )
 
 
 @lru_cache(maxsize=1)
@@ -44,7 +82,7 @@ def parse_instructor_ai_report(html: str) -> dict:
         query = parse_qs(urlsplit(admin["href"]).query)
         key = query.get("q", [""])[0]
         tab = query.get("tab", [""])[0]
-        if (not title or confidence not in {"high", "possible", "unclear", "unlikely"}
+        if (not title or confidence not in {"high", "possible", "unclear", "unlikely", "very unlikely"}
                 or not key or tab not in {"proposed", "conflict"}):
             raise ValueError("A recommendation in the saved AI report has invalid review details.")
 

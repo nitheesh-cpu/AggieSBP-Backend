@@ -26,7 +26,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import quote
 
-from .instructor_ai_report import attach_ai_reviews, instructor_ai_priority
+from .instructor_ai_report import (
+    attach_ai_reviews, has_shared_teaching_evidence, instructor_ai_priority,
+    qualifies_for_ai_rejection,
+)
 
 TABLE = "instructor_profile_links"
 KINDS = ("plausible", "near", "rejected", "middle_initial", "swapped", "manual")
@@ -672,6 +675,56 @@ def plan_undo(items: Sequence[LinkRow]) -> List[Op]:
     return ops
 
 
+def _lock_instructor(db: Any, key: str) -> None:
+    from sqlalchemy import text
+
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"{TABLE}:{key}"},
+    )
+
+
+def ai_rejection_candidates(db: Any, reviews: list[dict]) -> dict[str, list[str]]:
+    instructors = load_instructors(db)
+    attach_ai_reviews(instructors, reviews)
+    grouped = {}
+    for instructor in instructors:
+        ids = sorted(
+            c["professorId"] for c in instructor["candidates"]
+            if qualifies_for_ai_rejection(instructor, c)
+        )
+        if ids:
+            grouped[instructor["key"]] = ids
+    return grouped
+
+
+def reject_ai_candidates(db: Any, grouped: dict[str, list[str]]) -> tuple[int, Set[str]]:
+    if not grouped:
+        return 0, set()
+
+    # The same lock protects manual decisions. Recheck after taking every lock.
+    for key in sorted(grouped):
+        _lock_instructor(db, key)
+    items_by_key: dict[str, list[LinkRow]] = {}
+    for row in fetch_rows(db, grouped):
+        items_by_key.setdefault(row.instructor_key, []).append(row)
+
+    now = datetime.now(timezone.utc)
+    operations = []
+    courses: Set[str] = set()
+    for key, ids in grouped.items():
+        items = items_by_key.get(key, [])
+        pending = {row.professor_id for row in items if row.status == "proposed"
+                   and not has_shared_teaching_evidence(row.courses, row.evidence or {})}
+        remaining = [pid for pid in ids if pid in pending]
+        if remaining:
+            operations.extend(plan_reject(items, remaining, now))
+            courses.update(course for row in items for course in row.courses)
+
+    apply_ops(db, operations)
+    return len(operations), courses
+
+
 def change_links(
     db: Any,
     action: str,
@@ -681,13 +734,8 @@ def change_links(
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Apply an admin decision; returns the instructor afterwards (InstructorLinks)."""
-    from sqlalchemy import text
-
     # Serialize decisions for this instructor, including inserts for manual links.
-    db.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"{TABLE}:{key}"},
-    )
+    _lock_instructor(db, key)
     now = now or datetime.now(timezone.utc)
     items = fetch_rows(db, [key])
     if not items:
