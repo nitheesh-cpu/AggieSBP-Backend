@@ -117,13 +117,14 @@ evidence. Start with a small batch before running the entire queue.
 .venv/bin/python -m pipelines.professors.review_instructor_links --limit 20
 ```
 
-Open **Admin → Instructors → View AI review report**. The API reads the existing
+Open **Admin → Instructors**. The API reads the existing
 `scratch/instructor-ai-review.html` in the backend checkout. If the report was
 saved elsewhere, set `INSTRUCTOR_AI_REPORT_PATH` to its absolute path in the
-backend `.env` and restart the API. Use **Open admin review** to confirm candidates
-in the usual UI. The report lists likely matches first and includes the sources TAMU AI
-cited. It reads pending candidates from both **To review** and **Conflicts**, in
-Spring section order. The script leaves the database unchanged. Omit `--limit`
+backend `.env` and restart the API. High-confidence matches are highlighted on
+their candidate rows, with the AI's reasoning and sources beside the existing
+link controls. In **To review** and **Conflicts**, high-confidence matches rank
+first, followed by possible matches, with Spring section order within each group.
+The script leaves the database unchanged. Omit `--limit`
 to process the full queue. After a quota stop, use the reported `--offset` with
 a different `--out` path to retain the first batch's report. Offsets assume the
 pending queue has stayed in the same order.
