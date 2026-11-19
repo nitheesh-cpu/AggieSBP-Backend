@@ -106,6 +106,26 @@ It prints how many proposals were added, refreshed and removed. Then create the 
 
 Existing cron jobs keep their lines; the scheduled summary runner shares a PostgreSQL lock with the worker, so it needs the updated code from step 1 (nothing to change in crontab).
 
+### Manual AI review of pending instructor links
+
+From the backend root, use the existing `TAMU_AI_API_KEY` and `TAMU_AI_MODEL`
+configuration and set `SERPER_API_KEY` in the environment or `.env` to include
+Google search snippets. Pass `--no-web` to evaluate only the stored candidate
+evidence. Start with a small batch before running the entire queue.
+
+```sh
+.venv/bin/python -m pipelines.professors.review_instructor_links \
+    --limit 20 --out /home/opc/reports/instructor-ai-review.html
+```
+
+Open the HTML report and use **Open admin review** to confirm candidates in the
+usual UI. The report lists likely matches first and includes the sources TAMU AI
+cited. It reads pending candidates from both **To review** and **Conflicts**, in
+Spring section order. The script leaves the database unchanged. Omit `--limit`
+to process the full queue. After a quota stop, use the reported `--offset` with
+a different `--out` path to retain the first batch's report. Offsets assume the
+pending queue has stayed in the same order.
+
 ## 7. Vercel (website project, then redeploy)
 
 | Variable | Value |
