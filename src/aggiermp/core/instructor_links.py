@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import quote
 
+from .instructor_ai_report import attach_ai_reviews, instructor_ai_priority
+
 TABLE = "instructor_profile_links"
 KINDS = ("plausible", "near", "rejected", "middle_initial", "swapped", "manual")
 STATUSES = ("proposed", "confirmed", "rejected")
@@ -500,6 +502,8 @@ def select_tab(
     for instructor in filtered:
         counts[instructor["tab"]] += 1
     in_tab = sort_instructors([i for i in filtered if i["tab"] == tab], spring_sections or {})
+    if tab in {"proposed", "conflict"}:
+        in_tab.sort(key=instructor_ai_priority)
     return {
         "instructors": in_tab[offset:offset + limit],
         "counts": counts,
@@ -513,9 +517,13 @@ def load_instructors(db: Any) -> List[Dict[str, Any]]:
 
 
 def list_instructor_links(
-    db: Any, tab: str = "proposed", q: str = "", limit: int = 200, offset: int = 0
+    db: Any, tab: str = "proposed", q: str = "", limit: int = 200, offset: int = 0,
+    ai_reviews: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    return select_tab(load_instructors(db), tab, q, limit, offset, load_spring_section_counts(db))
+    instructors = load_instructors(db)
+    if ai_reviews:
+        attach_ai_reviews(instructors, ai_reviews)
+    return select_tab(instructors, tab, q, limit, offset, load_spring_section_counts(db))
 
 
 # ---------------------------------------------------------------------------

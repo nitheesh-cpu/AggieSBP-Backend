@@ -21,6 +21,7 @@ from aggiermp.api.routers import admin_links
 from aggiermp.core import instructor_links as links_module
 from aggiermp.core.admin_auth import require_admin_key
 from aggiermp.core.campuses import TEXAS_AM_GALVESTON_ID, TEXAS_AM_ID
+from aggiermp.core.instructor_ai_report import parse_instructor_ai_report
 from aggiermp.core.instructor_links import (
     LinkError, LinkRow, LoadedLinks, Proposal, build_instructors, instructor_key,
     load_instructor_links, load_spring_section_counts, plan_links, plan_no_profile,
@@ -505,6 +506,41 @@ class SpringSectionOrderTests(unittest.TestCase):
         self.assertEqual([i["key"] for i in first["instructors"]], ["pidm:1", "name:Name B"])
         second = select_tab(instructors, limit=2, offset=2, spring_sections=counts)
         self.assertEqual([i["key"] for i in second["instructors"]], ["pidm:3"])
+
+    def test_ai_suggestions_attach_by_profile_and_sort_before_pagination(self):
+        report_html = """<title>Instructor link review</title><article>
+            <h2>High \u00b7 Name A \u2192 <a href="https://www.ratemyprofessors.com/professor/42">Shared Name</a></h2>
+            <p>Teaches the same course.</p><a href="/admin/instructors?q=pidm%3A1&amp;tab=proposed">Review</a>
+            </article><article><h2>Possible \u00b7 Name B \u2192 Profile B</h2>
+            <p>Names match.</p><a href="/admin/instructors?q=pidm%3A2&amp;tab=proposed">Review</a>
+            </article>"""
+        reviews = parse_instructor_ai_report(report_html)["reviews"]
+        instructors = build_instructors([
+            row(1, "pidm:1", "a", name="Name A"),
+            row(2, "pidm:1", "wrong", name="Name A"),
+            row(3, "pidm:2", "b", name="Name B"),
+            row(4, "pidm:3", "c", name="Busy Instructor"),
+        ], {
+            "a": {"name": "Shared Name", "legacyId": 42},
+            "wrong": {"name": "Shared Name", "legacyId": 43},
+            "b": {"name": "Profile B"},
+        })
+        spring = {"pidm:1": 1, "pidm:2": 2, "pidm:3": 30}
+        with patch.object(links_module, "load_instructors", return_value=instructors), \
+             patch.object(links_module, "load_spring_section_counts", return_value=spring):
+            page = links_module.list_instructor_links(Mock(), limit=2, ai_reviews=reviews)
+        self.assertEqual([i["key"] for i in page["instructors"]], ["pidm:1", "pidm:2"])
+        candidates = {c["professorId"]: c for c in page["instructors"][0]["candidates"]}
+        self.assertEqual(candidates["a"]["aiReview"]["confidence"], "high")
+        self.assertNotIn("aiReview", candidates["wrong"])
+
+        # After rejection, a fresh queue must not attach the old recommendation.
+        rejected = dict(candidates["a"], status="rejected")
+        rejected.pop("aiReview")
+        instructors[0]["candidates"] = [rejected, candidates["wrong"]]
+        links_module.attach_ai_reviews(instructors, reviews)
+        self.assertNotIn("aiReview", rejected)
+        self.assertEqual(select_tab(instructors, spring_sections=spring)["instructors"][0]["key"], "pidm:2")
 
 
 def statuses(items, ops):
