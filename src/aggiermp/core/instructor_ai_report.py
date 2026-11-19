@@ -13,10 +13,11 @@ AI_REVIEW_PRIORITY = {"high": 0, "possible": 1}
 LANGUAGE_SUBJECTS = {"ARAB", "CHIN", "FREN", "GERM", "ITAL", "JAPN", "RUSS", "SPAN"}
 QUANTITATIVE_SUBJECTS = {"CSCE", "MATH", "STAT"}
 LANGUAGE_DEPARTMENTS = {
-    "arabic", "chinese", "foreign languages", "french", "german", "italian",
+    "arabic", "chinese", "foreign languages", "foreign languages and literatures",
+    "french", "german", "italian",
     "japanese", "modern languages", "russian", "spanish",
 }
-QUANTITATIVE_DEPARTMENTS = {"computer science", "math", "mathematics", "statistics"}
+QUANTITATIVE_DEPARTMENTS = {"computer science", "math", "mathematics", "statistics", "stats"}
 
 
 def _subjects(courses: list[str]) -> set[str]:
@@ -31,16 +32,30 @@ def has_shared_teaching_evidence(courses: list[str], evidence: dict) -> bool:
 
 
 def qualifies_for_ai_rejection(instructor: dict, candidate: dict) -> bool:
+    """Whether bulk rejection may turn this pending candidate down.
+
+    * A high AI match or an exact course in common always protects it.
+    * "very unlikely" (the model found evidence of a different person) is
+      enough on its own; a shared subject does not override it.
+    * "unlikely" is enough unless the profile has reviews in a subject the
+      instructor teaches.
+    * Anything else needs a clear language-versus-quantitative department
+      mismatch, which works without an AI report.
+    """
     confidence = candidate.get("aiReview", {}).get("confidence")
     courses = instructor["courses"]
-    if (candidate["status"] != "proposed" or confidence not in {"unlikely", "very unlikely"}
-            or has_shared_teaching_evidence(courses, candidate)):
+    if (candidate["status"] != "proposed" or confidence == "high"
+            or candidate.get("courseOverlap")):
         return False
     if confidence == "very unlikely":
         return True
+    if has_shared_teaching_evidence(courses, candidate):
+        return False
+    if confidence == "unlikely":
+        return True
 
     subjects = _subjects(courses)
-    department = (candidate["department"] or "").strip().casefold()
+    department = (candidate["department"] or "").strip().casefold().removeprefix("department of ")
     return bool(subjects) and (
         (subjects <= QUANTITATIVE_SUBJECTS and department in LANGUAGE_DEPARTMENTS)
         or (subjects <= LANGUAGE_SUBJECTS and department in QUANTITATIVE_DEPARTMENTS)

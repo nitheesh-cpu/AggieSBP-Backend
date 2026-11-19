@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from aggiermp.api.routers import admin_links
@@ -544,24 +544,45 @@ class SpringSectionOrderTests(unittest.TestCase):
 
 
 class AiBulkRejectionTests(unittest.TestCase):
-    def test_department_mismatch_needs_ai_evidence_and_no_shared_subject(self):
+    def test_clear_department_mismatch_qualifies_without_ai_and_protects_shared_subjects(self):
         instructor = {"courses": ["STAT 211"]}
         candidate = {"status": "proposed", "department": "French", "courseOverlap": [],
-                     "reviewedCourses": ["FREN 101"], "aiReview": {"confidence": "unlikely"}}
+                     "reviewedCourses": ["FREN 101"], "aiReview": {"confidence": "unclear"}}
         self.assertTrue(qualifies_for_ai_rejection(instructor, candidate))
         self.assertFalse(qualifies_for_ai_rejection(instructor, dict(candidate, department="Mathematics")))
         self.assertFalse(qualifies_for_ai_rejection(instructor, dict(candidate, reviewedCourses=["STAT 302"])))
         self.assertFalse(qualifies_for_ai_rejection({"courses": ["STAT 211", "FREN 101"]}, candidate))
-        self.assertFalse(qualifies_for_ai_rejection(instructor, dict(candidate, aiReview={"confidence": "possible"})))
+        self.assertTrue(qualifies_for_ai_rejection(instructor, dict(candidate, aiReview={})))
+        self.assertTrue(qualifies_for_ai_rejection(instructor, dict(candidate, aiReview={"confidence": "possible"})))
+        self.assertFalse(qualifies_for_ai_rejection(instructor, dict(candidate, aiReview={"confidence": "high"})))
         self.assertTrue(qualifies_for_ai_rejection(instructor, dict(
             candidate, department=None, aiReview={"confidence": "very unlikely"},
         )))
+
+    def test_ai_non_matches_qualify_unless_an_exact_course_is_shared(self):
+        instructor = {"courses": ["STAT 211"]}
+        candidate = {"status": "proposed", "department": "Biology", "courseOverlap": [],
+                     "reviewedCourses": ["BIOL 111"], "aiReview": {"confidence": "unlikely"}}
+        # Not a language/quantitative mismatch, but the AI is confident it is a different person.
+        self.assertTrue(qualifies_for_ai_rejection(instructor, candidate))
+        self.assertFalse(qualifies_for_ai_rejection(instructor, dict(candidate, aiReview={})))
+        # Reviews in a subject the instructor teaches protect an "unlikely" rating only.
+        shared = dict(candidate, reviewedCourses=["STAT 302"])
+        self.assertFalse(qualifies_for_ai_rejection(instructor, shared))
+        self.assertTrue(qualifies_for_ai_rejection(
+            instructor, dict(shared, aiReview={"confidence": "very unlikely"})))
+        # An exact course in common protects either rating.
+        for rating in ("unlikely", "very unlikely"):
+            self.assertFalse(qualifies_for_ai_rejection(instructor, dict(
+                candidate, courseOverlap=["STAT 211"], aiReview={"confidence": rating},
+            )))
+        self.assertFalse(qualifies_for_ai_rejection(instructor, dict(candidate, status="rejected")))
 
     def test_late_confirmation_and_shared_teaching_evidence_are_protected(self):
         key = "pidm:1"
         items = [
             row(1, key, "confirmed", status="confirmed", courses=["STAT 211"]),
-            row(2, key, "supported", courses=["STAT 211"], evidence={"reviewedCourses": ["STAT 302"]}),
+            row(2, key, "supported", courses=["STAT 211"], evidence={"courseOverlap": ["STAT 211"]}),
             row(3, key, "mismatch", courses=["STAT 211"]),
         ]
         with patch.object(links_module, "fetch_rows", return_value=items), \
@@ -722,15 +743,13 @@ class AdminApiTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def test_ai_bulk_rejection_from_existing_report_requires_current_preview(self):
+    def test_bulk_rejection_works_without_a_report_and_requires_current_preview(self):
         path = "/admin/instructor-links/ai-reject"
         for item in self.store.rows.values():
             item.courses = ["STAT 211"]
         self.store.professors["gwan"]["department"] = "French"
         self.store.rows[2].status = "confirmed"
-        reviews = [{"key": "pidm:7", "confidence": "unlikely", "reason": "Different field.",
-                    "rmpUrl": "https://www.ratemyprofessors.com/professor/2229614", "sources": []}]
-        with patch.object(admin_links, "_load_ai_report", return_value={"reviews": reviews}):
+        with patch.object(admin_links, "_load_ai_report", side_effect=HTTPException(404)):
             preview = self.client.get(path).json()
             self.assertEqual((preview["candidates"], preview["instructors"]), (1, 1))
             stale = self.client.post(path, json={"token": "0" * 64})

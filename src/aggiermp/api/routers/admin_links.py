@@ -131,14 +131,17 @@ def _load_ai_report() -> Dict[str, Any]:
 
 def _ai_reject_preview(db: Session) -> tuple[dict[str, list[str]], dict]:
     _require_table(db)
-    report = _load_ai_report()
-    grouped = ai_rejection_candidates(db, report["reviews"])
+    try:
+        reviews = _load_ai_report()["reviews"]
+    except HTTPException:
+        # Clear department mismatches can be evaluated without an AI report.
+        reviews = []
+    grouped = ai_rejection_candidates(db, reviews)
     token = sha256(json.dumps(grouped, sort_keys=True).encode()).hexdigest()
     return grouped, {
         "token": token,
         "candidates": sum(len(ids) for ids in grouped.values()),
         "instructors": len(grouped),
-        "hasVeryUnlikelyRatings": any(r["confidence"] == "very unlikely" for r in report["reviews"]),
     }
 
 

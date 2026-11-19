@@ -27,8 +27,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import quote
 
 from .instructor_ai_report import (
-    attach_ai_reviews, has_shared_teaching_evidence, instructor_ai_priority,
-    qualifies_for_ai_rejection,
+    attach_ai_reviews, instructor_ai_priority, qualifies_for_ai_rejection,
 )
 
 TABLE = "instructor_profile_links"
@@ -714,8 +713,10 @@ def reject_ai_candidates(db: Any, grouped: dict[str, list[str]]) -> tuple[int, S
     courses: Set[str] = set()
     for key, ids in grouped.items():
         items = items_by_key.get(key, [])
+        # Only an exact shared course blocks here: the AI rating and subject
+        # rules were already applied when the list was built.
         pending = {row.professor_id for row in items if row.status == "proposed"
-                   and not has_shared_teaching_evidence(row.courses, row.evidence or {})}
+                   and not (row.evidence or {}).get("courseOverlap")}
         remaining = [pid for pid in ids if pid in pending]
         if remaining:
             operations.extend(plan_reject(items, remaining, now))
