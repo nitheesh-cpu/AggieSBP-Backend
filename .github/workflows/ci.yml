@@ -20,6 +20,7 @@ jobs:
   # backlog is cleaned up. Remove continue-on-error from a step once it is clean.
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -57,6 +58,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     # Throwaway database that only exists for this job. No secrets are used, and
     # DATABASE_URL below is pinned to this container so a stray .env or repository
@@ -103,14 +105,18 @@ jobs:
 
       # The tests expect the *_merged views and admin/push tables, which are
       # created by the SQL migrations rather than by SQLAlchemy create_all().
-      # So: create the ORM tables first, then apply the migrations in order.
+      # So: create the ORM tables first, then apply the migrations in order
+      # (core migrations, then the pipeline ones; all are idempotent).
       - name: Create schema
         run: |
           PYTHONPATH=src python -c "from aggiermp.database.base import Base, create_db_engine; Base.metadata.create_all(create_db_engine())"
-          for f in src/aggiermp/database/migrations/*.sql; do
+          for f in src/aggiermp/database/migrations/*.sql pipelines/*/migrations/*.sql; do
             echo "Applying $f"
             psql -h localhost -U postgres -d aggiermp -v ON_ERROR_STOP=1 -q -f "$f"
           done
+          # The purge tests drop and recreate tables in the public schema, so they
+          # get their own database instead of sharing the one above.
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 -q -c "CREATE DATABASE purge_test"
 
       # Two tests fail on the current code base and are deselected so the suite
       # can be a meaningful gate. Fix them and delete the --deselect lines:
@@ -118,7 +124,14 @@ jobs:
       #    without its required query parameters).
       #  - test_course_professor_details_includes_structured_fields: the test's stub
       #    row (SimpleNamespace) lacks the `instructor_pidm` attribute the endpoint reads.
+      # The ADMIN_JOBS / FETCH_ONLY / PURGE URLs switch on the real-SQL tests, which
+      # are skipped otherwise. The first two build their own throwaway schemas; the
+      # purge tests use the separate purge_test database created above.
       - name: Run tests
+        env:
+          ADMIN_JOBS_TEST_DATABASE_URL: postgresql://postgres:password@localhost:5432/aggiermp
+          FETCH_ONLY_TEST_DATABASE_URL: postgresql://postgres:password@localhost:5432/aggiermp
+          PURGE_TEST_DATABASE_URL: postgresql://postgres:password@localhost:5432/purge_test
         run: |
           python -m pytest -q \
             --deselect tests/endpoints_test.py::test_all_get_endpoints \

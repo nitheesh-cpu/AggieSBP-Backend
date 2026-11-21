@@ -25,7 +25,7 @@ Layout: `src/aggiermp/api/` (`main.py` holds most endpoints; `routers/` has disc
 - Quick syntax check: `.venv/Scripts/python -m py_compile <files>` or `python -m compileall -q src/aggiermp pipelines`.
 - Pipelines (`python -m pipelines....` from `backend/`): see `README.md`. Long runs: dry run first (`--dry-run`, `--professor-id ...`), show the output to the owner before any `--apply` or DB write.
 - Migrations: plain idempotent SQL in `src/aggiermp/database/migrations/` (001-005), `pipelines/courses/migrations/`, `pipelines/professors/migrations/`. Applied by hand with `psql` as the app DB user, before deploying code that needs them (`docs/admin-setup.md`, D-040).
-- CI: `.github/workflows/ci.yml` on pushes to `develop` and `main`.
+- CI: `.github/workflows/ci.yml` on pushes and PRs to `develop` and `main`. It runs the three real-SQL test files too (admin jobs, fetch-only, purge), against its own throwaway Postgres.
 
 ## Before you change anything
 
