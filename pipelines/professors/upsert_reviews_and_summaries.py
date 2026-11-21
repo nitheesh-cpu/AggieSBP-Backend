@@ -525,6 +525,7 @@ def upsert_reviews_and_summaries(
                 try:
                     # Get all reviews for this professor
                     # A merged professor's reviews come from every merged entry.
+                    # filter_by for one member keeps test mocks valid (docs/context/gotchas.md G-004).
                     member_ids = [professor_id] + merged_members.get(professor_id, [])
                     review_query = session.query(ReviewDB)
                     all_reviews = (

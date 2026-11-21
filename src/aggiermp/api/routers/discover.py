@@ -1187,6 +1187,7 @@ async def discover_course_professors(
         raise _db_error(e)
 
 
+# Catch-all: keep it the last GET route in this file. See docs/context/gotchas.md G-019.
 @router.get(
     "/{term_code}/{dept_code}",
     summary="/discover/{term_code}/{dept_code}",

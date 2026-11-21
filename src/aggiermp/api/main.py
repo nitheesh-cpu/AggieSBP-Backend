@@ -450,6 +450,7 @@ _cors_kwargs = dict(
     # Also allow requests from the browser extension (origin = chrome-extension://<id>
     # or moz-extension://<id>). The ID is unpredictable so we use regex.
     # Starlette echoes back the matched origin rather than "*", so credentials work.
+    # Note: overwritten below, so this regex has no effect; see docs/context/gotchas.md G-010.
     allow_origin_regex=r"(chrome-extension|moz-extension)://[a-z0-9]+",
     allow_credentials=True,
     allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH", "HEAD"],
@@ -1638,6 +1639,8 @@ async def get_course_professors_by_term(
 )
 @limiter.limit("60/minute")
 @cached(ttl=TTL_WEEK, version=PROFESSOR_MATCHING_VERSION)
+# tests/test_campus_matching.py execs this function's source on its own: keep imports
+# inside it and the db.query order fixed. See docs/context/gotchas.md G-003.
 async def get_course_professors_details(
     request: Request,
     term_code: str,

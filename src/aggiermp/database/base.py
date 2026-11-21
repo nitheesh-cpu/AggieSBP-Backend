@@ -101,6 +101,8 @@ class ReviewDB(Base):
 class DepartmentDB(Base):
     __tablename__ = "departments"
 
+    # The real table has no short_name column, so ORM queries on this model fail.
+    # Use raw SQL; see docs/context/gotchas.md G-012.
     id = Column(String, primary_key=True)
     short_name = Column(String, nullable=False)
     long_name = Column(String, nullable=False)

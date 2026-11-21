@@ -471,6 +471,8 @@ async def track_section(
         
         # Add to Redis for real-time polling
         try:
+            # Resolves to aggiermp.api.core (does not exist), so this block never runs.
+            # Read docs/context/gotchas.md G-033 before "fixing" the import.
             from ..core.cache import get_redis
             redis_client = await get_redis()
             if redis_client:
