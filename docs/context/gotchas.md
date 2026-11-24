@@ -249,3 +249,9 @@ Format: **Looks like** / **Actually** / **If you change it** / **Where** / **Fix
 **Looks like:** `user_tracked_sections` and `user_schedules` are missing models.
 **Actually:** they were created outside the repo (no model, no migration). Account deletion lists them in `USER_DATA_TABLES`, and `tests/test_account_deletion.py` finds user_id tables from models, migrations and `INSERT INTO ... (user_id` in source, so a new user table that isn't listed fails the test.
 **Where:** `core/user_data.py`, `tests/test_account_deletion.py`.
+
+### G-041: Rate limits use `request.client.host`, which is right only because nginx fixes it
+**Looks like:** slowapi keys on `get_remote_address` with no Cloudflare handling, so behind Cloudflare it would see Cloudflare's servers.
+**Actually:** nginx on the VM turns `CF-Connecting-IP` into the real client address (only for Cloudflare's ranges) and sends `X-Forwarded-For: $remote_addr`; uvicorn trusts 127.0.0.1 and takes it. Before 2026-11-24 the limiter counted Cloudflare servers, so students behind one shared every limit (parent OI-019).
+**If you change it:** do not read `CF-Connecting-IP` in Python; anyone who reaches the VM directly could fake it. If nginx or Cloudflare goes away, redo the client-address setup there. Requests with `X-Internal-Key` skip limits anyway.
+**Where:** `api/main.py` (`InternalExemptLimiter`), VM `/etc/nginx/nginx.conf`, `/etc/nginx/cloudflare-realip.conf`, `/usr/local/sbin/update-cloudflare-realip`.
