@@ -34,7 +34,7 @@ INTERNAL_API_KEY=<long random string>     # website server-side fetches send it 
 CRONITOR_API_KEY=<Cronitor API key, monitor read scope>
 CRONITOR_MONITOR_KEYS=CX7Ga9,YStGRp,PpJGqD,FnepfT,<merge-proposals key>
 CRONITOR_ENVIRONMENT=production
-SITE_REVALIDATE_URL=https://aggieschedulebuilderplus.vercel.app/api/revalidate   # see "Cache" below
+SITE_REVALIDATE_URL=https://aggiesbp.com/api/revalidate   # see "Cache" below
 REVALIDATE_SECRET=<long random string, same value as on Vercel>                 # see "Cache" below
 ```
 

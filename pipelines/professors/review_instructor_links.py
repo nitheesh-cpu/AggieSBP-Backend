@@ -24,7 +24,7 @@ from pipelines.professors.hierarchical_summarization.ai_clients import (
 )
 
 
-ADMIN_URL = "https://aggieschedulebuilderplus.vercel.app/admin/instructors"
+ADMIN_URL = "https://aggiesbp.com/admin/instructors"
 BATCH_SIZE = 8
 LEVELS = {"high": 0, "possible": 1, "unclear": 2, "unlikely": 3, "very unlikely": 4}
 PROMPT = """Compare each RateMyProfessors profile to the Texas A&M registrar instructor.

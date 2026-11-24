@@ -135,7 +135,7 @@ CATEGORY_HELP = {
     UNCHECKED: "RMP not searched (run with --rmp)",
 }
 
-SITE_URL = "https://aggieschedulebuilderplus.vercel.app"
+SITE_URL = "https://aggiesbp.com"
 RMP_URL = "https://www.ratemyprofessors.com"
 # Section columns that could hold enrollment; none exist yet (Nov 2026).
 STUDENT_COLUMNS = ("enrollment", "actual_enrollment", "enrolled", "seats_taken")

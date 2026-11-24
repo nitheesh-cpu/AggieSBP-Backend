@@ -5,7 +5,7 @@
 [![sections upsert](https://cronitor.io/badges/YStGRp/production/gWxQMri7OHIMYTz3F7jFmar2hS4.svg)](https://cronitor.io)
 [![sections watcher](https://cronitor.io/badges/FnepfT/production/zqE7gN84msH6qtSME2AqAYzXWVs.svg)](https://cronitor.io)
 
-The API and data pipelines behind [AggieSB+](https://aggieschedulebuilderplus.vercel.app), a course and professor lookup tool for Texas A&M students.
+The API and data pipelines behind [AggieSB+](https://aggiesbp.com), a course and professor lookup tool for Texas A&M students.
 
 **API docs:** https://api-aggiesbp.nitheeshk.com/docs · **Frontend:** [AggieSBP-Frontend](https://github.com/nitheesh-cpu/AggieSBP-Frontend) · **Extension:** [AggieSBP-Extension](https://github.com/nitheesh-cpu/AggieSBP-Extension)
 

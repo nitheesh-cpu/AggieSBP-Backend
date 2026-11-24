@@ -138,7 +138,7 @@ class UrlTests(unittest.TestCase):
         self.assertEqual(report.rmp_search_url(1006, "Brett H. Furth"),
                          "https://www.ratemyprofessors.com/search/professors/1006?q=Brett%20Furth")
         self.assertEqual(report.site_professor_url("VGVh/Y2hl+ci0=?x"),
-                         "https://aggieschedulebuilderplus.vercel.app/professor/VGVh%2FY2hl%2Bci0=%3Fx")
+                         "https://aggiesbp.com/professor/VGVh%2FY2hl%2Bci0=%3Fx")
 
 
 def unmatched_instructor(name='<script>alert("x")</script> Tak'):
@@ -164,7 +164,7 @@ class OutputTests(unittest.TestCase):
         self.assertIn("tied &lt;b&gt;", page)
         self.assertIn("Hee &quot;Q&quot; Tak", page)
         self.assertIn('href="https://www.ratemyprofessors.com/professor/5"', page)
-        self.assertIn('href="https://aggieschedulebuilderplus.vercel.app/professor/p%2F1"', page)
+        self.assertIn('href="https://aggiesbp.com/professor/p%2F1"', page)
         self.assertIn("search/professors/1003?q=", page)
         self.assertEqual(page.count("<script>"), 1)
         self.assertNotIn("src=", page)

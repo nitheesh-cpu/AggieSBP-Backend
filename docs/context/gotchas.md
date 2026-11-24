@@ -66,7 +66,7 @@ Format: **Looks like** / **Actually** / **If you change it** / **Where** / **Fix
 ### G-010: CORS: the extension regex is dead code, and wildcard Vercel origins are safe only because tokens are headers
 **Looks like:** `allow_origin_regex` allows `chrome-extension://` and `moz-extension://` origins.
 **Actually:** a few lines later `_cors_kwargs["allow_origin_regex"]` is overwritten with the Vercel + localhost regex (or localhost only). The extension still works because MV3 background fetches to `host_permissions` URLs bypass CORS. `^https://.*\.vercel\.app$` with `allow_credentials=True` is tolerable only because SuperTokens uses `get_token_transfer_method -> "header"` and `anti_csrf="NONE"`. `https://howdy.tamu.edu` in the origin list is a leftover from a content-script fetch that no longer exists.
-**If you change it:** switching sessions to cookies makes every `*.vercel.app` site a credentialed origin. Cleanup is an open item (O-006).
+**If you change it:** switching sessions to cookies makes every `*.vercel.app` site a credentialed origin (production turned the wildcard off on 2026-11-24 with `cors_allow_vercel_previews=false` in the VM `.env`; the code default is still True). Cleanup is an open item (O-006).
 **Where:** `api/main.py` (CORS block, SuperTokens init), `core/config.py` (`cors_allow_vercel_previews`).
 
 ### G-011: `Depends(get_session)` from `database.base` leaks connections
