@@ -50,6 +50,7 @@ from .routers.admin import router as admin_router
 from .routers.admin_jobs import router as admin_jobs_router
 from .routers.admin_monitoring import router as admin_monitoring_router
 from .routers.admin_cache import router as admin_cache_router
+from .routers.admin_hidden import router as admin_hidden_router
 from .routers.admin_links import router as admin_links_router
 from ..core.config import settings
 from ..core.professor_identity import MATCHING_VERSION as PROFESSOR_MATCHING_VERSION
@@ -1667,7 +1668,7 @@ async def get_course_professors_details(
     )
     from aggiermp.core.name_matching import grade_row_matches
     from aggiermp.core.professor_identity import load_aliases, match_instructor_any_campus
-    from aggiermp.core.instructor_links import load_instructor_links
+    from aggiermp.core.instructor_links import load_hidden_ids, load_instructor_links
     from aggiermp.core.campuses import (
         TEXAS_AM_ID, university_id_for_campus, campus_from_term_description,
     )
@@ -1742,6 +1743,8 @@ async def get_course_professors_details(
         # Reviewed instructor <-> profile decisions (admin console). Uses
         # db.execute only, so the db.query sequence is unchanged.
         instructor_links = load_instructor_links(db)
+        # Hidden profiles (takedowns), loaded once. db.execute only.
+        hidden_ids = load_hidden_ids(db)
         # Official grades for this course (College Station only), loaded once.
         course_gpa_rows: Optional[List[Any]] = None
 
@@ -1780,6 +1783,10 @@ async def get_course_professors_details(
             if not matched.shown:
                 continue
             professor = matched.professor
+            # A hidden profile counts as "no profile": the instructor stays
+            # listed with grades only.
+            if professor is not None and str(professor.id) in hidden_ids:
+                professor = None
 
             # Merged profiles show the ratings of every merged entry.
             avg_rating = professor.avg_rating if professor else None
@@ -6378,4 +6385,5 @@ app.include_router(admin_router)
 app.include_router(admin_jobs_router)
 app.include_router(admin_monitoring_router)
 app.include_router(admin_cache_router)
+app.include_router(admin_hidden_router)
 app.include_router(admin_links_router)

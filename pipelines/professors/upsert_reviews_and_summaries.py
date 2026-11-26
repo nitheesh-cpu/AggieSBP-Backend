@@ -66,6 +66,7 @@ from pipelines.professors.hierarchical_summarization.ai_clients import (
 )
 from pipelines.professors.upsert import upsert_professor_summary
 from pipelines.professors.review_sync import fetch_rating_counts, needs_review_fetch
+from aggiermp.core.hidden_professors import hidden_professor_ids
 from aggiermp.core.name_matching import parse_person_name, professor_names_match
 from aggiermp.core.professor_identity import load_aliases
 from aggiermp.core.summary_lock import serialized_summary_run
@@ -249,6 +250,15 @@ def batch_upsert_reviews(session: Any, reviews_batch: List[Any]) -> None:
     upsert_reviews(session, reviews_batch)
 
 
+def without_hidden(
+    items: List[Any], hidden_ids: Set[str], key=lambda item: item
+) -> List[Any]:
+    """Drop entries whose professor id is hidden (takedown requests)."""
+    if not hidden_ids:
+        return list(items)
+    return [item for item in items if key(item) not in hidden_ids]
+
+
 @serialized_summary_run
 def upsert_reviews_and_summaries(
     professor_ids: List[str] | None = None,
@@ -340,6 +350,12 @@ def upsert_reviews_and_summaries(
         remaining_professors = [
             pid for pid in professor_ids if pid not in processed_professors
         ]
+        # Hidden professors get no review fetch, no review insert, no summary.
+        hidden_ids = hidden_professor_ids(session)
+        visible_professors = without_hidden(remaining_professors, hidden_ids)
+        hidden_skipped = len(remaining_professors) - len(visible_professors)
+        remaining_professors = visible_professors
+        print(f"Hidden professors skipped: {hidden_skipped}")
         # Use actual stored rows, not potentially stale remote rating counts.
         all_existing_reviews = session.query(ReviewDB.professor_id, ReviewDB.id).all()
         professor_existing_reviews: Dict[str, Set[str]] = {}
@@ -389,6 +405,7 @@ def upsert_reviews_and_summaries(
             "reviews_added": 0,
             "summaries_generated": 0,
             "professors_skipped": empty_professors,
+            "hidden_skipped": hidden_skipped,
             "quota_exhausted": False,
             "tamu_requests": 0,
             "claims_accepted": 0,
@@ -474,6 +491,9 @@ def upsert_reviews_and_summaries(
             all_new_reviews = []
             for prof_id, reviews in new_reviews_dict.items():
                 all_new_reviews.extend(reviews)
+            all_new_reviews = without_hidden(
+                all_new_reviews, hidden_ids, lambda review: review.professor_id
+            )
 
             if all_new_reviews:
                 print(f"{len(all_new_reviews)} new", flush=True)
@@ -908,6 +928,13 @@ def fetch_reviews_and_queue_rebuilds(
                     results["professors_added"] += imported.get("new", 0)
         if professor_ids is None:
             professor_ids = [prof.id for prof in session.query(ProfessorDB).all()]
+        # Hidden professors are not fetched, stored or queued. Their professors
+        # row still updates in the import above.
+        hidden_ids = hidden_professor_ids(session)
+        visible_ids = without_hidden(professor_ids, hidden_ids)
+        results["hidden_skipped"] = len(professor_ids) - len(visible_ids)
+        professor_ids = visible_ids
+        print(f"Hidden professors skipped: {results['hidden_skipped']}", flush=True)
         results["professors_checked"] = len(professor_ids)
 
         aliases = load_aliases(session)
@@ -951,6 +978,7 @@ def fetch_reviews_and_queue_rebuilds(
             )
 
         def queue(plan: List[Tuple[str, str, bool]]) -> None:
+            plan = without_hidden(plan, hidden_ids, lambda row: row[0])
             if not plan or not queue_ok:
                 return
             if dry_run:
@@ -1006,6 +1034,9 @@ def fetch_reviews_and_queue_rebuilds(
                         continue
                     new_reviews.extend(fetched)
             results["professors_fetched"] += len(batch)
+            new_reviews = without_hidden(
+                new_reviews, hidden_ids, lambda review: review.professor_id
+            )
             if not new_reviews:
                 continue
 

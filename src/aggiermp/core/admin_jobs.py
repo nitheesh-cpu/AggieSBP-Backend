@@ -4,6 +4,8 @@ import json
 import uuid
 from sqlalchemy import text
 
+from .hidden_professors import hidden_professor_ids
+
 
 def ready(db):
     return db.execute(
@@ -60,6 +62,9 @@ def enqueue(db, professor_ids):
         ).all()
     )
     ids = sorted({aliases.get(pid, pid) for pid in ids})
+    hidden = hidden_professor_ids(db)
+    if hidden.intersection(ids) or hidden.intersection(aliases):
+        raise ValueError("Hidden professors cannot be queued for summaries.")
     rows = (
         db.execute(
             text(
@@ -97,6 +102,7 @@ def enqueue(db, professor_ids):
 
 
 def pending(db):
+    hidden = hidden_professor_ids(db)
     rows = db.execute(
         text("""SELECT r.*, concat_ws(' ',p.first_name,p.last_name) AS name
         FROM admin_summary_rebuilds r JOIN professors p ON p.id=r.professor_id
@@ -112,4 +118,5 @@ def pending(db):
             revision=r["revision"],
         )
         for r in rows
+        if r["professor_id"] not in hidden
     ]

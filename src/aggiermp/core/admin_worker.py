@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from ..database.base import get_session, create_db_engine
+from .hidden_professors import hidden_professor_ids
 from .summary_lock import summary_execution_lock, SummaryBusyError
 from .config import settings
 
@@ -148,6 +149,15 @@ def rebuild_one(db, professor_id):
         ).scalar()
         or professor_id
     )
+    # A professor hidden after the job was queued: no AI call, no summary.
+    # Drop the queue rows so it does not come back as pending.
+    if {professor_id, canonical} & hidden_professor_ids(db):
+        db.execute(
+            text("DELETE FROM admin_summary_rebuilds WHERE professor_id = ANY(:ids)"),
+            {"ids": [professor_id, canonical]},
+        )
+        db.commit()
+        return "hidden"
     revision = db.execute(
         text(
             "SELECT revision,changed_at FROM admin_summary_rebuilds WHERE professor_id=:id"
@@ -280,7 +290,7 @@ def run_once():
                         db.rollback()
                         outcome = "failed"
                     logs.append(f"Professor {professor_id}: {outcome}")
-                    if outcome == "succeeded":
+                    if outcome in ("succeeded", "hidden"):
                         completed.append(professor_id)
                     else:
                         failed.append(professor_id)

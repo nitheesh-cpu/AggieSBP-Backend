@@ -1243,8 +1243,16 @@ def main() -> None:
             check_rmp(session, unmatched, searcher, aliases)
             logger.info("RMP: %d new searches, cache %s", searcher.searches, args.rmp_cache)
 
+        from aggiermp.core.hidden_professors import hidden_professor_ids
+
+        hidden_ids = hidden_professor_ids(session)
+        hidden_skipped = 0
         for instructor in unmatched:
-            instructor.candidates = collect_candidates(instructor)
+            found = collect_candidates(instructor)
+            kept = {pid: c for pid, c in found.items() if pid not in hidden_ids}
+            hidden_skipped += len(found) - len(kept)
+            instructor.candidates = kept
+        print(f"Hidden professor candidates skipped: {hidden_skipped}")
         attach_profile_evidence(session, unmatched)
 
         listed, dropped, decided = report_rows(unmatched, links)

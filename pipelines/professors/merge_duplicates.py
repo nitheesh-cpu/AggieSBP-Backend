@@ -55,6 +55,7 @@ from aggiermp.core.professor_merges import (  # noqa: F401 (chain_problem: tests
     stored_aliases,
 )
 from aggiermp.core.cache_invalidation import invalidate_professors
+from aggiermp.core.hidden_professors import hidden_professor_ids
 from aggiermp.database.base import ProfessorDB, get_session
 
 
@@ -64,7 +65,11 @@ def plan(
     query = session.query(ProfessorDB)
     if university_id:
         query = query.filter(ProfessorDB.university_id == university_id)
-    professors = query.all()
+    hidden_ids = hidden_professor_ids(session)
+    all_professors = query.all()
+    # Hidden professors are never proposed for merging.
+    professors = [p for p in all_professors if p.id not in hidden_ids]
+    print(f"Hidden professors skipped: {len(all_professors) - len(professors)}")
     by_id = {professor.id: professor for professor in professors}
     profiles = load_profiles(session, professors)
     people = load_all_people(session)

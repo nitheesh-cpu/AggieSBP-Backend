@@ -126,6 +126,24 @@ def links_table_exists(db: Any) -> bool:
     return isinstance(found, str)
 
 
+def load_hidden_ids(db: Any) -> frozenset:
+    """Hidden professor ids (whole merge groups) for the course page matcher.
+
+    Empty for a Mock session in tests, like links_table_exists.
+    """
+    from sqlalchemy import text
+
+    from .hidden_professors import hidden_professor_ids
+
+    try:
+        found = db.execute(text("SELECT to_regclass('hidden_professors')")).scalar()
+    except Exception:
+        return frozenset()
+    if not isinstance(found, str):
+        return frozenset()
+    return frozenset(hidden_professor_ids(db))
+
+
 def load_instructor_links(db: Any) -> LoadedLinks:
     """Confirmed links, "no profile" keys and rejected pairs; empty when the
     table does not exist. Proposed rows never affect the course page."""

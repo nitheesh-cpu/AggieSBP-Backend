@@ -53,6 +53,8 @@ class RunnerTests(unittest.TestCase):
         )
         with patch.object(
             runner, "HierarchicalSummarizationPipeline", return_value=pipeline
+        ), patch.object(
+            runner, "hidden_professor_ids", return_value=set()
         ), patch.object(runner, "load_checkpoint", return_value={"done"}), patch.object(
             runner, "save_checkpoint"
         ) as save, patch.object(
@@ -143,6 +145,8 @@ class RunnerTests(unittest.TestCase):
         )
         with patch.object(
             runner, "load_aliases", return_value={"alias": "p"} if alias_only else {}
+        ), patch.object(
+            runner, "hidden_professor_ids", return_value=set()
         ), patch.object(
             runner, "HierarchicalSummarizationPipeline", return_value=pipeline
         ), patch.object(

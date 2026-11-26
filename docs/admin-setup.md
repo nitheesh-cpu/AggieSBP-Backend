@@ -21,10 +21,23 @@ psql "${DB[@]}" -f $M/002_professor_aliases.sql     # skip if already applied; r
 psql "${DB[@]}" -f $M/003_push_notifications.sql
 psql "${DB[@]}" -f $M/004_admin_jobs.sql            # needs 002; first run marks existing reviewed merges for one summary rebuild
 psql "${DB[@]}" -f $M/005_instructor_links.sql      # instructor <-> RMP profile links reviewed in /admin
+psql "${DB[@]}" -f $M/006_hidden_professors.sql     # professors hidden after a takedown request (D-047)
 ```
 
 Re-running 004 does not mark merges as pending again. No AI calls run during migration. Until 005 is applied the
-course pages behave as before and `/admin/instructor-links` answers 409.
+course pages behave as before and `/admin/instructor-links` answers 409. Until 006 is applied
+`/admin/hidden-professors` answers 503.
+
+Hiding a professor (takedown request). Never put the id in a committed file; the repo is public.
+
+```sh
+curl -X POST "$API/admin/hidden-professors" -H "X-Admin-Key: $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"professor_id": "<id from /professor/find>", "reason": "takedown request"}'
+```
+
+It deletes our copy of their reviews and summaries for the whole merge group and clears the API cache. The
+professor row stays so the nightly import does not bring them back. `GET` lists hidden professors; `DELETE
+/admin/hidden-professors/<id>` undoes it (reviews return on the next fetch, summaries need a rebuild).
 
 ## 3. `.env` additions (`/home/opc/backend/.env`)
 

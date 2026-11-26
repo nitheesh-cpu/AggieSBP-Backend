@@ -354,6 +354,7 @@ def process_all_professors(
     Returns:
         Dictionary with processing results
     """
+    from aggiermp.core.hidden_professors import hidden_professor_ids
     from aggiermp.database.base import ReviewDB
 
     close_session = False
@@ -361,9 +362,19 @@ def process_all_professors(
         session = get_session()
         close_session = True
 
-    results: Dict[str, Any] = {"processed": 0, "failed": 0, "errors": []}
+    results: Dict[str, Any] = {
+        "processed": 0,
+        "failed": 0,
+        "errors": [],
+        "hidden_skipped": 0,
+    }
 
     try:
+        # Hidden professors are never sent to the summarizer.
+        hidden_ids = hidden_professor_ids(session)
+        results["hidden_skipped"] = sum(1 for pid in professor_ids if pid in hidden_ids)
+        professor_ids = [pid for pid in professor_ids if pid not in hidden_ids]
+        print(f"Hidden professors skipped: {results['hidden_skipped']}")
         for professor_id in professor_ids:
             try:
                 # Fetch reviews for this professor

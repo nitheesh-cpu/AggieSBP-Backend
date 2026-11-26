@@ -28,12 +28,27 @@ CREATE TABLE IF NOT EXISTS professor_aliases (
 CREATE INDEX IF NOT EXISTS ix_professor_aliases_canonical_id
     ON professor_aliases (canonical_id);
 
--- professor id -> the id it is shown under (itself unless merged).
+-- Hidden professors (see 006_hidden_professors.sql). Created here too so this
+-- file can be re-run on its own without un-hiding anyone.
+CREATE TABLE IF NOT EXISTS hidden_professors (
+    professor_id VARCHAR PRIMARY KEY,
+    reason TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+-- professor id -> the id it is shown under (itself unless merged). Hidden
+-- merge groups have no rows, so every *_merged view below drops them.
 CREATE OR REPLACE VIEW professor_canonical_ids AS
 SELECT p.id AS professor_id, COALESCE(a.canonical_id, p.id) AS canonical_id
 FROM professors p
 LEFT JOIN professor_aliases a
-    ON a.alias_id = p.id AND a.status = 'confirmed';
+    ON a.alias_id = p.id AND a.status = 'confirmed'
+WHERE COALESCE(a.canonical_id, p.id) NOT IN (
+    SELECT COALESCE(ha.canonical_id, h.professor_id)
+    FROM hidden_professors h
+    LEFT JOIN professor_aliases ha
+        ON ha.alias_id = h.professor_id AND ha.status = 'confirmed'
+);
 
 DO $$
 DECLARE
