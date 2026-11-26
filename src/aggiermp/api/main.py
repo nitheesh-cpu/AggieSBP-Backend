@@ -2709,10 +2709,11 @@ async def get_course_details(
     - `course_id`: Course identifier (format: CSCE121, MATH151, etc.)
     """
     try:
-        # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
+        # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120").
+        # Law has suffixed numbers ("LAW 7383S").
         import re
 
-        match = re.match(r"^([A-Z]+)(\d+)$", re.sub(r"\s+", "", course_id).upper())
+        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", re.sub(r"\s+", "", course_id).upper())
         if not match:
             raise HTTPException(
                 status_code=400,
@@ -2721,6 +2722,7 @@ async def get_course_details(
 
         dept, course_num = match.groups()
         dept = current_subject(dept)
+        course_num_int = int(re.match(r"\d+", course_num).group())
 
         # Get course basic info with anex data
         course_query = text("""
@@ -3115,27 +3117,37 @@ async def get_course_details(
                 # No title available, just use the code
                 section_attributes.append(attr.attribute_id)
 
-        # Get related courses (courses in same department with similar numbers)
+        # Get related courses (courses in same department with similar numbers).
+        # Compare leading digits: a plain ::int cast fails on "7383S" and took
+        # every LAW page down with a 500 (G-043).
         related_query = text("""
-            SELECT 
-                c.code as code,
-                c.name as name,
-                CASE 
-                    WHEN ABS(c.course_number::int - :course_num_int) <= 10 THEN 95
-                    WHEN ABS(c.course_number::int - :course_num_int) <= 50 THEN 78
+            WITH numbered AS (
+                SELECT
+                    c.code,
+                    c.name,
+                    substring(c.course_number from '^[0-9]+')::int AS num
+                FROM courses c
+                WHERE c.subject_id = :dept
+                  AND c.course_number != :course_num
+            )
+            SELECT
+                code,
+                name,
+                CASE
+                    WHEN ABS(num - :course_num_int) <= 10 THEN 95
+                    WHEN ABS(num - :course_num_int) <= 50 THEN 78
                     ELSE 72
                 END as similarity
-            FROM courses c
-            WHERE c.subject_id = :dept 
-              AND c.course_number != :course_num
-              AND ABS(c.course_number::int - :course_num_int) <= 100
-            ORDER BY similarity DESC, c.course_number::int
+            FROM numbered
+            WHERE num IS NOT NULL
+              AND ABS(num - :course_num_int) <= 100
+            ORDER BY similarity DESC, num, code
             LIMIT 3
         """)
 
         related_result = db.execute(
             related_query,
-            {"dept": dept, "course_num": course_num, "course_num_int": int(course_num)},
+            {"dept": dept, "course_num": course_num, "course_num_int": course_num_int},
         )
         related_courses = []
         for rel in related_result:
@@ -3327,7 +3339,7 @@ async def get_course_professors(
         # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
         import re
 
-        match = re.match(r"^([A-Z]+)(\d+)$", re.sub(r"\s+", "", course_id).upper())
+        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", re.sub(r"\s+", "", course_id).upper())
         if not match:
             raise HTTPException(
                 status_code=400,
@@ -3777,7 +3789,7 @@ async def get_course_professor_reviews(
         # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
         import re
 
-        match = re.match(r"^([A-Z]+)(\d+)$", re.sub(r"\s+", "", course_id).upper())
+        match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", re.sub(r"\s+", "", course_id).upper())
         if not match:
             raise HTTPException(
                 status_code=400,
@@ -4103,7 +4115,7 @@ async def compare_courses(
             # Parse course_id (e.g., "CSCE120" -> dept="CSCE", course_num="120")
             import re
 
-            match = re.match(r"^([A-Z]+)(\d+)$", re.sub(r"\s+", "", course_id).upper())
+            match = re.match(r"^([A-Z]+)(\d+[A-Z]?)$", re.sub(r"\s+", "", course_id).upper())
             if not match:
                 # Skip invalid course IDs rather than failing the entire request
                 continue

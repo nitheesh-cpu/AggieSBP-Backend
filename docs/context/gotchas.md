@@ -261,3 +261,9 @@ Format: **Looks like** / **Actually** / **If you change it** / **Where** / **Fix
 **Actually:** live RMP returned `numRatings` 753 with 754 listed ratings (2026-11-25). `deleted_review_ids` therefore trusts a list that is at least as long as `numRatings` and returns None only for a shorter one (missing pages would look like deletions). The same lag makes `needs_review_fetch` refetch such professors each night (cheap: no new ids).
 **If you change it:** never require equality, and never treat a short list as authoritative.
 **Where:** `pipelines/professors/review_sync.py` (`deleted_review_ids`, `needs_review_fetch`).
+
+### G-043: Course numbers are not always digits (LAW 7383S)
+**Looks like:** `courses.course_number` is numeric, so `course_number::int` and a `\d+` route regex are safe.
+**Actually:** 12 Law courses end in a letter (`7383S`, 2026-11-25). The related-courses query in `get_course_details` cast every course number in the subject to int, so Postgres failed on `7383S` and every LAW course page returned 500 (Search Console: 265 pages with server errors after 2026-11-23). It now compares leading digits (`substring(course_number from '^[0-9]+')::int`), and the course routes accept one trailing letter (`\d+[A-Z]?`), like the course-professors route already did.
+**If you change it:** never cast `course_number` to int without a digits-only guard that Postgres must evaluate first (a `CASE`, or `substring` as above); `WHERE x ~ '^[0-9]+$' AND x::int ...` is not guaranteed to short-circuit.
+**Where:** `api/main.py` (`get_course_details` and the other course routes' regex).
