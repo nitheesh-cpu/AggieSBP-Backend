@@ -255,3 +255,9 @@ Format: **Looks like** / **Actually** / **If you change it** / **Where** / **Fix
 **Actually:** nginx on the VM turns `CF-Connecting-IP` into the real client address (only for Cloudflare's ranges) and sends `X-Forwarded-For: $remote_addr`; uvicorn trusts 127.0.0.1 and takes it. Before 2026-11-24 the limiter counted Cloudflare servers, so students behind one shared every limit (parent OI-019).
 **If you change it:** do not read `CF-Connecting-IP` in Python; anyone who reaches the VM directly could fake it. If nginx or Cloudflare goes away, redo the client-address setup there. Requests with `X-Internal-Key` skip limits anyway.
 **Where:** `api/main.py` (`InternalExemptLimiter`), VM `/etc/nginx/nginx.conf`, `/etc/nginx/cloudflare-realip.conf`, `/usr/local/sbin/update-cloudflare-realip`.
+
+### G-042: RMP's numRatings can be lower than the number of ratings it lists
+**Looks like:** a teacher's `numRatings` should equal the ratings its `ratings` connection returns.
+**Actually:** live RMP returned `numRatings` 753 with 754 listed ratings (2026-11-25). `deleted_review_ids` therefore trusts a list that is at least as long as `numRatings` and returns None only for a shorter one (missing pages would look like deletions). The same lag makes `needs_review_fetch` refetch such professors each night (cheap: no new ids).
+**If you change it:** never require equality, and never treat a short list as authoritative.
+**Where:** `pipelines/professors/review_sync.py` (`deleted_review_ids`, `needs_review_fetch`).

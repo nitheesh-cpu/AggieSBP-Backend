@@ -22,6 +22,7 @@ psql "${DB[@]}" -f $M/003_push_notifications.sql
 psql "${DB[@]}" -f $M/004_admin_jobs.sql            # needs 002; first run marks existing reviewed merges for one summary rebuild
 psql "${DB[@]}" -f $M/005_instructor_links.sql      # instructor <-> RMP profile links reviewed in /admin
 psql "${DB[@]}" -f $M/006_hidden_professors.sql     # professors hidden after a takedown request (D-047)
+psql "${DB[@]}" -f $M/007_rmp_missing_profiles.sql  # profiles RMP removed, tracked by the nightly fetch (D-049)
 ```
 
 Re-running 004 does not mark merges as pending again. No AI calls run during migration. Until 005 is applied the
@@ -90,6 +91,8 @@ Fetches new RateMyProfessors reviews (only for professors whose rating count cha
 ```
 
 It does not take the summary lock, so it can overlap a worker rebuild safely: a review arriving mid-rebuild bumps the queue revision and the professor stays pending.
+
+It also watches for profiles and reviews RateMyProfessors removed (D-049, needs migrations 006 and 007). Without a flag it only records misses in `rmp_missing_profiles` and logs lines like `would hide <id> <name>` and `would remove N reviews of <id>`. After a few nights of logs that look right, add `--apply-removals` to the cron line: a profile missing on two different nights is then hidden (or, if RMP merged it into a profile it still has, only its own stored reviews are deleted), removed reviews are deleted, and profiles back on RMP are unhidden. Hidden ones show in `GET /admin/hidden-professors` with the reason "Removed from RateMyProfessors (detected automatically)". A campus with too many missing profiles is skipped and the run exits non-zero, so Cronitor flags it.
 
 ### Monthly instructor link proposals
 

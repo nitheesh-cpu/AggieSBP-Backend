@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from ...core.admin_auth import require_admin_key
 from ...core.cache_invalidation import ainvalidate_professors
+from ...core.hidden_professors import hide_professor as hide_group, unhide_professor as unhide_group
 from ...database.base import request_session
 
 logger = logging.getLogger(__name__)
@@ -63,31 +64,6 @@ def _exists(db: Session, name: str) -> bool:
 def _require_table(db: Session) -> None:
     if not _exists(db, "hidden_professors"):
         raise HTTPException(status_code=503, detail=MISSING_TABLE)
-
-
-def _merge_group(db: Session, professor_id: str) -> Set[str]:
-    """The id, its confirmed canonical, and every confirmed alias of that canonical."""
-    group = {professor_id}
-    if not _exists(db, "professor_aliases"):
-        return group
-    canonical = db.execute(
-        text(
-            "SELECT canonical_id FROM professor_aliases "
-            "WHERE alias_id = :id AND status = 'confirmed'"
-        ),
-        {"id": professor_id},
-    ).scalar()
-    canonical = str(canonical) if canonical else professor_id
-    group.add(canonical)
-    rows = db.execute(
-        text(
-            "SELECT alias_id FROM professor_aliases "
-            "WHERE canonical_id = :canonical AND status = 'confirmed'"
-        ),
-        {"canonical": canonical},
-    ).fetchall()
-    group.update(str(r[0]) for r in rows)
-    return group
 
 
 async def _clear_caches(ids: Set[str]) -> bool:
@@ -147,29 +123,10 @@ async def hide_professor(
                 text("SELECT 1 FROM professors WHERE id = :id"), {"id": body.professor_id}
             ).first()
         )
-        group = _merge_group(db, body.professor_id)
-        ids = sorted(group)
-        db.execute(
-            text(
-                "INSERT INTO hidden_professors (professor_id, reason) "
-                "VALUES (:id, :reason) "
-                "ON CONFLICT (professor_id) DO UPDATE SET reason = EXCLUDED.reason"
-            ),
-            {"id": body.professor_id, "reason": body.reason},
-        )
-        reviews = db.execute(
-            text("DELETE FROM reviews WHERE professor_id = ANY(:ids)"), {"ids": ids}
-        ).rowcount
-        summaries = db.execute(
-            text("DELETE FROM professor_summaries_new WHERE professor_id = ANY(:ids)"),
-            {"ids": ids},
-        ).rowcount
-        rebuilds = 0
-        if _exists(db, "admin_summary_rebuilds"):
-            rebuilds = db.execute(
-                text("DELETE FROM admin_summary_rebuilds WHERE professor_id = ANY(:ids)"),
-                {"ids": ids},
-            ).rowcount
+        hidden = hide_group(db, body.professor_id, body.reason)
+        group = set(hidden["groupIds"])
+        ids = hidden["groupIds"]
+        deleted = hidden["deleted"]
         db.commit()
     except HTTPException:
         db.rollback()
@@ -183,11 +140,7 @@ async def hide_professor(
         "professorId": body.professor_id,
         "known": known,
         "groupIds": ids,
-        "deleted": {
-            "reviews": reviews or 0,
-            "summaries": summaries or 0,
-            "pendingRebuilds": rebuilds or 0,
-        },
+        "deleted": deleted,
         "cacheCleared": cleared,
     }
 
@@ -203,13 +156,9 @@ async def unhide_professor(
     """
     try:
         _require_table(db)
-        removed = db.execute(
-            text("DELETE FROM hidden_professors WHERE professor_id = :id"),
-            {"id": professor_id},
-        ).rowcount
-        if not removed:
+        group = unhide_group(db, professor_id)
+        if group is None:
             raise HTTPException(status_code=404, detail="Professor is not hidden.")
-        group = _merge_group(db, professor_id)
         db.commit()
     except HTTPException:
         db.rollback()

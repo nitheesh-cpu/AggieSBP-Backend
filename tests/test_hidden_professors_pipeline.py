@@ -35,6 +35,8 @@ class FetchOnlyHiddenTests(unittest.TestCase):
         ), patch.object(
             runner, "fetch_rating_counts", return_value={}
         ), patch.object(
+            runner.review_sync, "fetch_school_listings", return_value={}
+        ), patch.object(
             runner, "get_new_reviews_for_professor", side_effect=fetch
         ), patch.object(
             runner, "batch_upsert_reviews"

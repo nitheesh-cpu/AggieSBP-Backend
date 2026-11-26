@@ -81,6 +81,9 @@ class FetchOnlyTests(unittest.TestCase):
             "summary_save": patch.object(runner, "upsert_professor_summary"),
             "aliases": patch.object(runner, "load_aliases", return_value=aliases or {}),
             "counts": patch.object(runner, "fetch_rating_counts", return_value={}),
+            "listings": patch.object(
+                runner.review_sync, "fetch_school_listings", return_value={}
+            ),
             "hidden": patch.object(runner, "hidden_professor_ids", return_value=set()),
             # A full run first imports professors new on RMP; never hit RMP here.
             "discover": patch(

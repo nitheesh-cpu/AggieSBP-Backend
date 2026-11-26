@@ -65,6 +65,7 @@ from pipelines.professors.hierarchical_summarization.ai_clients import (
     TamuAIQuotaExceeded,
 )
 from pipelines.professors.upsert import upsert_professor_summary
+from pipelines.professors import review_sync
 from pipelines.professors.review_sync import fetch_rating_counts, needs_review_fetch
 from aggiermp.core.hidden_professors import hidden_professor_ids
 from aggiermp.core.name_matching import parse_person_name, professor_names_match
@@ -869,6 +870,10 @@ def queue_summary_rebuilds(session: Any, plan: List[Tuple[str, str, bool]]) -> i
     return len(plan)
 
 
+def review_sync_collector() -> Any:
+    return RMPReviewCollector()
+
+
 def fetch_reviews_and_queue_rebuilds(
     professor_ids: List[str] | None = None,
     session: Any = None,
@@ -878,6 +883,7 @@ def fetch_reviews_and_queue_rebuilds(
     dry_run: bool = False,
     invalidate_cache: bool = True,
     discover_professors: bool = True,
+    apply_removals: bool = False,
 ) -> Dict[str, Any]:
     """Nightly mode: store new RMP reviews and queue summary rebuilds.
 
@@ -890,7 +896,9 @@ def fetch_reviews_and_queue_rebuilds(
     whose RMP rating count changed (as in the full pipeline), stored, their
     caches cleared, and professors whose reviews would trigger a summary under
     the usual threshold are added to admin_summary_rebuilds for the admin
-    worker. It is deliberately not wrapped in serialized_summary_run: it never
+    worker. On a full run it also watches for profiles and reviews RMP removed
+    (rmp_removals.py): misses are always recorded, but nothing is hidden or
+    deleted unless ``apply_removals`` is set. It is deliberately not wrapped in serialized_summary_run: it never
     generates summaries, review inserts are idempotent, and the queue write
     happens after the reviews are committed, so a worker that sees a bumped
     revision also sees the reviews. It need not wait for a summary run.
@@ -908,8 +916,14 @@ def fetch_reviews_and_queue_rebuilds(
         "professors_queued": 0,
         "professors_added": 0,
         "queue_unavailable": False,
+        "profiles_missing": 0,
+        "profiles_hidden": 0,
+        "profiles_content_deleted": 0,
+        "profiles_restored": 0,
+        "reviews_removed": 0,
         "errors": [],
     }
+    full_run = professor_ids is None
     try:
         if professor_ids is None and discover_professors:
             if dry_run:
@@ -1005,7 +1019,38 @@ def fetch_reviews_and_queue_rebuilds(
         )
 
         print("Checking rating counts by school...", flush=True)
-        remote_counts = fetch_rating_counts(session, professor_ids)
+        if full_run:
+            listings = review_sync.fetch_school_listings(session, professor_ids)
+            remote_counts = {
+                tid: count
+                for listing in listings.values()
+                for tid, count in listing.items()
+                if type(count) is int
+            }
+            if listings:
+                from pipelines.professors import rmp_removals
+
+                removal = rmp_removals.check_removed_profiles(
+                    session, listings, apply=apply_removals, dry_run=dry_run
+                )
+                for key in (
+                    "profiles_missing",
+                    "profiles_hidden",
+                    "profiles_content_deleted",
+                    "profiles_restored",
+                ):
+                    results[key] = removal.get(key, 0)
+                results["errors"].extend(removal.get("errors", []))
+                changed_professor_ids.update(removal.get("affected_ids", ()))
+                newly_hidden = set(removal.get("hidden_ids", ()))
+                if newly_hidden:
+                    hidden_ids = set(hidden_ids) | newly_hidden
+                    professor_ids = without_hidden(professor_ids, hidden_ids)
+                    results["professors_checked"] = len(professor_ids)
+                    for pid in newly_hidden:
+                        existing.pop(pid, None)
+        else:
+            remote_counts = fetch_rating_counts(session, professor_ids)
         to_fetch = [
             pid
             for pid in professor_ids
@@ -1068,12 +1113,80 @@ def fetch_reviews_and_queue_rebuilds(
                 )
             )
 
+        if full_run:
+            from sqlalchemy import text
+
+            collector = None
+            try:
+                for pid in professor_ids:
+                    remote = remote_counts.get(pid)
+                    stored_ids = existing.get(pid, set())
+                    if type(remote) is not int or remote >= len(stored_ids):
+                        continue
+                    if collector is None:
+                        collector = review_sync_collector()
+                    try:
+                        gone = review_sync.deleted_review_ids(
+                            collector, pid, set(stored_ids)
+                        )
+                    except Exception as exc:
+                        results["errors"].append(
+                            f"Removed-review check failed for {pid}: {exc}"
+                        )
+                        continue
+                    if not gone:
+                        continue
+                    if len(gone) > 5 and len(gone) * 2 > len(stored_ids):
+                        results["errors"].append(
+                            f"Review removal skipped for {pid}: {len(gone)} of "
+                            f"{len(stored_ids)} stored reviews missing on RMP"
+                        )
+                        continue
+                    if not (apply_removals and not dry_run):
+                        print(
+                            f"  would remove {len(gone)} reviews of {pid}",
+                            flush=True,
+                        )
+                        continue
+                    try:
+                        session.execute(
+                            text(
+                                "DELETE FROM reviews WHERE professor_id = :pid "
+                                "AND id = ANY(:ids)"
+                            ),
+                            {"pid": pid, "ids": sorted(gone)},
+                        )
+                        session.commit()
+                    except Exception as exc:
+                        session.rollback()
+                        results["errors"].append(
+                            f"Removing reviews of {pid} failed: {exc}"
+                        )
+                        continue
+                    existing[pid] = set(stored_ids) - set(gone)
+                    results["reviews_removed"] += len(gone)
+                    changed_professor_ids.add(pid)
+                    print(f"  removed {len(gone)} reviews of {pid}", flush=True)
+                    canonical = aliases.get(pid, pid)
+                    queue([(canonical, "reviews removed on RMP", True)])
+            finally:
+                if collector is not None:
+                    try:
+                        collector.session.close()
+                    except Exception:
+                        pass
+
         verb = "would be queued" if dry_run else "queued"
         print(
             f"\nFetch-only complete: {results['professors_checked']} professors checked, "
             f"{results['professors_fetched']} fetched, "
             f"{results['reviews_added']} reviews added, "
             f"{results['professors_queued']} professors {verb} for summary rebuild, "
+            f"{results['profiles_missing']} profiles missing on RMP, "
+            f"{results['profiles_hidden']} hidden, "
+            f"{results['profiles_content_deleted']} content deleted, "
+            f"{results['profiles_restored']} restored, "
+            f"{results['reviews_removed']} reviews removed, "
             f"{len(results['errors'])} errors",
             flush=True,
         )
@@ -1155,6 +1268,12 @@ def main() -> None:
         "professors for the admin summary worker; no AI is called. Works with --dry-run",
     )
     parser.add_argument(
+        "--apply-removals",
+        action="store_true",
+        help="With --fetch-only: hide professors and delete reviews RMP removed. "
+        "Without it the run only records misses and prints what it would do",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show model, clustering, and dependency request details",
@@ -1162,6 +1281,8 @@ def main() -> None:
     args = parser.parse_args()
     if not 0 <= args.min_new_review_percent <= 100:
         parser.error("--min-new-review-percent must be between 0 and 100")
+    if args.apply_removals and not args.fetch_only:
+        parser.error("--apply-removals only works with --fetch-only")
 
     configure_console_logging(args.verbose)
 
@@ -1177,6 +1298,7 @@ def main() -> None:
             professor_ids=professor_ids,
             min_new_review_percent=args.min_new_review_percent,
             dry_run=args.dry_run,
+            apply_removals=args.apply_removals,
         )
         if "error" in result or result.get("errors"):
             sys.exit(1)
