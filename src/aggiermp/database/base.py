@@ -12,6 +12,7 @@ from sqlalchemy import (
     text,
     ForeignKey,
     Text,
+    or_,
 )
 from sqlalchemy.orm import (
     sessionmaker,
@@ -717,8 +718,9 @@ def upsert_professors(
 ) -> List[dict]:
     """Upsert professors using a single database round-trip.
 
-    On conflict, only updates stats when the incoming num_ratings is higher than
-    the stored value (avoids overwriting fresher data with staler data).
+    On conflict, updates the stats whenever RMP reports different ones. Every
+    scrape is current RMP data, and an edited or removed review changes the
+    average without raising the count (D-048).
     """
     if not professors:
         return []
@@ -755,7 +757,14 @@ def upsert_professors(
                 "would_take_again_percent": stmt.excluded.would_take_again_percent,
                 "updated_at": stmt.excluded.updated_at,
             },
-            where=(stmt.excluded.num_ratings > ProfessorDB.num_ratings),
+            where=or_(
+                stmt.excluded.num_ratings.is_distinct_from(ProfessorDB.num_ratings),
+                stmt.excluded.avg_rating.is_distinct_from(ProfessorDB.avg_rating),
+                stmt.excluded.avg_difficulty.is_distinct_from(ProfessorDB.avg_difficulty),
+                stmt.excluded.would_take_again_percent.is_distinct_from(
+                    ProfessorDB.would_take_again_percent
+                ),
+            ),
         )
         session.execute(stmt)
         session.commit()
