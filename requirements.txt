@@ -60,8 +60,8 @@ threadpoolctl==3.6.0
 tokenizers==0.22.1
 # PyTorch's CPU-only "+cpu" builds exist only for x86_64; on ARM (the Oracle VM
 # is aarch64) the regular build is already CPU-only. torchvision isn't used.
-torch==2.5.1+cpu; platform_machine == "x86_64"
-torch==2.5.1; platform_machine == "aarch64"
+torch==2.6.0+cpu; platform_machine == "x86_64"
+torch==2.6.0; platform_machine == "aarch64"
 tqdm==4.67.1
 transformers==4.57.3
 typing-extensions==4.15.0
